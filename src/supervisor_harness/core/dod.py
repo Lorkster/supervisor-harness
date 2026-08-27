@@ -13,6 +13,7 @@ module is what makes that claim enforceable:
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import subprocess
@@ -128,7 +129,40 @@ def touches_code(task: ExecutionTask) -> bool:
     return bool(_CODE_HINT.search(haystack))
 
 
-def apply_quality_bars(task: ExecutionTask, policy: Policy) -> list[DoDCriterion]:
+def detect_test_command(workspace: Path) -> str:
+    """Best guess at how this project runs its tests.
+
+    A test criterion with no command cannot be proven mechanically, so it decays
+    into a model's opinion about whether tests pass -- which is exactly the kind
+    of unverified assurance the harness exists to prevent. Guessing the runner
+    from the project's own files keeps the criterion checkable.
+    """
+    if not workspace.is_dir():
+        return ""
+
+    if (workspace / "pyproject.toml").is_file() or (workspace / "pytest.ini").is_file():
+        return "pytest -q"
+    if any(workspace.rglob("test_*.py")) or (workspace / "tests").is_dir():
+        return "pytest -q"
+
+    package = workspace / "package.json"
+    if package.is_file():
+        try:
+            scripts = json.loads(package.read_text(encoding="utf-8")).get("scripts", {})
+        except (json.JSONDecodeError, OSError):
+            scripts = {}
+        if "test" in scripts:
+            return "npm test --silent"
+    if (workspace / "go.mod").is_file():
+        return "go test ./..."
+    if (workspace / "Cargo.toml").is_file():
+        return "cargo test"
+    return ""
+
+
+def apply_quality_bars(
+    task: ExecutionTask, policy: Policy, workspace: Path | None = None
+) -> list[DoDCriterion]:
     """Add the mandatory bars policy requires, where the task admits them.
 
     Returns only the criteria that were added, so the caller can tell the user
@@ -148,8 +182,8 @@ def apply_quality_bars(task: ExecutionTask, policy: Policy) -> list[DoDCriterion
                     "at least one failure or edge case, and the suite passes"
                 ),
                 method=VerifyMethod.TEST,
-                command="",  # filled in by the verifier from the project's own runner
-                expect="the project's test suite exits zero with the new tests present",
+                command=detect_test_command(workspace) if workspace else "",
+                expect="0",
                 mandatory=True,
             )
         )

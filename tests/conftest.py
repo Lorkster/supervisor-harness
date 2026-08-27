@@ -19,7 +19,11 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from supervisor_harness.config import HarnessConfig, Policy, default_config  # noqa: E402
+from supervisor_harness.config import (  # noqa: E402
+    HarnessConfig,
+    Policy,
+    default_config,
+)
 from supervisor_harness.core.supervisor import Supervisor  # noqa: E402
 from supervisor_harness.host.detect import HostInfo  # noqa: E402
 from supervisor_harness.models import Backend, Usage  # noqa: E402

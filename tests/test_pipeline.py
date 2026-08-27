@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import (
     AgentKind,

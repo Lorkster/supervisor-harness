@@ -3,9 +3,7 @@
     "supervisor": {
       "command": "supervisor-mcp",
       "args": [],
-      "env": {
-        "SUPERVISOR_WORKSPACE": "${workspaceFolder}"
-      }
+      "env": {}
     }
   }
 }

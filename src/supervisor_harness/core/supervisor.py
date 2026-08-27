@@ -79,7 +79,6 @@ from ..store.runstore import RunSession, RunStore
 from . import phases
 from .blackboard import Blackboard
 from .dod import verify_criterion
-from .tools import Toolbox, render_results, render_tools_section
 from .drift import (
     TurnContext,
     assess_heuristically,
@@ -88,6 +87,7 @@ from .drift import (
     should_escalate,
     status_after,
 )
+from .tools import Toolbox, render_results, render_tools_section
 
 # Stage agents are ordinary agents so that planning, synthesis, the checkpoint
 # and the improvement pass all flow through the same report/supervise path.
@@ -413,7 +413,7 @@ class Supervisor:
             self._transition(session, Phase.IMPROVING)
             return
 
-        tasks, notes = phases.prepare_tasks(tasks, self.config.policy)
+        tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
         for task in tasks:
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
                                                    "notes": notes.get(task.id, [])})
@@ -600,7 +600,6 @@ class Supervisor:
     def _apply_checkpoint(
         self, session: RunSession, deterministic: Checkpoint, judged: Checkpoint
     ) -> None:
-        state = session.state
         merged = phases.merge_checkpoint(deterministic, judged, self.config.policy)
         session.emit(EventType.CHECKPOINT_RECORDED, {"checkpoint": to_jsonable(merged)})
 
@@ -829,12 +828,12 @@ class Supervisor:
             "roughly on the right thing is not."
         )
         user = (
-            f"# The agent's objectives\n" + "\n".join(f"- {o}" for o in agent.objectives)
-            + f"\n\n# Explicitly out of scope\n"
+            "# The agent's objectives\n" + "\n".join(f"- {o}" for o in agent.objectives)
+            + "\n\n# Explicitly out of scope\n"
             + ("\n".join(f"- {o}" for o in agent.scope.out_of_scope) or "(nothing listed)")
             + f"\n\n# The overall task\n{state.prompt}"
             + f"\n\n# What the agent just reported\n{last.output[:4000]}"
-            + f"\n\n# Mechanical signals already detected\n"
+            + "\n\n# Mechanical signals already detected\n"
             + ("\n".join(f"- {s.kind}: {s.detail}" for s in heuristic.signals) or "(none)")
         )
         data = await self._call("drift", system, user, DRIFT_SCHEMA)
@@ -926,11 +925,33 @@ class Supervisor:
             }.get(raw)
             if status is None:
                 continue
+
             # Evidence is not optional: a pass with no evidence is not a pass.
             evidence = str(result.get("evidence", "")).strip()
             if status is CriterionStatus.PASS and not evidence:
                 status = CriterionStatus.FAIL
                 evidence = "marked passed without evidence; rejected by the supervisor"
+
+            # A verdict the harness proved by running the real check outranks an
+            # agent's account of it. Only a criterion the harness could not
+            # settle -- blocked or never checked -- is open to judgement.
+            if (
+                crit.verified_by == "harness"
+                and crit.status in (CriterionStatus.PASS, CriterionStatus.FAIL)
+                and status is not crit.status
+            ):
+                session.note(
+                    "verification agent contradicted a mechanical result; "
+                    "the mechanical result stands",
+                    task_id=task.id,
+                    criterion_id=crit.id,
+                    mechanical=str(crit.status),
+                    claimed=str(status),
+                    claimed_evidence=evidence[:400],
+                    actor=agent.id,
+                )
+                continue
+
             session.emit(
                 EventType.CRITERION_VERIFIED,
                 {"task_id": task.id, "criterion_id": crit.id,

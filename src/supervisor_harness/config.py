@@ -251,14 +251,24 @@ def _apply_env_overrides(config: HarnessConfig) -> None:
 
 
 def write_example(path: Path) -> Path:
-    """Write a fully-populated example configuration."""
+    """Write a starter configuration.
+
+    Deliberately omits the ``api_key`` field. It is supported for awkward
+    environments, but a generated file that invites pasting a key into the
+    repository is a footgun; ``api_key_env`` is the path of least resistance.
+    """
     example = to_jsonable(default_config())
+    example.pop("home", None)
+    for provider in example.get("providers", {}).values():
+        provider.pop("api_key", None)
+        if not provider.get("base_url"):
+            provider.pop("base_url", None)
     example["routing"] = {
         "default": "host",
         "supervisor": "host",
         "planning": "host",
         "analysis": "host",
-        "analysis.security": "openrouter:anthropic/claude-opus-4.1|host",
+        "analysis.security": "host",
         "analysis.architecture": "host",
         "synthesis": "host",
         "execution": "host",

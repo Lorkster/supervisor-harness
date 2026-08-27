@@ -12,6 +12,8 @@ unavailable or answers badly.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..agents.registry import AgentRegistry
 from ..agents.roles import ROLES_BY_ID, Role, role_for_task, select_lenses
 from ..config import HarnessConfig, Policy
@@ -20,11 +22,9 @@ from ..models import (
     AgentKind,
     AgentSpec,
     AgentStatus,
-    Backend,
     Budget,
     Checkpoint,
     CriterionStatus,
-    DriftAssessment,
     ExecutionTask,
     Finding,
     Lesson,
@@ -34,7 +34,6 @@ from ..models import (
     RunMode,
     RunState,
     Scope,
-    Severity,
     TaskStatus,
 )
 from .blackboard import critical_findings, detect_contradictions, rank_findings
@@ -296,7 +295,7 @@ def build_report(state: RunState, data: dict) -> Report:
 
 
 def prepare_tasks(
-    tasks: list[ExecutionTask], policy: Policy
+    tasks: list[ExecutionTask], policy: Policy, workspace: Path | None = None
 ) -> tuple[list[ExecutionTask], dict[str, list[str]]]:
     """Apply mandatory quality bars and record what needed fixing.
 
@@ -307,7 +306,7 @@ def prepare_tasks(
     notes: dict[str, list[str]] = {}
     for task in tasks:
         entries: list[str] = []
-        added = apply_quality_bars(task, policy)
+        added = apply_quality_bars(task, policy, workspace)
         for crit in added:
             entries.append(f"harness added mandatory criterion: {crit.statement}")
         for issue in validate_criteria(task.dod, policy):

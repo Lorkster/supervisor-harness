@@ -15,7 +15,6 @@ contributes the tools, the repository context and the user's permission model.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -51,7 +50,16 @@ before calling supervisor_approve. Never approve on the user's behalf.
 
 
 def _workspace() -> Path:
-    return Path(os.environ.get("SUPERVISOR_WORKSPACE") or Path.cwd()).resolve()
+    """The workspace this server supervises.
+
+    ``SUPERVISOR_WORKSPACE`` may arrive as an unexpanded editor template such as
+    ``${workspaceFolder}`` when a host does not do variable substitution. Treat
+    that as absent rather than creating a directory by that literal name.
+    """
+    declared = os.environ.get("SUPERVISOR_WORKSPACE", "").strip()
+    if not declared or "${" in declared or declared.startswith("$"):
+        return Path.cwd().resolve()
+    return Path(declared).expanduser().resolve()
 
 
 _supervisor: Supervisor | None = None

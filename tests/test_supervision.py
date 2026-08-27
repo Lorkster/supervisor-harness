@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from supervisor_harness.config import Policy, default_config
 from supervisor_harness.core.blackboard import Blackboard, detect_contradictions
 from supervisor_harness.core.dod import (
@@ -25,7 +23,6 @@ from supervisor_harness.models import (
     AgentTurn,
     Budget,
     CriterionStatus,
-    Directive,
     DirectiveKind,
     DoDCriterion,
     ExecutionTask,
@@ -347,3 +344,85 @@ def test_config_layers_merge(tmp_path: Path, monkeypatch) -> None:
     assert cfg.policy.max_parallel_agents == 9
     assert cfg.policy.require_security_review is True     # untouched default survives
     assert cfg.binding_for("drift").ref() == "ollama:qwen3.5:9b"
+
+
+# --------------------------------------------------------------------------
+# Verification authority
+# --------------------------------------------------------------------------
+
+
+def test_test_command_is_detected_from_the_project(tmp_path: Path) -> None:
+    """An inserted test criterion gets a runnable command, not an empty one."""
+    from supervisor_harness.core.dod import detect_test_command
+
+    (tmp_path / "empty").mkdir()
+    assert detect_test_command(tmp_path / "empty") == ""
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    assert detect_test_command(tmp_path) == "pytest -q"
+
+    node = tmp_path / "node"
+    node.mkdir()
+    (node / "package.json").write_text('{"scripts": {"test": "vitest"}}', encoding="utf-8")
+    assert detect_test_command(node) == "npm test --silent"
+
+    task = ExecutionTask(title="Add a limiter", action="Implement it in src/auth/login.py")
+    added = apply_quality_bars(task, Policy(), tmp_path)
+    test_criterion = next(c for c in added if c.method is VerifyMethod.TEST)
+    assert test_criterion.command == "pytest -q"
+
+
+async def test_mechanical_verdict_outranks_an_agent_claim(
+    supervisor: Supervisor, fake
+) -> None:
+    """An agent cannot talk a failing mechanical check into a pass."""
+    fake.overrides["synthesis"] = {
+        "summary": "The limiter is missing.",
+        "recommended_mode": "execute",
+        "tasks": [
+            {
+                "title": "Add a limiter to src/auth/login.py",
+                "action": "Add a Redis-backed limiter in src/auth/login.py",
+                "motivation": "Login is unthrottled.",
+                "dod": [
+                    {
+                        "statement": "src/auth/login.py defines a rate_limit decorator",
+                        "method": "inspection",
+                        # The fixture's login.py contains no such symbol, so the
+                        # harness can prove this false by reading the file.
+                        "expect": "src/auth/login.py: rate_limit",
+                        "mandatory": True,
+                    }
+                ],
+                "scope_paths": ["src/auth/**"],
+                "suggested_role": "implementer",
+            }
+        ],
+    }
+
+    response = await supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    while response.action != "await_approval":
+        response = await supervisor.advance(response.run_id)
+
+    task_id = response.tasks[0]["id"]
+    criterion_id = next(
+        c["id"] for c in response.tasks[0]["definition_of_done"]
+        if c["method"] == "inspection"
+    )
+    # The verification agent insists everything passed, with confident evidence.
+    fake.overrides["verification"] = {
+        "results": [
+            {"criterion_id": criterion_id, "status": "pass",
+             "evidence": "I reviewed the file and the decorator is present."}
+        ],
+        "summary": "all good",
+    }
+
+    await supervisor.approve(response.run_id, [{"task_id": task_id, "decision": "approve"}])
+    state = supervisor.store.load_state(response.run_id)
+    criterion = next(c for c in state.tasks[task_id].dod if c.id == criterion_id)
+
+    assert criterion.status is CriterionStatus.FAIL
+    assert criterion.verified_by == "harness"
+    assert "does not contain" in criterion.evidence
+    assert not state.tasks[task_id].dod_satisfied()

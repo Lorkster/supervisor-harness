@@ -19,7 +19,7 @@ from typing import Any
 
 from ..host.detect import CLAUDE_CODE, CURSOR, HostInfo
 from ..models import AgentKind
-from .roles import ALL_ROLES, Role, ROLES_BY_ID
+from .roles import ALL_ROLES, ROLES_BY_ID, Role
 
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 

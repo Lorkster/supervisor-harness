@@ -19,8 +19,8 @@ from typing import Any
 from ..ids import now_iso
 from ..models import Lesson, RunState
 from ..serde import from_jsonable, to_jsonable
-from .events import Event, EventType, _apply, fold
 from .eventlog import EventLog
+from .events import Event, EventType, _apply, fold
 from .index import RunIndex
 
 HOME_ENV = "SUPERVISOR_HOME"
