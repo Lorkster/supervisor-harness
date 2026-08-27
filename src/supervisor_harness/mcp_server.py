@@ -1,0 +1,293 @@
+"""MCP server: the harness as a tool set for Claude Code and Cursor.
+
+The host drives a loop:
+
+1. ``supervisor_start`` -- describe the task and what agents you can spawn.
+2. Run the returned packets, in parallel where there is more than one.
+3. ``supervisor_report`` -- hand back each agent's JSON result. You get a
+   directive: continue with corrections, or the agent is finished.
+4. ``supervisor_advance`` -- when every packet is reported, get the next phase.
+5. ``supervisor_approve`` -- after the user decides on the proposed tasks.
+
+The harness holds the state, the supervision and the persistence. The host
+contributes the tools, the repository context and the user's permission model.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from .config import KNOWN_STAGES
+from .core.supervisor import Supervisor, SupervisorResponse
+from .models import Backend, RunMode
+
+try:  # MCP SDK 2.x
+    from mcp.server.mcpserver import MCPServer as _Server
+except ModuleNotFoundError:  # pragma: no cover - SDK 1.x fallback
+    from mcp.server.fastmcp import FastMCP as _Server  # type: ignore[no-redef]
+
+
+INSTRUCTIONS = """\
+The supervisor harness plans, supervises and verifies multi-agent work.
+
+Call supervisor_start with the user's task. You will get back one or more work
+packets. Each packet contains a complete brief and the exact JSON schema its
+answer must match. Run each packet with your own sub-agent mechanism -- issue
+independent packets in parallel, in a single message -- then call
+supervisor_report with each result.
+
+Do not summarise, paraphrase or improve a packet's brief before dispatching it:
+the supervisor measures drift against that exact text. Do not answer a packet
+yourself if a subagent is available; the point is parallelism and independence.
+
+After reporting every packet, call supervisor_advance to get the next phase.
+When the run reaches await_approval, present the proposed tasks to the user with
+their actions, motivations and definitions of done, and let the user decide
+before calling supervisor_approve. Never approve on the user's behalf.
+"""
+
+
+def _workspace() -> Path:
+    return Path(os.environ.get("SUPERVISOR_WORKSPACE") or Path.cwd()).resolve()
+
+
+_supervisor: Supervisor | None = None
+
+
+def supervisor() -> Supervisor:
+    """One supervisor per server process, bound to the workspace."""
+    global _supervisor
+    if _supervisor is None:
+        _supervisor = Supervisor(workspace=_workspace())
+    return _supervisor
+
+
+def _result(response: SupervisorResponse) -> dict[str, Any]:
+    """Shape a response for the host, with the next step stated plainly."""
+    payload = response.to_dict()
+    payload["next_step"] = {
+        "dispatch": (
+            "Run every packet below with your own sub-agent tool, in parallel, passing "
+            "each brief verbatim. Then call supervisor_report once per packet."
+        ),
+        "await_reports": (
+            "Report any packets you have not yet reported. When all are in, call "
+            "supervisor_advance."
+        ),
+        "await_approval": (
+            "Show the user each proposed task -- action, motivation and definition of "
+            "done -- and ask which to approve, modify or reject. Then call "
+            "supervisor_approve. Do not decide for them."
+        ),
+        "complete": "Present report_markdown to the user, including the verified "
+                    "definition-of-done results.",
+        "failed": "Tell the user the run failed and why.",
+    }.get(response.action, "")
+    return payload
+
+
+def build_server() -> Any:
+    """Construct the MCP server with the harness tools registered."""
+    server = _Server(
+        name="supervisor-harness",
+        instructions=INSTRUCTIONS,
+        version="0.1.0",
+    )
+
+    @server.tool(
+        description=(
+            "Start a supervised run. Analyses the task from the angles that fit it, "
+            "in parallel, then proposes verifiable work. Pass the agent types you can "
+            "spawn so roles bind to real sub-agents."
+        )
+    )
+    async def supervisor_start(
+        prompt: str,
+        mode: str = "auto",
+        host_agents: list[dict[str, Any]] | None = None,
+        backend: str = "",
+    ) -> dict[str, Any]:
+        """Begin a run.
+
+        Args:
+            prompt: The user's task, in full. Do not summarise it.
+            mode: "auto" (let synthesis decide), "report" (analysis only), or
+                "execute" (analysis then approved work).
+            host_agents: Sub-agent types you can spawn, as
+                [{"name": ..., "description": ..., "tools": [...]}, ...].
+            backend: "host" to run agents yourself (default), "autonomous" to let
+                the harness drive its own configured models.
+        """
+        response = await supervisor().start(
+            prompt,
+            mode=_mode(mode),
+            backend=Backend(backend) if backend else None,
+            host_agents=host_agents,
+        )
+        return _result(response)
+
+    @server.tool(
+        description=(
+            "Report one agent's result. Returns the supervisor's directive: either "
+            "corrections and another turn, or acceptance."
+        )
+    )
+    async def supervisor_report(
+        run_id: str,
+        agent_id: str,
+        result: dict[str, Any] | str,
+    ) -> dict[str, Any]:
+        """Hand back what an agent produced.
+
+        Args:
+            run_id: From the packet.
+            agent_id: From the packet.
+            result: The agent's JSON object, matching the packet's schema. Pass it
+                through unmodified -- do not fill gaps or improve it, because the
+                supervisor is judging the agent's real output.
+        """
+        payload = _as_dict(result)
+        if payload is None:
+            return {
+                "error": "result must be a JSON object matching the packet schema",
+                "received": str(result)[:200],
+            }
+        return _result(await supervisor().report(run_id, agent_id, payload))
+
+    @server.tool(
+        description="Move the run to its next phase once the current packets are reported."
+    )
+    async def supervisor_advance(
+        run_id: str, host_agents: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        return _result(await supervisor().advance(run_id, host_agents=host_agents))
+
+    @server.tool(
+        description=(
+            "Record the user's decisions on proposed tasks, then start the approved "
+            "work. Only call this after the user has actually decided."
+        )
+    )
+    async def supervisor_approve(
+        run_id: str, decisions: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Apply approve / modify / reject / defer decisions.
+
+        Args:
+            run_id: The run.
+            decisions: One entry per task, e.g.
+                {"task_id": "tsk_...", "decision": "approve"} or
+                {"task_id": "tsk_...", "decision": "modify", "note": "...",
+                 "modifications": {"action": "..."}}.
+                Modifications may edit title, action, motivation, effort,
+                scope_paths, or replace dod wholesale.
+        """
+        return _result(await supervisor().approve(run_id, decisions))
+
+    @server.tool(description="Current state of a run, or the most recent one.")
+    async def supervisor_status(run_id: str = "") -> dict[str, Any]:
+        sup = supervisor()
+        target = run_id or (sup.store.latest_run_id() or "")
+        if not target:
+            return {"runs": [], "message": "no runs recorded yet"}
+        return sup.status(target)
+
+    @server.tool(description="List recent runs with their phase and progress.")
+    async def supervisor_runs(limit: int = 10) -> dict[str, Any]:
+        sup = supervisor()
+        sup.store.reindex()
+        return {"runs": sup.store.index().list_runs(limit)}
+
+    @server.tool(
+        description="Resume a persisted run and get the next thing to do."
+    )
+    async def supervisor_resume(run_id: str = "") -> dict[str, Any]:
+        sup = supervisor()
+        target = run_id or (sup.store.latest_run_id() or "")
+        if not target:
+            return {"error": "no run to resume"}
+        return _result(await sup.resume(target))
+
+    @server.tool(
+        description=(
+            "Ask the drift-checking model for a second opinion on an agent's last "
+            "turn. Use when an agent looks plausible but off-brief."
+        )
+    )
+    async def supervisor_check_drift(run_id: str, agent_id: str) -> dict[str, Any]:
+        return await supervisor().supervise_with_model(run_id, agent_id)
+
+    @server.tool(
+        description=(
+            "Lessons the harness has learned from previous runs, optionally filtered "
+            "to a role or stage."
+        )
+    )
+    async def supervisor_lessons(target: str = "", limit: int = 20) -> dict[str, Any]:
+        store = supervisor().store
+        lessons = store.lessons_for([target], limit) if target else store.lessons()[-limit:]
+        return {
+            "lessons": [
+                {
+                    "statement": le.statement,
+                    "category": str(le.category),
+                    "target": le.target,
+                    "why": le.why,
+                    "how_to_apply": le.how_to_apply,
+                    "occurrences": le.occurrences,
+                }
+                for le in lessons
+            ]
+        }
+
+    @server.tool(
+        description=(
+            "Which model each stage of a run is routed to, and whether each provider "
+            "is reachable right now."
+        )
+    )
+    async def supervisor_providers() -> dict[str, Any]:
+        sup = supervisor()
+        return {
+            "host": sup.host.name,
+            "backend": str(sup.config.backend),
+            "workspace": str(sup.workspace),
+            "config_sources": sup.config.sources,
+            "routing": {
+                stage: sup.config.binding_for(stage).ref()
+                for stage in sorted(set(sup.config.routing) | set(KNOWN_STAGES))
+            },
+            "providers": await sup.router.health(),
+        }
+
+    return server
+
+
+def _mode(value: str) -> RunMode:
+    try:
+        return RunMode(value.strip().lower())
+    except ValueError:
+        return RunMode.AUTO
+
+
+def _as_dict(value: dict[str, Any] | str) -> dict[str, Any] | None:
+    """Accept a dict, or a JSON string, or prose with JSON embedded in it."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        from .providers.base import extract_json
+
+        return extract_json(value)
+    return None
+
+
+def main() -> None:
+    """Entry point for ``supervisor-mcp`` (stdio transport)."""
+    build_server().run("stdio")
+
+
+if __name__ == "__main__":
+    main()

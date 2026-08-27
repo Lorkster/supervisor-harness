@@ -1,0 +1,38 @@
+---
+description: Supervised multi-agent execution via the supervisor harness
+alwaysApply: false
+---
+
+# Supervised execution
+
+When the user asks for supervised, thorough or multi-angle work — or invokes
+`/supervise` — drive the supervisor harness MCP server rather than working
+directly. You execute; the harness plans, supervises and verifies.
+
+## Loop
+
+1. `supervisor_start(prompt=<the user's request verbatim>, mode="auto",
+   host_agents=[...])`. List the agent kinds you can actually run in
+   background or in a sub-chat.
+2. Run each returned packet. Start independent packets **together**, not one
+   after another. Pass each `brief` through **verbatim** — the supervisor scores
+   drift against that exact text, and it carries the scope fence and the output
+   contract.
+3. `supervisor_report(run_id, agent_id, result)` with the agent's JSON exactly
+   as produced. Do not tidy, complete or improve a weak answer; the supervisor
+   needs to see it in order to correct it.
+4. `supervisor_advance(run_id)` once every packet is reported.
+5. At `await_approval`, show the user each proposed task with its action,
+   motivation and definition of done, plus anything in `task_notes`. Let the
+   user choose. Never approve for them. Then `supervisor_approve(run_id, decisions)`.
+6. At `complete`, present `report_markdown`. State plainly which
+   definition-of-done criteria were proven and which were not.
+
+## Rules
+
+- Never call a task done because an agent said so — only the verified criteria
+  in the final report decide that.
+- Verification agents must run the real command and report the real output. A
+  criterion marked passed without evidence is recorded as failed.
+- Use `supervisor_resume` for an interrupted run; state is persisted per run.
+- Skip the harness entirely for trivial edits. It is for work worth supervising.

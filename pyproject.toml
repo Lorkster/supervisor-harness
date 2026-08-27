@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supervisor-harness"
+version = "0.1.0"
+description = "A supervising agentic harness that adds analysis, parallel execution, drift correction, verified definitions of done and a self-improvement loop to Claude Code and Cursor."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Lorkster" }]
+keywords = ["agents", "mcp", "claude-code", "cursor", "orchestration", "supervisor"]
+
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "mcp>=1.2"]
+
+[project.scripts]
+supervisor = "supervisor_harness.cli:main"
+supervisor-mcp = "supervisor_harness.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+supervisor_harness = ["integrations/*.json", "integrations/*/*.md", "integrations/*/*.mdc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
