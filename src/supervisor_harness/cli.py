@@ -220,7 +220,10 @@ def cmd_start(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     sup = _supervisor(args)
     raw = sys.stdin.read() if args.input == "-" else Path(args.input).read_text(encoding="utf-8")
-    payload = json.loads(raw)
+    payload = _parse_turn(raw)
+    if payload is None:
+        print("error: could not find a JSON object in the reported turn", file=sys.stderr)
+        return 2
 
     async def go() -> SupervisorResponse:
         try:
@@ -230,6 +233,26 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     _print_response(asyncio.run(go()), args.json)
     return 0
+
+
+def _parse_turn(raw: str) -> dict[str, Any] | None:
+    """Decode a reported turn as leniently as the MCP tool does.
+
+    Agents emit JSON wrapped in prose, inside fences, or with literal newlines
+    in string values. The MCP path already tolerated all of that via
+    extract_json; requiring strict JSON here meant the CLI rejected turns the
+    MCP server would have accepted.
+    """
+    from .providers.base import extract_json
+
+    for attempt in (lambda: json.loads(raw), lambda: json.loads(raw, strict=False)):
+        try:
+            parsed = attempt()
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return extract_json(raw)
 
 
 def cmd_advance(args: argparse.Namespace) -> int:
@@ -404,6 +427,11 @@ def cmd_providers(args: argparse.Namespace) -> int:
                "routing": routing, "providers": health}, True)
         return 0
 
+    if sup.config.rejected_settings:
+        print("ignored (a workspace config file may not set these):")
+        for entry in sup.config.rejected_settings:
+            print(f"  {entry}")
+        print()
     print(f"host      {sup.host.name} (confidence {sup.host.confidence:.1f})")
     print(f"backend   {sup.config.backend}")
     print(f"config    {', '.join(sup.config.sources) or '(built-in defaults only)'}")
@@ -448,15 +476,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"supervisor-harness {__version__}")
     parser.add_argument("-w", "--workspace", default=".", help="workspace root (default: cwd)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
+
+    # The same flags again, accepted after the subcommand. argparse only looks
+    # for top-level options before the subcommand, so `supervisor start x --json`
+    # was a usage error -- including in the form the README documented.
+    # SUPPRESS keeps the subparser copies from overwriting the top-level values
+    # with their own defaults when they are not given.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="machine-readable output")
+    common.add_argument("-w", "--workspace", default=argparse.SUPPRESS,
+                        help="workspace root (default: cwd)")
+
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="install host integrations and an example config")
+    p = sub.add_parser("init", parents=[common], help="install host integrations and an example config")
     p.add_argument("--host", choices=["claude", "cursor", "both"], default="",
                    help="which host to install for (default: whichever is detected)")
     p.add_argument("--force", action="store_true", help="overwrite existing files")
     p.set_defaults(func=cmd_init)
 
-    p = sub.add_parser("run", help="run a task to completion without a host")
+    p = sub.add_parser("run", parents=[common], help="run a task to completion without a host")
     p.add_argument("prompt")
     p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto")
     p.add_argument("--backend", choices=["host", "autonomous"], default="")
@@ -464,53 +504,53 @@ def build_parser() -> argparse.ArgumentParser:
                    help="approve every proposed task without asking")
     p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("start", help="begin a host-delegated run and print its packets")
+    p = sub.add_parser("start", parents=[common], help="begin a host-delegated run and print its packets")
     p.add_argument("prompt")
     p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto")
     p.add_argument("--host-agents", default="", help="JSON array of agent types you can spawn")
     p.set_defaults(func=cmd_start)
 
-    p = sub.add_parser("report", help="report an agent turn from a file or stdin")
+    p = sub.add_parser("report", parents=[common], help="report an agent turn from a file or stdin")
     p.add_argument("run_id")
     p.add_argument("agent_id")
     p.add_argument("-i", "--input", default="-", help="JSON file, or - for stdin")
     p.set_defaults(func=cmd_report)
 
-    p = sub.add_parser("advance", help="move a run to its next phase")
+    p = sub.add_parser("advance", parents=[common], help="move a run to its next phase")
     p.add_argument("run_id", nargs="?", default="")
     p.set_defaults(func=cmd_advance)
 
-    p = sub.add_parser("approve", help="decide on proposed tasks")
+    p = sub.add_parser("approve", parents=[common], help="decide on proposed tasks")
     p.add_argument("run_id", nargs="?", default="")
     p.add_argument("--all", action="store_true", help="approve every proposed task")
     p.add_argument("--task", action="append", metavar="ID[:DECISION]",
                    help="decide one task; unnamed tasks are rejected")
     p.set_defaults(func=cmd_approve)
 
-    p = sub.add_parser("resume", help="resume a persisted run")
+    p = sub.add_parser("resume", parents=[common], help="resume a persisted run")
     p.add_argument("run_id", nargs="?", default="")
     p.set_defaults(func=cmd_resume)
 
-    p = sub.add_parser("status", help="show a run in detail")
+    p = sub.add_parser("status", parents=[common], help="show a run in detail")
     p.add_argument("run_id", nargs="?", default="")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("runs", help="list recent runs")
+    p = sub.add_parser("runs", parents=[common], help="list recent runs")
     p.add_argument("-n", "--limit", type=int, default=20)
     p.set_defaults(func=cmd_runs)
 
-    p = sub.add_parser("lessons", help="show what previous runs taught the harness")
+    p = sub.add_parser("lessons", parents=[common], help="show what previous runs taught the harness")
     p.add_argument("-t", "--target", default="", help="filter to a role or stage")
     p.add_argument("-n", "--limit", type=int, default=20)
     p.set_defaults(func=cmd_lessons)
 
-    p = sub.add_parser("providers", help="show model routing and provider health")
+    p = sub.add_parser("providers", parents=[common], help="show model routing and provider health")
     p.set_defaults(func=cmd_providers)
 
-    p = sub.add_parser("reindex", help="rebuild the SQLite index from the event logs")
+    p = sub.add_parser("reindex", parents=[common], help="rebuild the SQLite index from the event logs")
     p.set_defaults(func=cmd_reindex)
 
-    p = sub.add_parser("mcp", help="run the MCP server on stdio")
+    p = sub.add_parser("mcp", parents=[common], help="run the MCP server on stdio")
     p.set_defaults(func=cmd_mcp)
 
     return parser

@@ -26,6 +26,7 @@ from ..models import (
     Message,
     Phase,
     Report,
+    RunMode,
     RunState,
     Usage,
 )
@@ -36,6 +37,9 @@ class EventType(StrEnum):
     RUN_CREATED = "run_created"
     PHASE_CHANGED = "phase_changed"
     HOST_AGENTS_DECLARED = "host_agents_declared"
+    RUN_MODE_SET = "run_mode_set"
+    CONTEXT_SET = "context_set"
+    BRIEF_RENDERED = "brief_rendered"
     AGENT_SPAWNED = "agent_spawned"
     AGENT_STATUS = "agent_status"
     TURN_RECORDED = "turn_recorded"
@@ -89,6 +93,18 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
     elif t is EventType.HOST_AGENTS_DECLARED:
         state.host_agents = list(p.get("agents") or [])
 
+    elif t is EventType.RUN_MODE_SET:
+        state.mode = RunMode(p["mode"])
+
+    elif t is EventType.CONTEXT_SET:
+        if p.get("shared_context") is not None:
+            state.shared_context = str(p["shared_context"])
+        for key, value in (p.get("facts") or {}).items():
+            state.facts[str(key)] = str(value)
+
+    elif t is EventType.BRIEF_RENDERED:
+        state.briefs[p["agent_id"]] = str(p.get("brief", ""))
+
     elif t is EventType.AGENT_SPAWNED:
         spec = from_jsonable(p["agent"], AgentSpec)
         state.agents[spec.id] = spec
@@ -119,9 +135,10 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
 
     elif t is EventType.MESSAGE_DELIVERED:
         ids = set(p.get("message_ids", []))
+        recipient = p.get("agent_id", "")
         for msg in state.messages:
-            if msg.id in ids:
-                msg.delivered = True
+            if msg.id in ids and recipient and recipient not in msg.delivered_to:
+                msg.delivered_to.append(recipient)
 
     elif t is EventType.TASK_PROPOSED:
         task = from_jsonable(p["task"], ExecutionTask)

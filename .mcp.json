@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "supervisor": {
+      "command": "supervisor-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

@@ -290,11 +290,30 @@ def test_inbox_excludes_the_sender_and_delivered_messages() -> None:
     state.messages = [
         Message(id="m1", sender="agt_a", recipient="*", content="one"),
         Message(id="m2", sender="agt_b", recipient="*", content="two"),
-        Message(id="m3", sender="agt_a", recipient="agt_b", content="three", delivered=True),
+        Message(id="m3", sender="agt_a", recipient="agt_b", content="three",
+                delivered_to=["agt_b"]),
     ]
 
     inbox = Blackboard.inbox_for("agt_b", state)
     assert [m.id for m in inbox] == ["m1"]
+
+
+def test_a_broadcast_reaches_every_recipient_not_just_the_first() -> None:
+    """Delivery is tracked per recipient, so one agent cannot consume a broadcast."""
+    state = RunState(prompt=PROMPT)
+    for aid in ("agt_a", "agt_b", "agt_c"):
+        state.agents[aid] = AgentSpec(id=aid)
+    state.messages = [Message(id="m1", sender="agt_a", recipient="*", content="heads up")]
+
+    assert [m.id for m in Blackboard.inbox_for("agt_b", state)] == ["m1"]
+    assert [m.id for m in Blackboard.inbox_for("agt_c", state)] == ["m1"]
+
+    # agt_b receives it; agt_c must still be able to.
+    state.messages[0].delivered_to.append("agt_b")
+    assert Blackboard.inbox_for("agt_b", state) == []
+    assert [m.id for m in Blackboard.inbox_for("agt_c", state)] == ["m1"]
+    # And never back to its sender.
+    assert Blackboard.inbox_for("agt_a", state) == []
 
 
 def test_contradictions_between_lenses_are_detected() -> None:

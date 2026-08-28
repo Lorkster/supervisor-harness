@@ -1,12 +1,21 @@
 """The supervisor: the state machine that drives a run.
 
-One object serves both execution backends, because the difference between them
-is narrow. In **host-delegated** mode a phase produces :class:`WorkPacket`
-objects for Claude Code or Cursor to execute, and the host reports each turn
-back through :meth:`Supervisor.report`. In **autonomous** mode the supervisor
-runs the same packets itself against a model provider. The supervision applied
-to a turn -- drift assessment, directive, message routing, event emission -- is
-identical either way, so behaviour does not change with the backend.
+One object serves both execution backends. In **host-delegated** mode a phase
+produces :class:`WorkPacket` objects for Claude Code or Cursor to execute, and
+the host reports each turn back through :meth:`Supervisor.report`. In
+**autonomous** mode the supervisor runs the same packets itself against a model
+provider.
+
+Each reported turn goes through the same supervision either way: it is recorded,
+assessed for drift, answered with a directive, and its messages are routed. Two
+differences remain, and they are properties of the backend rather than accidents:
+
+* Drift escalation to a model needs the harness to make a model call, so it is
+  skipped when the ``drift`` stage is itself routed to the host -- there is no
+  one to ask without another round trip through the caller.
+* Tool use, budget enforcement in wall-clock terms, and failure capture apply
+  only to agents the harness drives. A host-run agent uses the host's tools and
+  fails in the host's own way.
 
 Every phase transition and every turn is an event on the log first and an
 in-memory change second, which is what makes a run resumable from any point.
@@ -15,6 +24,7 @@ in-memory change second, which is what makes a run resumable from any point.
 from __future__ import annotations
 
 import asyncio
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -77,7 +87,7 @@ from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import phases
-from .blackboard import Blackboard
+from .blackboard import Blackboard, render_context
 from .dod import verify_criterion
 from .drift import (
     TurnContext,
@@ -159,8 +169,6 @@ class Supervisor:
         self.store = store or RunStore.discover(self.workspace)
         self.host = host or detect_host(self.workspace)
         self.router = router or ModelRouter(self.config, host_name=self.host.name)
-        self._boards: dict[str, Blackboard] = {}
-        self._briefs: dict[str, str] = {}   # agent_id -> the brief it was given
         self.toolbox = Toolbox(self.workspace, self.config.policy)
 
     # ------------------------------------------------------------------
@@ -185,7 +193,6 @@ class Supervisor:
         )
         session = self.store.create(state)
         self._registry_for(session, host_agents)
-        self._boards[session.state.id] = Blackboard(session.state.id)
         session.note(
             "run created",
             host=self.host.name,
@@ -258,8 +265,13 @@ class Supervisor:
 
     async def _advance(self, session: RunSession) -> SupervisorResponse:
         """Move the run forward until it needs something from outside."""
+        # Each remediation cycle costs several internal steps, so the ceiling
+        # has to scale with the checkpoint budget policy allows. A fixed 12 was
+        # smaller than the shipped defaults require, and a fully-remediated run
+        # was marked FAILED after doing all of its work.
+        limit = 12 + 6 * max(1, self.config.policy.max_checkpoint_iterations)
         guard = 0
-        while guard < 12:
+        while guard < limit:
             guard += 1
             state = session.state
             phase = state.phase
@@ -286,7 +298,11 @@ class Supervisor:
             if response is not None:
                 session.sync_index()
                 return response
-        return self._error(session, "phase machine did not settle")
+        return self._error(
+            session,
+            f"phase machine did not settle after {limit} steps; last phase "
+            f"{session.state.phase.value}",
+        )
 
     def _transition(self, session: RunSession, phase: Phase, **payload: Any) -> None:
         session.emit(EventType.PHASE_CHANGED, {"phase": str(phase), **payload})
@@ -329,15 +345,19 @@ class Supervisor:
         state = session.state
         specs, shared, mode = phases.apply_plan(state, plan, self.config, registry, fallback)
 
-        board = self._board(state.id)
-        board.set_context(shared or "")
+        facts = {}
         if plan.get("restated_goal"):
-            board.record_fact("restated goal", str(plan["restated_goal"]))
+            facts["restated goal"] = str(plan["restated_goal"])
+        if shared or facts:
+            session.emit(
+                EventType.CONTEXT_SET, {"shared_context": shared or "", "facts": facts}
+            )
 
+        # Recorded as its own event, not a note plus an in-memory assignment:
+        # the fold has no branch for notes, so the resolved mode was lost on
+        # every reopen and an EXECUTE run silently reverted to AUTO.
         if state.mode is RunMode.AUTO and mode is not RunMode.AUTO:
-            session.emit(EventType.NOTE, {"text": f"planning selected mode {mode.value}",
-                                          "mode": str(mode)})
-            state.mode = mode
+            session.emit(EventType.RUN_MODE_SET, {"mode": str(mode)})
 
         self._spawn(session, specs)
         if state.phase is not Phase.ANALYZING:
@@ -702,7 +722,19 @@ class Supervisor:
 
         agent = state.agents.get(agent_id)
         if agent is None:
-            return self._error(session, f"unknown agent {agent_id!r} for run {run_id}")
+            # A mistyped id is the caller's error, not the run's. Failing the
+            # whole run here discarded every finding it had gathered.
+            session.note("report for an unknown agent was rejected", agent_id=agent_id)
+            return SupervisorResponse(
+                run_id=state.id,
+                phase=str(state.phase),
+                action="await_reports",
+                message=(
+                    f"No agent {agent_id!r} in this run; nothing was recorded. "
+                    f"Known agents: {', '.join(sorted(state.agents)) or '(none)'}."
+                ),
+                detail={"error": "unknown_agent", "known_agents": sorted(state.agents)},
+            )
 
         if agent.kind is AgentKind.SYNTHESIS:
             return await self._report_stage(session, agent, payload)
@@ -712,6 +744,19 @@ class Supervisor:
 
         turn = self._record_turn(session, agent, payload)
         directive = self._supervise(session, agent, turn)
+
+        # The same second opinion the autonomous loop takes. Skipped only when
+        # the drift stage is itself host-routed, since the harness cannot then
+        # run it without asking the host for another round trip.
+        if not self._delegated("drift") and should_escalate(
+            session.state.drift.get(agent.id, DriftAssessment()),
+            self.config.policy,
+            max(0, turn.seq - 1),
+        ):
+            try:
+                await self.supervise_with_model(session.state.id, agent.id)
+            except Exception:  # noqa: BLE001 - a failed second opinion is not fatal
+                pass
 
         if agent.kind is AgentKind.EXECUTION and directive.kind in (
             DirectiveKind.ACCEPT, DirectiveKind.STOP
@@ -752,7 +797,9 @@ class Supervisor:
         return turn
 
     def _route_messages(self, session: RunSession, turn: AgentTurn) -> None:
-        board = self._board(session.state.id)
+        # Routing is a pure decision over run state; the blackboard holds no
+        # per-run memory any more, so a fresh one is equivalent to a cached one.
+        board = Blackboard(session.state.id)
         for message in turn.messages:
             routing = board.route(message, session.state)
             session.emit(
@@ -766,7 +813,7 @@ class Supervisor:
         """Assess the turn and issue the directive that governs the next one."""
         state = session.state
         turns_used = state.turn_counts.get(agent.id, 0)
-        brief = self._briefs.get(agent.id, agent.brief)
+        brief = state.briefs.get(agent.id) or agent.brief
 
         previous = self._previous_turns(session, agent.id, before=turn.id)
 
@@ -777,6 +824,7 @@ class Supervisor:
             brief=brief,
             task_prompt=state.prompt,
             turn_index=max(0, turns_used - 1),
+            workspace=str(self.workspace),
         )
         assessment = assess_heuristically(ctx)
         session.emit(
@@ -796,7 +844,10 @@ class Supervisor:
         )
         session.emit(EventType.DIRECTIVE_ISSUED, {"directive": to_jsonable(directive)})
         if inbox:
-            session.emit(EventType.MESSAGE_DELIVERED, {"message_ids": [m.id for m in inbox]})
+            session.emit(
+                EventType.MESSAGE_DELIVERED,
+                {"message_ids": [m.id for m in inbox], "agent_id": agent.id},
+            )
 
         self._set_status(session, agent, status_after(directive))
         return directive
@@ -1072,7 +1123,24 @@ class Supervisor:
             async with limit:
                 await self._drive_agent(session, agent)
 
-        await asyncio.gather(*(drive(a) for a in agents), return_exceptions=True)
+        results = await asyncio.gather(
+            *(drive(a) for a in agents), return_exceptions=True
+        )
+
+        # Exceptions were previously gathered and discarded. An agent that blew
+        # up stayed active, so the phase never settled and the run failed with a
+        # generic "did not settle" and an event log that said nothing about why.
+        for agent, result in zip(agents, results, strict=False):
+            if not isinstance(result, BaseException):
+                continue
+            session.note(
+                f"agent raised {type(result).__name__}: {result}",
+                actor=agent.id,
+                traceback="".join(
+                    traceback.format_exception(type(result), result, result.__traceback__)
+                )[-2000:],
+            )
+            self._set_status(session, agent, AgentStatus.FAILED)
 
     async def _drive_agent(self, session: RunSession, agent: AgentSpec) -> None:
         """Run one agent to completion against its bound model.
@@ -1235,11 +1303,6 @@ class Supervisor:
         declared = host_agents or session.state.host_agents
         return AgentRegistry(self.workspace, self.host, declared)
 
-    def _board(self, run_id: str) -> Blackboard:
-        if run_id not in self._boards:
-            self._boards[run_id] = Blackboard(run_id)
-        return self._boards[run_id]
-
     def _spawn(self, session: RunSession, specs: list[AgentSpec]) -> None:
         for spec in specs:
             session.emit(EventType.AGENT_SPAWNED, {"agent": to_jsonable(spec)})
@@ -1281,7 +1344,7 @@ class Supervisor:
         kind: str,
     ) -> WorkPacket:
         brief = f"{system}\n\n---\n\n{user}"
-        self._briefs[agent.id] = brief
+        session.emit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
         return WorkPacket(
             run_id=session.state.id,
             agent_id=agent.id,
@@ -1298,7 +1361,6 @@ class Supervisor:
         self, session: RunSession, agent: AgentSpec, directive: Directive | None = None
     ) -> WorkPacket:
         state = session.state
-        board = self._board(state.id)
         peers = [a for a in state.agents.values() if a.kind is agent.kind]
         turns_used = state.turn_counts.get(agent.id, 0)
 
@@ -1317,12 +1379,11 @@ class Supervisor:
             schema = ANALYSIS_TURN_SCHEMA
             brief = build_analysis_brief(
                 state, agent, ROLES_BY_ID.get(agent.role), peers, schema,
-                shared_context=board.context_for(agent),
+                shared_context=render_context(state.shared_context, state.facts),
                 lessons=self.store.lessons_for([agent.role], self.config.policy.max_lessons_in_brief)
                 if self.config.policy.apply_lessons else [],
                 tools=tools,
             )
-            self._briefs[agent.id] = brief
         elif agent.kind is AgentKind.EXECUTION:
             schema = EXECUTION_TURN_SCHEMA
             task = state.tasks.get(agent.task_id or "")
@@ -1334,13 +1395,12 @@ class Supervisor:
             brief = build_execution_brief(
                 state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
                 ROLES_BY_ID.get(agent.role), peers, schema,
-                shared_context=board.context_for(agent),
+                shared_context=render_context(state.shared_context, state.facts),
                 lessons=self.store.lessons_for([agent.role], self.config.policy.max_lessons_in_brief)
                 if self.config.policy.apply_lessons else [],
                 supporting_findings=findings,
                 tools=tools,
             )
-            self._briefs[agent.id] = brief
         else:
             schema = VERIFICATION_SCHEMA
             task = state.tasks.get(agent.task_id or "")
@@ -1349,7 +1409,12 @@ class Supervisor:
                 state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
                 schema, change_summary=summary, tools=tools,
             )
-            self._briefs[agent.id] = brief
+
+        # Persist the brief the agent is actually given. Drift is measured
+        # against this text, so a fresh process that could not see it scored the
+        # same turn quite differently.
+        if directive is None:
+            session.emit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
 
         return WorkPacket(
             run_id=state.id,

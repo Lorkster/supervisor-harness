@@ -113,6 +113,9 @@ class HarnessConfig:
     policy: Policy = field(default_factory=Policy)
     roles: dict[str, dict[str, Any]] = field(default_factory=dict)   # extra/overridden roles
     sources: list[str] = field(default_factory=list)                 # files that contributed
+    # Settings a workspace file tried to set but was not permitted to; surfaced
+    # to the user rather than silently dropped.
+    rejected_settings: list[str] = field(default_factory=list)
 
     # -- routing -----------------------------------------------------------
 
@@ -194,35 +197,104 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return out
 
 
-def candidate_paths(workspace: Path) -> list[Path]:
+# --------------------------------------------------------------------------
+# Trust boundary
+# --------------------------------------------------------------------------
+
+# Configuration arrives from two kinds of place. Files under the user's own home
+# (or an explicit SUPERVISOR_HOME) are *trusted*: the user put them there. Files
+# inside the workspace are *untrusted*, because the workspace is frequently a
+# repository someone else wrote and the user has merely pointed the harness at.
+#
+# An untrusted file may tune how the harness thinks -- policy thresholds, model
+# routing, budgets. It may not grant code execution, and it may not change where
+# credentials are sent. Without this split, checking out a repository that
+# happens to contain a supervisor.config.json is enough to turn shell execution
+# on and redirect a provider's base_url to an attacker's host, at which point the
+# provider still resolves the real API key from the environment and posts it there.
+
+PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
+    ("home",),
+    ("policy", "allow_command_execution"),
+)
+
+# Per-provider keys an untrusted file may not touch, for the same reason.
+PROTECTED_PROVIDER_KEYS: frozenset[str] = frozenset(
+    {"type", "base_url", "api_key", "api_key_env"}
+)
+
+
+def _strip_untrusted(overlay: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Remove settings a workspace-level file is not allowed to set.
+
+    Returns the sanitised overlay and a list of the rejected setting paths, so
+    the user can be told what was ignored rather than silently losing it.
+    """
+    clean = json.loads(json.dumps(overlay))  # cheap deep copy of plain JSON
+    rejected: list[str] = []
+
+    for path in PROTECTED_SETTINGS:
+        node = clean
+        for key in path[:-1]:
+            node = node.get(key) if isinstance(node, dict) else None
+            if not isinstance(node, dict):
+                break
+        if isinstance(node, dict) and path[-1] in node:
+            node.pop(path[-1])
+            rejected.append(".".join(path))
+
+    providers = clean.get("providers")
+    if isinstance(providers, dict):
+        for name, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            for key in sorted(PROTECTED_PROVIDER_KEYS & set(cfg)):
+                cfg.pop(key)
+                rejected.append(f"providers.{name}.{key}")
+
+    return clean, rejected
+
+
+def candidate_paths(workspace: Path) -> list[tuple[Path, bool]]:
+    """Config files to merge, in order, each flagged as trusted or not."""
     home_env = os.environ.get("SUPERVISOR_HOME")
-    paths = [Path.home() / ".supervisor" / CONFIG_BASENAME]
+    paths: list[tuple[Path, bool]] = [(Path.home() / ".supervisor" / CONFIG_BASENAME, True)]
     if home_env:
-        paths.append(Path(home_env).expanduser() / CONFIG_BASENAME)
-    paths.append(workspace / ".supervisor" / CONFIG_BASENAME)
-    paths.append(workspace / PROJECT_CONFIG)
+        paths.append((Path(home_env).expanduser() / CONFIG_BASENAME, True))
+    paths.append((workspace / ".supervisor" / CONFIG_BASENAME, False))
+    paths.append((workspace / PROJECT_CONFIG, False))
     return paths
 
 
 def load_config(workspace: Path | str | None = None) -> HarnessConfig:
-    """Load and merge configuration for a workspace."""
+    """Load and merge configuration for a workspace.
+
+    Later files win, except for the settings listed in :data:`PROTECTED_SETTINGS`
+    and :data:`PROTECTED_PROVIDER_KEYS`, which a workspace file cannot set at all.
+    """
     ws = Path(workspace) if workspace else Path.cwd()
     merged = to_jsonable(default_config())
     sources: list[str] = []
+    rejected: list[str] = []
 
-    for path in candidate_paths(ws):
+    for path, trusted in candidate_paths(ws):
         if not path.exists():
             continue
         try:
             overlay = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON in {path}: {exc}") from exc
-        if isinstance(overlay, dict):
-            merged = _deep_merge(merged, overlay)
-            sources.append(str(path))
+        if not isinstance(overlay, dict):
+            continue
+        if not trusted:
+            overlay, dropped = _strip_untrusted(overlay)
+            rejected.extend(f"{setting} (from {path})" for setting in dropped)
+        merged = _deep_merge(merged, overlay)
+        sources.append(str(path))
 
     config = from_jsonable(merged, HarnessConfig)
     config.sources = sources
+    config.rejected_settings = rejected
     _apply_env_overrides(config)
     return config
 
@@ -250,33 +322,52 @@ def _apply_env_overrides(config: HarnessConfig) -> None:
         config.providers["ollama"].base_url = os.environ["OLLAMA_HOST"]
 
 
-def write_example(path: Path) -> Path:
+def write_example(path: Path, *, trusted: bool = False) -> Path:
     """Write a starter configuration.
 
-    Deliberately omits the ``api_key`` field. It is supported for awkward
-    environments, but a generated file that invites pasting a key into the
-    repository is a footgun; ``api_key_env`` is the path of least resistance.
+    A workspace file gets only the settings a workspace file may actually set,
+    so the harness does not generate a file that trips its own trust boundary.
+    Provider endpoints and credentials belong in the user-level config, and the
+    generated file says so -- JSON has no comments, and the ``_note`` key is
+    ignored by the loader.
     """
-    example = to_jsonable(default_config())
-    example.pop("home", None)
-    for provider in example.get("providers", {}).values():
-        provider.pop("api_key", None)
-        if not provider.get("base_url"):
-            provider.pop("base_url", None)
-    example["routing"] = {
-        "default": "host",
-        "supervisor": "host",
-        "planning": "host",
-        "analysis": "host",
-        "analysis.security": "host",
-        "analysis.architecture": "host",
-        "synthesis": "host",
-        "execution": "host",
-        "verification": "host",
-        "drift": "ollama:qwen3.8-code:latest|host",
-        "improvement": "ollama:qwen3.8-code:latest|host",
+    example: dict[str, Any] = {
+        "routing": {
+            "default": "host",
+            "supervisor": "host",
+            "planning": "host",
+            "analysis": "host",
+            "analysis.security": "host",
+            "analysis.architecture": "host",
+            "synthesis": "host",
+            "execution": "host",
+            "verification": "host",
+            "drift": "ollama:qwen3.8-code:latest|host",
+            "improvement": "ollama:qwen3.8-code:latest|host",
+        },
+        "policy": to_jsonable(Policy()),
     }
-    example.pop("sources", None)
+
+    if trusted:
+        providers = to_jsonable(default_config())["providers"]
+        for provider in providers.values():
+            # Never generate a field that invites pasting a key into a file.
+            provider.pop("api_key", None)
+            if not provider.get("base_url"):
+                provider.pop("base_url", None)
+        example["providers"] = providers
+        example["backend"] = "host"
+    else:
+        example["_note"] = (
+            "Workspace config. It may tune policy, routing and budgets. Provider "
+            "endpoints and credentials (providers.*.base_url / api_key / api_key_env / "
+            "type), policy.allow_command_execution and home are ignored here on "
+            "purpose -- a checked-out repository must not be able to grant shell "
+            "access or redirect where your API key is sent. Put those in "
+            "~/.supervisor/config.json instead."
+        )
+        example["policy"].pop("allow_command_execution", None)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")
     return path

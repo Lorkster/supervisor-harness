@@ -25,6 +25,7 @@ from typing import Any
 
 from ..config import Policy
 from ..models import AgentSpec, Scope
+from .paths import matches_any
 
 # Directories never worth reading and expensive to walk.
 SKIP_DIRS = {
@@ -37,6 +38,12 @@ BINARY_SUFFIXES = {
     ".tar", ".exe", ".dll", ".so", ".dylib", ".woff", ".woff2", ".ttf", ".mp4",
     ".mp3", ".wav", ".bin", ".sqlite3", ".db", ".pyc",
 }
+
+# Which agent kinds may change the workspace. Analysis and synthesis agents
+# observe; only execution changes things, and only verification needs to run
+# commands alongside it (to prove a criterion by executing the real check).
+WRITE_KINDS = frozenset({"execution"})
+COMMAND_KINDS = frozenset({"execution", "verification"})
 
 MAX_READ_LINES = 400
 MAX_MATCHES = 60
@@ -154,12 +161,9 @@ class Toolbox:
 
         rel = target.relative_to(self.workspace).as_posix()
         if scope is not None:
-            if any(fnmatch.fnmatch(rel, pat) for pat in scope.forbidden_paths):
+            if matches_any(rel, scope.forbidden_paths):
                 return ToolResult("write_file", False, f"{rel} is a forbidden path for this agent")
-            if scope.paths and not any(
-                fnmatch.fnmatch(rel, pat) or rel.startswith(pat.rstrip("*/"))
-                for pat in scope.paths
-            ):
+            if scope.paths and not matches_any(rel, scope.paths):
                 return ToolResult(
                     "write_file", False,
                     f"{rel} is outside this agent's scope ({', '.join(scope.paths)})",
@@ -201,7 +205,8 @@ class Toolbox:
     def call(self, name: str, args: dict[str, Any], agent: AgentSpec) -> ToolResult:
         """Run one requested tool, enforcing what this agent is allowed to do."""
         name = (name or "").strip()
-        writable = agent.kind.value in ("execution",)
+        writable = agent.kind.value in WRITE_KINDS
+        may_run = agent.kind.value in COMMAND_KINDS
 
         if name == "list_files":
             return self.list_files(str(args.get("pattern", "**/*")))
@@ -224,6 +229,14 @@ class Toolbox:
                 str(args.get("path", "")), str(args.get("content", "")), agent.scope
             )
         if name == "run_command":
+            if not may_run:
+                # Without this an analysis agent, forbidden from write_file,
+                # could simply write files through the shell instead.
+                return ToolResult(
+                    "run_command", False,
+                    f"a {agent.kind.value} agent may not run commands; report what "
+                    "should be run instead",
+                )
             return self.run_command(str(args.get("command", "")))
         return ToolResult(name or "unknown", False, f"no such tool: {name!r}")
 
@@ -238,10 +251,10 @@ def available_tools(agent: AgentSpec, policy: Policy) -> list[dict[str, str]]:
         {"name": "search", "args": "pattern (regex), glob (optional)",
          "does": "search file contents, returning path:line matches"},
     ]
-    if agent.kind.value == "execution":
+    if agent.kind.value in WRITE_KINDS:
         tools.append({"name": "write_file", "args": "path, content",
                       "does": "write a file, within your scope only"})
-    if policy.allow_command_execution:
+    if policy.allow_command_execution and agent.kind.value in COMMAND_KINDS:
         tools.append({"name": "run_command", "args": "command",
                       "does": "run a shell command in the workspace"})
     return tools

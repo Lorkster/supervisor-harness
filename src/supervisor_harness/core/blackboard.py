@@ -41,6 +41,17 @@ class Routing:
     note: str = ""
 
 
+def render_context(shared_context: str, facts: dict[str, str]) -> str:
+    """Format the run's shared context for inclusion in a brief."""
+    parts = [shared_context] if shared_context else []
+    if facts:
+        parts.append(
+            "Established facts:\n"
+            + "\n".join(f"- {k}: {v}" for k, v in sorted(facts.items()))
+        )
+    return "\n\n".join(parts)
+
+
 class Blackboard:
     """Shared facts plus the message bus for one run."""
 
@@ -60,13 +71,7 @@ class Blackboard:
 
     def context_for(self, agent: AgentSpec) -> str:
         """The shared context as one agent should see it."""
-        parts = [self.shared_context] if self.shared_context else []
-        if self.facts:
-            parts.append(
-                "Established facts:\n"
-                + "\n".join(f"- {k}: {v}" for k, v in sorted(self.facts.items()))
-            )
-        return "\n\n".join(parts)
+        return render_context(self.shared_context, self.facts)
 
     # -- routing -----------------------------------------------------------
 
@@ -106,20 +111,14 @@ class Blackboard:
 
     @staticmethod
     def inbox_for(agent_id: str, state: RunState, limit: int = 12) -> list[Message]:
-        """Undelivered messages addressed to this agent, oldest first."""
-        pending = [
-            m for m in state.messages
-            if not m.delivered
-            and m.sender != agent_id
-            and m.recipient in (agent_id, BROADCAST)
-        ]
-        return pending[-limit:]
+        """Messages addressed to this agent that it has not yet received."""
+        return state.pending_messages(agent_id)[-limit:]
 
     @staticmethod
     def supervisor_inbox(state: RunState) -> list[Message]:
         return [
             m for m in state.messages
-            if not m.delivered
+            if not m.delivered_for(SUPERVISOR)
             and (m.recipient == SUPERVISOR or m.kind in _ESCALATING_KINDS)
         ]
 

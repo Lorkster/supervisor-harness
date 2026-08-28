@@ -276,15 +276,26 @@ def verify_command(
     evidence = f"$ {command}\nexit={completed.returncode}\n{tail}"
 
     expect = criterion.expect.strip()
-    if expect:
-        # An expectation is either an exit code or a substring that must appear.
+    if not expect:
+        ok = completed.returncode == 0
+    else:
+        # An expectation is either an exit code, or a substring that must appear
+        # in the output *of a command that also succeeded*. Treating a substring
+        # as sufficient on its own was a bug with real consequences: a test
+        # command that printed "3 tests failed" and exited 1 satisfied an
+        # expectation of "tests", so the check whose whole purpose is refusing
+        # unproven work certified a failing suite.
         exit_match = re.fullmatch(r"(?:exit\s*(?:code)?\s*[= ]\s*)?(\d+)", expect, re.IGNORECASE)
         if exit_match:
             ok = completed.returncode == int(exit_match.group(1))
         else:
-            ok = expect.lower() in output.lower()
-    else:
-        ok = completed.returncode == 0
+            ok = completed.returncode == 0 and expect.lower() in output.lower()
+            if completed.returncode != 0 and expect.lower() in output.lower():
+                evidence += (
+                    f"\n\n[supervisor] the expected text {expect!r} appeared, but the "
+                    f"command exited {completed.returncode}; a criterion is not met by "
+                    "a command that failed. Express an expected failure as an exit code."
+                )
 
     return VerificationOutcome(
         CriterionStatus.PASS if ok else CriterionStatus.FAIL, evidence

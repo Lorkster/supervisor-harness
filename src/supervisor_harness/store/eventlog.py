@@ -127,26 +127,37 @@ class EventLog:
         return self._last_seq_unlocked() + 1
 
     def _last_seq_unlocked(self) -> int:
+        """Highest sequence in the log, found by reading backwards from the end.
+
+        The window starts at the smaller of 4 KiB and the file size, then grows
+        until the whole file has been covered. Seeding it at a fixed 4 KiB was a
+        bug: the loop guard never held for a file under 2 KiB, so young logs
+        reported 0 and every event written before the log grew past that size was
+        assigned sequence 1.
+        """
         try:
             size = self.path.stat().st_size
         except FileNotFoundError:
             return 0
         if size == 0:
             return 0
-        window = 4096
+
+        window = min(size, 4096)
         with self.path.open("rb") as handle:
-            while window <= max(size, 1) * 2:
-                handle.seek(max(0, size - window))
-                lines = [ln for ln in handle.read().split(b"\n") if ln.strip()]
-                for line in reversed(lines):
+            while True:
+                handle.seek(size - window)
+                lines = [ln for ln in handle.read(window).split(b"\n") if ln.strip()]
+                # Skip the first line unless the window covers the whole file:
+                # it is probably truncated by the seek.
+                candidates = lines if window >= size else lines[1:]
+                for line in reversed(candidates):
                     try:
                         return int(json.loads(line)["seq"])
                     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                         continue
                 if window >= size:
-                    break
-                window *= 4
-        return 0
+                    return 0
+                window = min(size, window * 4)
 
     # -- reading -----------------------------------------------------------
 

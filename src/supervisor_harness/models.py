@@ -299,8 +299,13 @@ class Message:
     content: str = ""
     refs: list[str] = field(default_factory=list)
     ts: str = field(default_factory=now_iso)
-    delivered: bool = False
+    # Delivery is per recipient: a broadcast is not consumed by whoever happens
+    # to be supervised first.
+    delivered_to: list[str] = field(default_factory=list)
     supervisor_note: str = ""
+
+    def delivered_for(self, agent_id: str) -> bool:
+        return agent_id in self.delivered_to
 
 
 @dataclass
@@ -517,6 +522,11 @@ class RunState:
     host_agents: list[dict[str, Any]] = field(default_factory=list)
 
     agents: dict[str, AgentSpec] = field(default_factory=dict)
+    # The brief each agent was actually given. Persisted because drift is
+    # measured against it, and a generic charter scores quite differently.
+    briefs: dict[str, str] = field(default_factory=dict)
+    shared_context: str = ""
+    facts: dict[str, str] = field(default_factory=dict)
     turn_counts: dict[str, int] = field(default_factory=dict)
     usage: dict[str, Usage] = field(default_factory=dict)
     findings: list[Finding] = field(default_factory=list)
@@ -547,7 +557,9 @@ class RunState:
     def pending_messages(self, agent_id: str) -> list[Message]:
         return [
             m for m in self.messages
-            if not m.delivered and m.recipient in (agent_id, BROADCAST) and m.sender != agent_id
+            if not m.delivered_for(agent_id)
+            and m.recipient in (agent_id, BROADCAST)
+            and m.sender != agent_id
         ]
 
     def total_usage(self) -> Usage:

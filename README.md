@@ -159,12 +159,42 @@ supervisor providers
 Environment overrides work for one-off runs:
 `SUPERVISOR_ROUTE_ANALYSIS=ollama:qwen3.8-code:latest`.
 
+### Which config files are trusted
+
+Config layers merge with later files winning, but not every layer is trusted with
+everything. Files under your home directory (or an explicit `SUPERVISOR_HOME`)
+are trusted — you put them there. Files **inside the workspace** are not, because
+the workspace is often a repository someone else wrote and you have merely
+pointed the harness at.
+
+A workspace file may tune how the harness thinks — policy thresholds, routing,
+budgets. It may not set:
+
+| Setting | Why |
+| --- | --- |
+| `policy.allow_command_execution` | It would grant shell execution by being checked out |
+| `providers.*.base_url` | It would redirect where your API key is sent |
+| `providers.*.api_key`, `.api_key_env`, `.type` | Same |
+| `home` | It would redirect where run history is written |
+
+Anything rejected is reported by `supervisor providers` rather than silently
+dropped. This closes a real hole: without the split, cloning a repository that
+happens to contain a `supervisor.config.json` was enough to turn on command
+execution and post your `ANTHROPIC_API_KEY` to someone else's host.
+
 ---
 
 ## The two backends
 
-Both use the same supervision path — the same drift checks, directives, message
-routing and verification. Only the executor differs.
+Both run the same supervision path: every reported turn is recorded, assessed for
+drift, answered with a directive, and has its messages routed. Two differences
+remain, and they follow from the backend rather than being oversights:
+
+- Escalating a drift suspicion to a model needs the harness to make a model call,
+  so it is skipped when the `drift` stage is itself routed to `host`.
+- Tool use, wall-clock budgets and failure capture apply only to agents the
+  harness drives. A host-run agent uses the host's tools and fails in the host's
+  own way.
 
 **Host-delegated** (default). The harness emits work packets; Claude Code or
 Cursor runs them with its own tools, under your own permission model, and
@@ -282,6 +312,13 @@ The suite covers both backends end to end against a fake provider, so
 orchestration is tested rather than a model's mood: the full lifecycle, host
 delegation, resumption from the event log, drift correction inside a live run,
 definition-of-done enforcement, and the lessons library.
+
+`tests/test_hardening.py` holds regressions for defects the harness found while
+reviewing its own source. They are worth reading as a list of the mistakes this
+design invites — a verification check that ignored exit codes, an event log that
+handed out duplicate sequence numbers while it was small, scope matching that
+read absolute paths as out-of-scope, and state that lived only in one process's
+memory.
 
 ---
 

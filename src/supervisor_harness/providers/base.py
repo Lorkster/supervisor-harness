@@ -123,14 +123,18 @@ def extract_json(text: str) -> dict[str, Any] | None:
     for candidate in candidates:
         if not candidate:
             continue
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-        if isinstance(parsed, list):
-            return {"items": parsed}
+        # strict=False permits the literal newlines and tabs models routinely
+        # leave inside string values. Rejecting those lost otherwise complete
+        # answers over a transport detail.
+        for strict in (True, False):
+            try:
+                parsed = json.loads(candidate, strict=strict)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list):
+                return {"items": parsed}
     return None
 
 

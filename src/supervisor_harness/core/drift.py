@@ -15,7 +15,6 @@ Escalating only on suspicion is what makes continuous supervision affordable.
 
 from __future__ import annotations
 
-import fnmatch
 import re
 from dataclasses import dataclass
 
@@ -31,6 +30,7 @@ from ..models import (
     DriftSignal,
     Severity,
 )
+from .paths import matches_any, normalise_path
 
 _TOKEN = re.compile(r"[a-z0-9_]{3,}")
 
@@ -71,6 +71,7 @@ class TurnContext:
     brief: str
     task_prompt: str
     turn_index: int
+    workspace: str = ""
 
 
 # --------------------------------------------------------------------------
@@ -80,14 +81,16 @@ class TurnContext:
 
 def _check_scope_paths(ctx: TurnContext) -> DriftSignal | None:
     """Files touched outside the declared scope, or inside a forbidden path."""
-    touched = [f for f in (ctx.turn.files_touched or []) if f.strip()]
+    touched = [
+        p for p in (normalise_path(f, ctx.workspace) for f in (ctx.turn.files_touched or [])) if p
+    ]
     if not touched:
         return None
 
     scope = ctx.agent.scope
     forbidden = [
         f for f in touched
-        if any(fnmatch.fnmatch(f, pat) for pat in scope.forbidden_paths)
+        if matches_any(f, scope.forbidden_paths)
     ]
     if forbidden:
         return DriftSignal(
@@ -99,10 +102,7 @@ def _check_scope_paths(ctx: TurnContext) -> DriftSignal | None:
 
     if not scope.paths:
         return None
-    outside = [
-        f for f in touched
-        if not any(fnmatch.fnmatch(f, pat) or f.startswith(pat.rstrip("*/")) for pat in scope.paths)
-    ]
+    outside = [f for f in touched if not matches_any(f, scope.paths)]
     if not outside:
         return None
     ratio = len(outside) / len(touched)
