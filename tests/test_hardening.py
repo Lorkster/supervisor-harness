@@ -24,6 +24,7 @@ from supervisor_harness.models import (
     AgentSpec,
     AgentTurn,
     Budget,
+    DirectiveKind,
     DoDCriterion,
     Finding,
     RunMode,
@@ -302,3 +303,94 @@ def test_generated_workspace_config_does_not_trip_the_trust_boundary(
     assert cfg.rejected_settings == []
     assert cfg.binding_for("drift").provider == "ollama"
     assert cfg.policy.require_tests is True
+
+
+# --------------------------------------------------------------------------
+# Directives survive a resume
+# --------------------------------------------------------------------------
+
+
+async def test_an_outstanding_directive_is_reissued_on_resume(
+    supervisor: Supervisor, workspace: Path, config, fake
+) -> None:
+    """A corrected agent must not be re-briefed as though nothing had happened."""
+    from supervisor_harness.host.detect import HostInfo
+    from supervisor_harness.models import Backend
+    from supervisor_harness.providers.router import ModelRouter
+    from supervisor_harness.store.runstore import RunStore
+
+    config.backend = Backend.HOST
+    response = await supervisor.start(PROMPT, mode=RunMode.EXECUTE, backend=Backend.HOST)
+
+    # Run the planning packet so the analysis fleet is dispatched.
+    packet = response.packets[0]
+    await supervisor.report(packet.run_id, packet.agent_id, {
+        "restated_goal": "rate limit login", "mode": "execute",
+        "lenses": [{"role": "security", "why": "exposure",
+                    "objectives": ["Find the reachable attack path"],
+                    "scope_paths": ["src/auth/**"]}],
+    })
+    response = await supervisor.advance(response.run_id)
+    agent_id = response.packets[0].agent_id
+    original_brief = response.packets[0].brief
+
+    # A turn that drifts: work on something the brief excluded, outside scope.
+    await supervisor.report(response.run_id, agent_id, {
+        "output": "I rewrote the marketing homepage hero image and the newsletter modal "
+                  "because conversion on the blog archive matters more this quarter than "
+                  "anything else we could be doing here right now, honestly.",
+        "findings": [],
+        "files_touched": ["marketing/home.tsx"],
+        "status": "running",
+    })
+    state = supervisor.store.load_state(response.run_id)
+    issued = [d for d in state.directives if d.agent_id == agent_id][-1]
+    assert issued.kind in (DirectiveKind.REFOCUS, DirectiveKind.NARROW)
+    assert issued.corrections
+
+    # Now resume in a completely fresh Supervisor, as a new session would.
+    cold_router = ModelRouter(config, host_name="test-host")
+    cold_router.register("fake", fake)
+    cold = Supervisor(
+        workspace=workspace, config=config, store=RunStore(workspace / ".supervisor"),
+        host=HostInfo(name="test-host", workspace=str(workspace)), router=cold_router,
+    )
+    resumed = await cold.resume(response.run_id)
+
+    assert resumed.action == "dispatch"
+    packet = next(p for p in resumed.packets if p.agent_id == agent_id)
+
+    # The correction is carried, rather than silently dropped...
+    assert "Supervisor directive" in packet.brief
+    assert issued.kind.value in packet.brief
+    for correction in issued.corrections:
+        assert correction in packet.brief
+
+    # ...and the packet still stands on its own, as the protocol promises.
+    assert "Output contract" in packet.brief
+    assert "Objectives" in packet.brief
+    assert original_brief.split("\n\n---\n\n")[0][:400] in packet.brief
+
+
+async def test_a_settled_agent_is_not_handed_a_stale_directive(
+    supervisor: Supervisor,
+) -> None:
+    """Accept/stop close an agent out; only open corrections are re-issued."""
+    from supervisor_harness.models import AgentSpec, Directive
+
+    state = supervisor.store.load_state(
+        (await supervisor.start(PROMPT, mode=RunMode.EXECUTE)).run_id
+    )
+    agent = AgentSpec(id="agt_x", role="security")
+    state.agents[agent.id] = agent
+
+    # Never taken a turn -> nothing outstanding, so a fresh brief is correct.
+    assert Supervisor._outstanding_directive(state, agent) is None
+
+    state.turn_counts[agent.id] = 1
+    state.directives.append(Directive(agent_id=agent.id, kind=DirectiveKind.NARROW))
+    assert Supervisor._outstanding_directive(state, agent).kind is DirectiveKind.NARROW
+
+    # A later accept settles it.
+    state.directives.append(Directive(agent_id=agent.id, kind=DirectiveKind.ACCEPT))
+    assert Supervisor._outstanding_directive(state, agent) is None

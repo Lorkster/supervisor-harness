@@ -105,6 +105,17 @@ from .tools import Toolbox, render_results, render_tools_section
 # reading without answering is its own kind of drift, so rounds are capped.
 MAX_TOOL_ROUNDS = 6
 
+# Directives that leave the agent owing another turn. The rest (accept, stop,
+# escalate) settle it, so there is nothing outstanding to re-issue.
+CONTINUATION_DIRECTIVES = frozenset({
+    DirectiveKind.CONTINUE,
+    DirectiveKind.REFOCUS,
+    DirectiveKind.NARROW,
+    DirectiveKind.DEEPEN,
+    DirectiveKind.ANSWER,
+    DirectiveKind.REJECT,
+})
+
 STAGE_ROLES = {
     "planner": ("planning", PLANNING_SCHEMA),
     "synthesizer": ("synthesis", SYNTHESIS_SCHEMA),
@@ -384,7 +395,7 @@ class Supervisor:
             await self._run_agents_autonomously(session, pending)
             return None
 
-        packets = [self._agent_packet(session, agent) for agent in pending]
+        packets = [self._dispatch_packet(session, agent) for agent in pending]
         return SupervisorResponse(
             run_id=state.id, phase=str(state.phase), action="dispatch",
             message=(
@@ -499,7 +510,7 @@ class Supervisor:
             await self._run_agents_autonomously(session, active)
             return None
 
-        packets = [self._agent_packet(session, agent) for agent in active]
+        packets = [self._dispatch_packet(session, agent) for agent in active]
         return SupervisorResponse(
             run_id=state.id, phase=str(state.phase), action="dispatch",
             message=(
@@ -543,7 +554,7 @@ class Supervisor:
             await self._run_agents_autonomously(session, active)
             return None
 
-        packets = [self._agent_packet(session, agent) for agent in active]
+        packets = [self._dispatch_packet(session, agent) for agent in active]
         return SupervisorResponse(
             run_id=state.id, phase=str(state.phase), action="dispatch",
             message=(
@@ -1372,10 +1383,7 @@ class Supervisor:
             else ""
         )
 
-        if directive is not None:
-            brief = render_directive(directive, agent)
-            schema = self._schema_for(agent)
-        elif agent.kind is AgentKind.ANALYSIS:
+        if agent.kind is AgentKind.ANALYSIS:
             schema = ANALYSIS_TURN_SCHEMA
             brief = build_analysis_brief(
                 state, agent, ROLES_BY_ID.get(agent.role), peers, schema,
@@ -1410,11 +1418,22 @@ class Supervisor:
                 schema, change_summary=summary, tools=tools,
             )
 
-        # Persist the brief the agent is actually given. Drift is measured
-        # against this text, so a fresh process that could not see it scored the
-        # same turn quite differently.
-        if directive is None:
+        # The brief is rendered once and reused, so it stays a stable anchor for
+        # drift scoring. Persisted for the same reason: a process that could not
+        # see it scored the same turn quite differently.
+        stored = state.briefs.get(agent.id)
+        if stored:
+            brief = stored
+        else:
             session.emit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
+
+        # A continuation carries the brief *and* the directive. The directive
+        # alone ends with "reply with the same contract as before", which assumes
+        # the agent still remembers its brief -- true while the host keeps it
+        # alive, false after a resume, when the host spawns a fresh agent. A
+        # packet has to stand on its own, as the protocol says it does.
+        if directive is not None:
+            brief = f"{brief}\n\n---\n\n{render_directive(directive, agent)}"
 
         return WorkPacket(
             run_id=state.id,
@@ -1428,6 +1447,29 @@ class Supervisor:
             host_agent_type=agent.host_agent_type,
             model=agent.binding.ref(),
             task_id=agent.task_id,
+        )
+
+    @staticmethod
+    def _outstanding_directive(state: RunState, agent: AgentSpec) -> Directive | None:
+        """The directive this agent was issued and has not yet answered.
+
+        Without this, resuming a run re-briefed every agent from scratch and
+        dropped the correction it was mid-way through applying -- the agent had
+        no idea it had been told to narrow its scope, and the supervisor had no
+        idea it had said so.
+        """
+        if state.turn_counts.get(agent.id, 0) == 0:
+            return None
+        for directive in reversed(state.directives):
+            if directive.agent_id == agent.id:
+                return directive if directive.kind in CONTINUATION_DIRECTIVES else None
+        return None
+
+    def _dispatch_packet(self, session: RunSession, agent: AgentSpec) -> WorkPacket:
+        """Packet for an agent being (re-)dispatched, carrying any open directive."""
+        return self._agent_packet(
+            session, agent,
+            directive=self._outstanding_directive(session.state, agent),
         )
 
     def _schema_for(self, agent: AgentSpec) -> dict[str, Any]:

@@ -115,8 +115,18 @@ The response contains a directive:
 | `accept` | Objectives met | Agent is finished |
 | `stop` | Budget spent, or repeat drift | Agent is finished |
 
-`continue`, `refocus`, `narrow` and `deepen` all return a packet whose brief is
-the directive text, including any messages other agents sent to this one.
+`continue`, `refocus`, `narrow` and `deepen` all return a continuation packet.
+Its brief is the agent's **original brief followed by the directive**, including
+any messages other agents sent to it. The brief is repeated deliberately: you may
+have kept the agent alive and be feeding it a follow-up turn, or you may be
+resuming days later in a new process with the original agent long gone. A packet
+cannot know which, so it always stands on its own.
+
+An outstanding directive survives a resume. If a run is interrupted after an
+agent was corrected but before it answered, `supervisor_advance` re-issues that
+correction rather than briefing the agent again from scratch — otherwise the
+agent would have no idea it had been told to change course, and the supervisor
+no idea it had said so.
 
 ### 4. Advance
 
