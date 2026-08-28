@@ -44,11 +44,45 @@ class FakeProvider(Provider):
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.overrides: dict[str, dict[str, Any]] = {}
+        # Answers consumed one per call, before `overrides` and the defaults.
+        # A stage that must answer differently on successive visits -- a
+        # checkpoint that fails and then passes, so remediation runs and the
+        # run still terminates -- cannot be expressed by a fixed override.
+        self.scripted: dict[str, list[Any]] = {}
+
+    def script(self, stage: str, *payloads: Any) -> None:
+        """Queue answers for `stage`, consumed in order, then fall through.
+
+        An entry may be a payload dict, or a callable taking the request and
+        returning one -- which is what a stage whose answer depends on the
+        brief needs, since criterion ids are only knowable from the brief.
+        """
+        self.scripted.setdefault(stage, []).extend(payloads)
+
+    def answer_for(self, stage: str, request: CompletionRequest) -> dict[str, Any]:
+        """The payload this stage would return now, consuming any script."""
+        queued = self.scripted.get(stage)
+        if queued:
+            entry = queued.pop(0)
+            return dict(entry(request) if callable(entry) else entry)
+        return self.overrides.get(stage) or getattr(self, f"_{stage}")(request)
+
+    def failing_verification(self, request: CompletionRequest) -> dict[str, Any]:
+        """Every mandatory criterion refused, with the ids the brief carries."""
+        return {
+            "results": [
+                {"criterion_id": cid, "status": "fail",
+                 "evidence": f"$ pytest -q\nexit=1\n1 failed (criterion {cid})"}
+                for cid in _criterion_ids(request.messages[0].content)
+            ],
+            "summary": "The change does not do what the criteria require.",
+            "regressions": ["the fence still lets an out-of-scope path through"],
+        }
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         stage = self._classify(request)
         self.calls.append({"stage": stage, "system": request.system[:80]})
-        payload = self.overrides.get(stage) or getattr(self, f"_{stage}")(request)
+        payload = self.answer_for(stage, request)
         return CompletionResponse(
             text=json.dumps(payload),
             model="fake-1",
@@ -229,6 +263,14 @@ class FakeProvider(Provider):
         }
 
     def _checkpoint(self, request: CompletionRequest) -> dict[str, Any]:
+        """The passing checkpoint, so end-to-end tests reach completion.
+
+        This default is the happy path on purpose, but it must not be the only
+        reachable one: while it was, `_remediate`, the second-attempt verifier
+        and the iteration bound had no coverage at all, and the guard that
+        suppressed re-verification shipped broken. Use `script("checkpoint",
+        FAILING_CHECKPOINT, ...)` to drive the failing branch.
+        """
         return {
             "quality": 0.85,
             "scope_fidelity": 0.95,

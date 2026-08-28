@@ -59,10 +59,9 @@ class HostSimulator:
             "verification": "verification",
         }[packet.kind]
 
-        if stage in self.answers.overrides:
-            return dict(self.answers.overrides[stage])
-
-        # Reuse the fake provider's canned answers, which key off the brief text.
+        # Reuse the fake provider's canned answers, which key off the brief
+        # text, and its script/override precedence, so a scripted stage behaves
+        # the same on this path as it does under the autonomous backend.
         from supervisor_harness.providers.base import ChatMessage, CompletionRequest
 
         request = CompletionRequest(
@@ -70,7 +69,7 @@ class HostSimulator:
             system=packet.brief[:200],
             json_schema=packet.schema,
         )
-        return getattr(self.answers, f"_{stage}")(request)
+        return self.answers.answer_for(stage, request)
 
     async def drive(self, response: SupervisorResponse, *, approve: bool = True) -> SupervisorResponse:
         """Run the loop the host-side skill is documented to run."""
