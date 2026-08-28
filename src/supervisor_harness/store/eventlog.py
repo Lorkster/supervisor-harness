@@ -9,12 +9,35 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
 
 from .events import Event, event_from_dict, event_to_dict
+
+#: How many extra attempts an append makes after a contended lock times out,
+#: and the pause before the first of them; the pause doubles each time.
+APPEND_RETRIES = 3
+APPEND_RETRY_BACKOFF = 0.25
+
+#: How long a contended acquire pauses between attempts. Every retry path
+#: sleeps for this long, so a lock that cannot be created for any reason costs
+#: a bounded number of attempts rather than spinning on the file system.
+LOCK_POLL_INTERVAL = 0.02
+
+#: How many stale locks one acquire will break before giving up. A lock file
+#: that keeps being found stale is contention or a broken directory, not a
+#: single crashed holder, and breaking it again will not help.
+MAX_STALE_BREAKS = 8
+
+#: How long past staleness a lock file carrying no ownership token is left
+#: alone. A holder writes its token immediately after creating the file, so
+#: only one that died in between is still blank once this has elapsed.
+BLANK_TOKEN_GRACE = 1.0
 
 
 class LockTimeout(RuntimeError):
@@ -24,8 +47,13 @@ class LockTimeout(RuntimeError):
 class FileLock:
     """Advisory lock built on exclusive file creation.
 
-    Portable across Windows and POSIX without native extensions. Stale locks
-    (from a crashed process) are broken after ``stale_after`` seconds.
+    Portable across Windows and POSIX without native extensions. The holder
+    writes an ownership token into the file and only ever unlinks a file still
+    carrying that token, so breaking a stale lock can never leave one writer
+    deleting another's lock. While the lock is held its mtime is refreshed in
+    the background, so a slow but living holder is not mistaken for a crashed
+    one; only a holder that has genuinely stopped refreshing is broken after
+    ``stale_after`` seconds.
     """
 
     def __init__(self, path: Path, timeout: float = 10.0, stale_after: float = 60.0) -> None:
@@ -33,42 +61,129 @@ class FileLock:
         self.timeout = timeout
         self.stale_after = stale_after
         self._fd: int | None = None
+        self._token: str | None = None
+        self._stop_refresh = threading.Event()
+        self._refresher: threading.Thread | None = None
 
     def acquire(self) -> None:
         deadline = time.monotonic() + self.timeout
+        breaks = 0
         while True:
+            token = f"{os.getpid()}:{secrets.token_hex(8)}"
             try:
-                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(self._fd, str(os.getpid()).encode())
-                return
-            except FileExistsError:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except (FileExistsError, PermissionError) as exc:
+                # Windows reports a lock file that another writer still has
+                # open, or one whose deletion is pending, as a permission
+                # error rather than as an existing file; both mean contended.
+                if isinstance(exc, PermissionError) and os.name != "nt":
+                    raise
                 if self._break_if_stale():
-                    continue
+                    breaks += 1
+                    if breaks > MAX_STALE_BREAKS:
+                        raise LockTimeout(
+                            f"could not acquire {self.path}: broke {breaks - 1} stale locks "
+                            "and it was taken again every time"
+                        ) from None
+                # Every retry path checks the deadline and then sleeps, so a
+                # create that keeps failing -- a read-only directory, an ACL
+                # denying the file, a lock file that keeps vanishing -- times
+                # out rather than spinning on os.open without pause.
                 if time.monotonic() >= deadline:
                     raise LockTimeout(f"could not acquire {self.path} within {self.timeout}s") from None
-                time.sleep(0.02)
+                time.sleep(LOCK_POLL_INTERVAL)
+                continue
+            self._fd = fd
+            self._token = token
+            os.write(fd, token.encode())
+            self._start_refreshing()
+            return
+
+    def _owner_token(self) -> str | None:
+        """The token written by whoever currently holds the file, if readable."""
+        try:
+            return self.path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
 
     def _break_if_stale(self) -> bool:
+        # Stat before reading: ``stat`` does not block the holder's own unlink,
+        # while an open read handle does on Windows, and this runs on every
+        # poll of a contended lock.
         try:
             age = time.time() - self.path.stat().st_mtime
         except FileNotFoundError:
+            # No lock file at all. Nothing was broken, so this is an ordinary
+            # retry: reporting it as a break would skip the caller's deadline
+            # check and let a create that fails for some other reason spin.
+            return False
+        except OSError:
+            return False
+        if age <= self.stale_after:
+            return False
+        # Only remove the very file that was found stale: a holder that
+        # released and re-acquired in the meantime carries a different token.
+        holder = self._owner_token()
+        if holder is None:
+            return False
+        if not holder:
+            # Created but not yet stamped -- the microseconds between os.open
+            # and os.write. Two reads of an empty file agree, so the token
+            # comparison cannot see it; wait the file out instead, which only
+            # a holder that died in that window ever reaches.
+            return age > self.stale_after + BLANK_TOKEN_GRACE and self._unlink_stale()
+        if self._owner_token() != holder:
+            return False
+        return self._unlink_stale()
+
+    def _unlink_stale(self) -> bool:
+        try:
+            self.path.unlink()
             return True
-        if age > self.stale_after:
+        except OSError:
+            return False
+
+    def _start_refreshing(self) -> None:
+        self._stop_refresh = threading.Event()
+        self._refresher = threading.Thread(
+            target=self._refresh_mtime, name=f"lock-refresh-{self.path.name}", daemon=True
+        )
+        self._refresher.start()
+
+    def _refresh_mtime(self) -> None:
+        """Restamp the lock while it is held so it never ages into staleness."""
+        interval = max(self.stale_after / 3.0, 0.005)
+        while not self._stop_refresh.wait(interval):
             try:
-                self.path.unlink()
-                return True
+                os.utime(self.path, None)
             except OSError:
-                return False
-        return False
+                return
 
     def release(self) -> None:
+        self._stop_refresh.set()
+        refresher, self._refresher = self._refresher, None
+        if refresher is not None:
+            refresher.join(timeout=1.0)
         if self._fd is not None:
             os.close(self._fd)
             self._fd = None
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+        token, self._token = self._token, None
+        # Never unlink a lock this object no longer owns: a stale-break may
+        # already have handed it to another writer that is mid-append.
+        if token is None or self._owner_token() != token:
+            return
+        for _ in range(3):
+            try:
+                self.path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                # Windows refuses the unlink while another writer is reading
+                # the lock; that read is momentary, so give it a moment.
+                time.sleep(LOCK_POLL_INTERVAL)
+        # Still there: the file is orphaned but no longer being refreshed, so
+        # the next contender breaks it as stale rather than waiting forever.
 
     def __enter__(self) -> "FileLock":
         self.acquire()
@@ -93,9 +208,34 @@ class EventLog:
 
     # -- writing -----------------------------------------------------------
 
+    @contextmanager
+    def _write_lock(self) -> Iterator[None]:
+        """Hold the append lock, retrying with backoff when it is contended.
+
+        A contended acquire used to raise ``LockTimeout`` straight out of
+        ``append`` and out of every caller above it, losing the event entirely.
+        The event is worth more than the wait, so a timeout is retried with a
+        widening pause and only propagates once the retries are spent.
+        """
+        delay = APPEND_RETRY_BACKOFF
+        for attempt in range(APPEND_RETRIES + 1):
+            try:
+                self._lock.acquire()
+            except LockTimeout:
+                if attempt == APPEND_RETRIES:
+                    raise
+                time.sleep(delay)
+                delay *= 2
+                continue
+            try:
+                yield
+            finally:
+                self._lock.release()
+            return
+
     def append(self, event: Event) -> Event:
         """Assign the next sequence number and durably append one event."""
-        with self._lock:
+        with self._write_lock():
             event.seq = self._next_seq_unlocked()
             with self.path.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(json.dumps(event_to_dict(event), ensure_ascii=False) + "\n")
@@ -107,7 +247,7 @@ class EventLog:
         """Append a batch atomically with respect to other writers."""
         if not events:
             return []
-        with self._lock:
+        with self._write_lock():
             seq = self._next_seq_unlocked()
             with self.path.open("a", encoding="utf-8", newline="\n") as handle:
                 for event in events:

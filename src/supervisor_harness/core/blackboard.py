@@ -81,9 +81,15 @@ class Blackboard:
         Unknown recipients are broadened to a broadcast rather than dropped: a
         model that invents an agent id has still noticed something real, and
         silently discarding it is the worse failure.
+
+        The decision is written onto the message, not just returned: only the
+        message survives the fold, and :meth:`RunState.pending_messages` reads
+        delivery back off ``recipient``. A broadening left in ``deliver_to``
+        alone would be discarded the moment the event is appended.
         """
         known = set(state.agents)
         recipient = message.recipient.strip() or BROADCAST
+        message.recipient = recipient
 
         if recipient == SUPERVISOR:
             return Routing(message=message, deliver_to=[], escalate=True,
@@ -98,6 +104,7 @@ class Blackboard:
             message.supervisor_note = (
                 f"originally addressed to unknown agent {recipient!r}; broadcast instead"
             )
+            message.recipient = BROADCAST
 
         escalate = message.kind in _ESCALATING_KINDS
         return Routing(

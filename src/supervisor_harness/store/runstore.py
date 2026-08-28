@@ -86,14 +86,26 @@ class RunStore:
         return ids[0] if ids else None
 
     def load_state(self, run_id: str) -> RunState:
-        """Read the snapshot if present, else rebuild from the log."""
+        """Read the snapshot if present, else rebuild from the log.
+
+        The id is stamped from ``run_id`` the way :meth:`open` does, so a log
+        whose genesis record is missing or unreadable still reports the run that
+        was asked for rather than the random id the fold started from. Reads of
+        a run that does not exist fail closed instead of inventing one.
+        """
+        if not self.exists(run_id):
+            raise FileNotFoundError(f"no such run: {run_id}")
         snapshot = self.runs_dir / run_id / "state.json"
         if snapshot.exists():
             try:
-                return from_jsonable(json.loads(snapshot.read_text(encoding="utf-8")), RunState)
+                state = from_jsonable(json.loads(snapshot.read_text(encoding="utf-8")), RunState)
+                state.id = run_id
+                return state
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
-        return fold(self.log(run_id).read_all())
+        state = fold(self.log(run_id).read_all())
+        state.id = run_id
+        return state
 
     def save_snapshot(self, state: RunState) -> None:
         """Write the derived snapshot atomically so a crash cannot half-write it."""
@@ -184,6 +196,7 @@ class RunSession:
         self.state = state
         self._log = store.log(state.id)
         self._pending_index = False
+        self._index_error: str | None = None
 
     # -- emission ----------------------------------------------------------
 
@@ -223,8 +236,22 @@ class RunSession:
         return self._log.read_all()
 
     def sync_index(self) -> None:
-        """Project this run into SQLite. Cheap enough to call at phase edges."""
-        self.store.index().sync_run(self.state, self.events())
+        """Project this run into SQLite. Cheap enough to call at phase edges.
+
+        The index is derived, so losing it must never take the run down: a
+        failure is noted, the projection stays pending, and ``supervisor
+        reindex`` rebuilds it from the log afterwards.
+        """
+        try:
+            self.store.index().sync_run(self.state, self.events())
+        except Exception as exc:  # noqa: BLE001 - the index is derived; never fail a run over it
+            reason = str(exc)
+            if reason != self._index_error:
+                self._index_error = reason
+                self.note(f"index projection failed, run continues: {reason}")
+            self._pending_index = True
+            return
+        self._index_error = None
         self._pending_index = False
 
     def reload(self) -> RunState:

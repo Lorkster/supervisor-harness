@@ -9,9 +9,32 @@ Tools are requested through the JSON turn contract rather than a provider's
 native function-calling API, so the same mechanism works identically across
 Ollama, OpenRouter and Anthropic.
 
-Everything here is confined to the workspace. Reads cannot escape it, writes are
-additionally confined to the agent's declared scope, and command execution is
-off unless policy explicitly enables it.
+``read_file`` and ``write_file`` take a path from the model and are confined to
+the workspace by :meth:`Toolbox._resolve`, which refuses any path resolving
+outside it. ``list_files`` and ``search`` take no path at all: they report only
+what :meth:`Toolbox._walk` yields, and it descends the workspace alone.
+``write_file`` is confined further, to the agent's declared scope.
+
+``run_command`` is the one tool here that is *not* confined to the workspace. It
+runs a real shell, whose working directory is the workspace but which can name
+any path on the machine, and no code below can stop a program that computes a
+path rather than naming one -- ``python -c`` is a check runner and an arbitrary
+writer in the same breath. What stands in its way is narrower than a sandbox,
+and worth stating exactly:
+
+* it does nothing unless ``policy.allow_command_execution`` is set;
+* only execution agents may call it, because a shell writes files and granting
+  it to a kind denied ``write_file`` would hand back what that check refused;
+* an agent with a declared scope may invoke only the check runners in
+  :data:`.dod.VERIFY_EXECUTABLES`, and every argument it passes them that could
+  name a path must fall inside the scope, with metacharacters and globs refused
+  outright because they name paths no token spells;
+* an agent with *no* declared scope has none of that fence -- there is nothing
+  to check a path against -- and reaches the whole machine.
+
+Verification agents deliberately have no shell at all: a criterion's command is
+run by :func:`.dod.verify_command`, itself shell-free and allow-listed, or by
+the host, so the agent judging the work cannot change it.
 """
 
 from __future__ import annotations
@@ -25,7 +48,13 @@ from typing import Any
 
 from ..config import Policy
 from ..models import AgentSpec, Scope
-from .paths import matches_any
+from .dod import (
+    VERIFY_EXECUTABLES,
+    executable_name,
+    shell_split,
+    unquoted_metacharacter,
+)
+from .paths import matches_any, scope_relative
 
 # Directories never worth reading and expensive to walk.
 SKIP_DIRS = {
@@ -39,11 +68,28 @@ BINARY_SUFFIXES = {
     ".mp3", ".wav", ".bin", ".sqlite3", ".db", ".pyc",
 }
 
-# Which agent kinds may change the workspace. Analysis and synthesis agents
-# observe; only execution changes things, and only verification needs to run
-# commands alongside it (to prove a criterion by executing the real check).
+# Which agent kinds may change the workspace. Analysis, synthesis and
+# verification agents observe; only execution changes things. A shell writes
+# files, so the two sets must be the same set: granting run_command to a kind
+# denied write_file hands back through the shell exactly what the check refused.
+# Verification agents used to hold the shell so they could execute a criterion's
+# real check; they now report the command instead, and dod.verify_command runs
+# it under the same policy switch -- an agent that can rewrite the code it is
+# judging is not an independent verifier.
 WRITE_KINDS = frozenset({"execution"})
-COMMAND_KINDS = frozenset({"execution", "verification"})
+COMMAND_KINDS = WRITE_KINDS
+
+# A bare name that ends in a file suffix -- ``report.md``, ``setup.cfg``. Such a
+# token names a file whether or not one is there yet, so it is fenced even when
+# nothing on disk answers to it.
+_FILE_SUFFIX = re.compile(r"^[\w+.-]+\.[A-Za-z]\w*$")
+
+# Glob characters. A scoped agent may not use them at all: the shell expands
+# them before the command runs, so ``rm -rf *`` names every path in the
+# workspace while containing no token that is one of those paths. They are not
+# in dod's ``_METACHARACTERS`` because a criterion command is run without a
+# shell, where a glob is an ordinary literal argument.
+_GLOB_CHARACTERS = "*?["
 
 MAX_READ_LINES = 400
 MAX_MATCHES = 60
@@ -175,7 +221,103 @@ class Toolbox:
             return ToolResult("write_file", False, f"could not write {rel}: {exc}")
         return ToolResult("write_file", True, f"wrote {rel} ({len(content)} bytes)")
 
-    def run_command(self, command: str) -> ToolResult:
+    def _path_candidates(self, tokens: list[str]) -> list[str]:
+        """The arguments of a command that could name a file.
+
+        The rule is the inverse of the one it replaced. Asking "does this token
+        look like a path?" fails open on every name a shell accepts without a
+        separator or a suffix: ``rm -rf infra`` and ``cp Makefile Dockerfile``
+        both destroy real files through tokens no such test can recognise. So
+        every argument is a candidate unless it is demonstrably not a path.
+
+        The one thing still let through is a bare extensionless word that names
+        nothing in the workspace -- ``pytest`` in ``python -m pytest src/auth``
+        is a module, not a file, and fencing it would refuse every real command.
+        What such a word could name is bounded instead by the executable
+        allow-list in :meth:`_scope_refusal`: it is a path only once some program
+        creates it, and no program that creates files is reachable here.
+        """
+        candidates: list[str] = []
+        for token in tokens[1:]:
+            if token.startswith("-"):
+                # A flag names a file only in its --flag=path form.
+                _, sep, value = token.partition("=")
+                if not sep or not value:
+                    continue
+                token = value
+            if not token:
+                continue
+            if "/" in token or "\\" in token or _FILE_SUFFIX.match(token):
+                candidates.append(token)
+                continue
+            resolved = self._resolve(token)
+            if resolved is not None and resolved.exists():
+                candidates.append(token)
+        return candidates
+
+    def _scope_refusal(self, command: str, scope: Scope) -> str | None:
+        """Why this command escapes the agent's fence, or ``None`` if it does not.
+
+        A shell writes as well as reads, so every path a command names is a
+        potential write and is held to the same fence ``write_file`` enforces.
+        Without this the fence is decorative: an agent confined to ``src/auth/**``
+        is refused a write to ``infra/`` and then reaches it with ``sh -c``.
+
+        Only an agent that actually has a fence is checked. Reading paths out of
+        a command can never be complete -- a shell computes names this cannot
+        see -- so the three ways of naming a path it cannot follow are closed
+        rather than inspected: a metacharacter that chains or redirects, a glob
+        that expands to paths no token spells, and any executable outside the
+        check runners in :data:`.dod.VERIFY_EXECUTABLES`. That last one is what
+        puts ``rm``, ``cp``, ``mkdir`` and ``git checkout`` out of reach
+        entirely, rather than relying on the fence to catch their arguments.
+        """
+        if not scope.paths and not scope.forbidden_paths:
+            return None
+
+        metacharacter = unquoted_metacharacter(command)
+        if metacharacter is not None:
+            return (
+                f"a command from a scoped agent may not use the shell metacharacter "
+                f"{metacharacter!r}: the paths a chained or redirected command touches "
+                "cannot be checked against your scope. Run one plain command at a time"
+            )
+
+        glob_character = unquoted_metacharacter(command, _GLOB_CHARACTERS)
+        if glob_character is not None:
+            return (
+                f"a command from a scoped agent may not use the glob character "
+                f"{glob_character!r}: the shell expands it to paths the command never "
+                "names, so they cannot be checked against your scope. Name each path"
+            )
+
+        tokens = shell_split(command)
+        if not tokens:
+            return "the command is empty once tokenised"
+
+        executable = executable_name(tokens[0])
+        if executable not in VERIFY_EXECUTABLES:
+            return (
+                f"a scoped agent may not run {executable!r}: only the project's own "
+                f"check runners are reachable from the shell "
+                f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Use write_file to change "
+                "a file in your scope, or report the command for the host to run"
+            )
+
+        for token in self._path_candidates(tokens):
+            rel = scope_relative(token, self.workspace.as_posix())
+            if rel is None or rel.startswith("../"):
+                return f"{token} is outside the workspace"
+            if matches_any(rel, scope.forbidden_paths):
+                return f"{rel} is a forbidden path for this agent"
+            if scope.paths and not matches_any(rel, scope.paths):
+                return (
+                    f"{rel} is outside this agent's scope "
+                    f"({', '.join(scope.paths)})"
+                )
+        return None
+
+    def run_command(self, command: str, scope: Scope | None = None) -> ToolResult:
         if not self.policy.allow_command_execution:
             return ToolResult(
                 "run_command", False,
@@ -183,6 +325,10 @@ class Toolbox:
                 "to true in the configuration if the harness should run commands "
                 "itself. Report the criterion as blocked rather than guessing.",
             )
+        if scope is not None:
+            refusal = self._scope_refusal(command, scope)
+            if refusal is not None:
+                return ToolResult("run_command", False, refusal)
         try:
             completed = subprocess.run(  # noqa: S602 - explicitly enabled by policy
                 command, shell=True, cwd=str(self.workspace),
@@ -230,14 +376,16 @@ class Toolbox:
             )
         if name == "run_command":
             if not may_run:
-                # Without this an analysis agent, forbidden from write_file,
-                # could simply write files through the shell instead.
+                # Without this an agent forbidden from write_file could simply
+                # write files through the shell instead -- which is why a
+                # verification agent, denied writes over the code it judges, is
+                # denied the shell too.
                 return ToolResult(
                     "run_command", False,
-                    f"a {agent.kind.value} agent may not run commands; report what "
-                    "should be run instead",
+                    f"a {agent.kind.value} agent may not run commands; report the "
+                    "command that should be run, and the harness or the host runs it",
                 )
-            return self.run_command(str(args.get("command", "")))
+            return self.run_command(str(args.get("command", "")), agent.scope)
         return ToolResult(name or "unknown", False, f"no such tool: {name!r}")
 
 
@@ -256,7 +404,8 @@ def available_tools(agent: AgentSpec, policy: Policy) -> list[dict[str, str]]:
                       "does": "write a file, within your scope only"})
     if policy.allow_command_execution and agent.kind.value in COMMAND_KINDS:
         tools.append({"name": "run_command", "args": "command",
-                      "does": "run a shell command in the workspace"})
+                      "does": "run one shell command in the workspace, naming only "
+                              "paths within your scope"})
     return tools
 
 

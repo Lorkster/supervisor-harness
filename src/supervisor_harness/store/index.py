@@ -4,6 +4,17 @@ Purely derived: the index can be deleted and rebuilt from the JSONL logs at any
 time. It exists so the improvement loop and the CLI can ask cross-run questions
 ("which roles drift most", "which DoD methods fail verification") without
 replaying every log.
+
+The file carries its schema version in ``PRAGMA user_version``. Opening an index
+written by an older release drops every derived table and rebuilds it; opening
+one written by a newer release raises :class:`IndexSchemaError` rather than
+writing rows the newer schema would not recognise.
+
+Recovery, in either direction and whenever the index looks wrong: delete
+``index.sqlite3`` together with its ``index.sqlite3-wal`` and
+``index.sqlite3-shm`` sidecars, then run ``supervisor reindex`` to rebuild the
+projection from the authoritative logs. Nothing is lost -- the logs are the
+source of truth and the index holds no state of its own.
 """
 
 from __future__ import annotations
@@ -15,7 +26,9 @@ from typing import Any
 from ..models import RunState
 from .events import Event
 
-SCHEMA = """
+SCHEMA_VERSION = 1
+
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY, prompt TEXT, workspace TEXT, mode TEXT, backend TEXT,
     phase TEXT, host TEXT, created_at TEXT, updated_at TEXT, error TEXT,
@@ -61,9 +74,15 @@ CREATE INDEX IF NOT EXISTS idx_tasks_run ON tasks(run_id);
 CREATE INDEX IF NOT EXISTS idx_criteria_task ON criteria(task_id);
 CREATE INDEX IF NOT EXISTS idx_lessons_target ON lessons(target);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq);
+PRAGMA user_version = {SCHEMA_VERSION};
 """
 
 _RUN_TABLES = ("agents", "findings", "tasks", "criteria", "checkpoints", "lessons", "messages", "events")
+_ALL_TABLES = ("runs", *_RUN_TABLES)
+
+
+class IndexSchemaError(RuntimeError):
+    """The index file was written by a schema version this release cannot use."""
 
 
 class RunIndex:
@@ -75,8 +94,26 @@ class RunIndex:
         self._conn = sqlite3.connect(str(path), timeout=15.0)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(SCHEMA)
-        self._conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring the file to :data:`SCHEMA_VERSION`, or refuse to open it."""
+        found = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+        if found > SCHEMA_VERSION:
+            self._conn.close()
+            raise IndexSchemaError(
+                f"{self.path} was written by schema version {found}; this release "
+                f"understands {SCHEMA_VERSION}. Upgrade, or delete the file with its "
+                "-wal and -shm sidecars and run `supervisor reindex`."
+            )
+        if found < SCHEMA_VERSION:
+            # The index is derived, so an older file is dropped and rebuilt rather
+            # than migrated; `CREATE TABLE IF NOT EXISTS` would leave stale columns.
+            with self._conn:
+                for table in _ALL_TABLES:
+                    self._conn.execute(f"DROP TABLE IF EXISTS {table}")  # noqa: S608 - fixed table names
+        with self._conn:
+            self._conn.executescript(SCHEMA)
 
     def close(self) -> None:
         self._conn.close()
@@ -84,87 +121,103 @@ class RunIndex:
     # -- projection --------------------------------------------------------
 
     def sync_run(self, state: RunState, events: list[Event] | None = None) -> None:
-        """Rewrite every row belonging to this run. Idempotent by construction."""
-        cur = self._conn.cursor()
-        cur.execute("DELETE FROM runs WHERE id = ?", (state.id,))
-        for table in _RUN_TABLES:
-            cur.execute(f"DELETE FROM {table} WHERE run_id = ?", (state.id,))  # noqa: S608 - fixed table names
+        """Rewrite every row belonging to this run. Idempotent by construction.
 
-        verified = sum(1 for t in state.tasks.values() if t.dod_satisfied())
-        cur.execute(
-            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                state.id, state.prompt, state.workspace, str(state.mode), str(state.backend),
-                str(state.phase), state.host, state.created_at, state.updated_at, state.error,
-                len(state.findings), len(state.tasks), verified,
-            ),
-        )
+        The whole projection is one transaction: a failure part-way rolls the
+        deletions back instead of leaving them pending for the next caller to
+        commit.
+        """
+        with self._conn:
+            cur = self._conn.cursor()
+            cur.execute("DELETE FROM runs WHERE id = ?", (state.id,))
+            for table in _RUN_TABLES:
+                cur.execute(f"DELETE FROM {table} WHERE run_id = ?", (state.id,))  # noqa: S608 - fixed table names
 
-        for agent in state.agents.values():
-            usage = state.usage.get(agent.id)
-            drift = state.drift.get(agent.id)
+            verified = sum(1 for t in state.tasks.values() if t.dod_satisfied())
             cur.execute(
-                "INSERT INTO agents VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO runs (id, prompt, workspace, mode, backend, phase, host, "
+                "created_at, updated_at, error, findings, tasks, tasks_verified) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    agent.id, state.id, agent.role, str(agent.kind), agent.title,
-                    str(agent.backend), agent.binding.ref(), str(agent.status),
-                    state.turn_counts.get(agent.id, 0), drift.score if drift else 0.0,
-                    usage.input_tokens if usage else 0, usage.output_tokens if usage else 0,
+                    state.id, state.prompt, state.workspace, str(state.mode), str(state.backend),
+                    str(state.phase), state.host, state.created_at, state.updated_at, state.error,
+                    len(state.findings), len(state.tasks), verified,
                 ),
             )
 
-        for finding in state.findings:
-            cur.execute(
-                "INSERT OR REPLACE INTO findings VALUES (?,?,?,?,?,?,?)",
-                (finding.id, state.id, finding.agent_id, finding.lens,
-                 str(finding.severity), finding.title, finding.confidence),
-            )
-
-        for task in state.tasks.values():
-            passed = sum(1 for c in task.dod if str(c.status) == "pass")
-            cur.execute(
-                "INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    task.id, state.id, task.title, str(task.status),
-                    str(task.decision) if task.decision else "", str(task.risk), task.effort,
-                    task.attempts, task.suggested_role, len(task.dod), passed,
-                ),
-            )
-            for crit in task.dod:
+            for agent in state.agents.values():
+                usage = state.usage.get(agent.id)
+                drift = state.drift.get(agent.id)
                 cur.execute(
-                    "INSERT OR REPLACE INTO criteria VALUES (?,?,?,?,?,?,?)",
-                    (crit.id, task.id, state.id, crit.statement, str(crit.method),
-                     int(crit.mandatory), str(crit.status)),
+                    "INSERT INTO agents (id, run_id, role, kind, title, backend, binding, "
+                    "status, turns, drift_score, input_tokens, output_tokens) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        agent.id, state.id, agent.role, str(agent.kind), agent.title,
+                        str(agent.backend), agent.binding.ref(), str(agent.status),
+                        state.turn_counts.get(agent.id, 0), drift.score if drift else 0.0,
+                        usage.input_tokens if usage else 0, usage.output_tokens if usage else 0,
+                    ),
                 )
 
-        for cp in state.checkpoints:
-            cur.execute(
-                "INSERT OR REPLACE INTO checkpoints VALUES (?,?,?,?,?,?,?,?)",
-                (cp.id, state.id, cp.iteration, cp.quality, cp.scope_fidelity,
-                 cp.completeness, int(cp.passed), cp.summary),
-            )
+            for finding in state.findings:
+                cur.execute(
+                    "INSERT OR REPLACE INTO findings (id, run_id, agent_id, lens, severity, "
+                    "title, confidence) VALUES (?,?,?,?,?,?,?)",
+                    (finding.id, state.id, finding.agent_id, finding.lens,
+                     str(finding.severity), finding.title, finding.confidence),
+                )
 
-        for lesson in state.lessons:
-            cur.execute(
-                "INSERT OR REPLACE INTO lessons VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (lesson.id, state.id, str(lesson.category), lesson.trigger, lesson.statement,
-                 lesson.why, lesson.how_to_apply, lesson.target, lesson.confidence,
-                 lesson.occurrences, lesson.created_at),
-            )
+            for task in state.tasks.values():
+                passed = sum(1 for c in task.dod if str(c.status) == "pass")
+                cur.execute(
+                    "INSERT INTO tasks (id, run_id, title, status, decision, risk, effort, "
+                    "attempts, role, dod_total, dod_passed) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        task.id, state.id, task.title, str(task.status),
+                        str(task.decision) if task.decision else "", str(task.risk), task.effort,
+                        task.attempts, task.suggested_role, len(task.dod), passed,
+                    ),
+                )
+                for crit in task.dod:
+                    cur.execute(
+                        "INSERT OR REPLACE INTO criteria (id, task_id, run_id, statement, "
+                        "method, mandatory, status) VALUES (?,?,?,?,?,?,?)",
+                        (crit.id, task.id, state.id, crit.statement, str(crit.method),
+                         int(crit.mandatory), str(crit.status)),
+                    )
 
-        for msg in state.messages:
-            cur.execute(
-                "INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?)",
-                (msg.id, state.id, msg.sender, msg.recipient, str(msg.kind), msg.subject, msg.ts),
-            )
+            for cp in state.checkpoints:
+                cur.execute(
+                    "INSERT OR REPLACE INTO checkpoints (id, run_id, iteration, quality, "
+                    "scope_fidelity, completeness, passed, summary) VALUES (?,?,?,?,?,?,?,?)",
+                    (cp.id, state.id, cp.iteration, cp.quality, cp.scope_fidelity,
+                     cp.completeness, int(cp.passed), cp.summary),
+                )
 
-        for event in events or []:
-            cur.execute(
-                "INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?)",
-                (event.id, state.id, event.seq, str(event.type), event.actor, event.ts),
-            )
+            for lesson in state.lessons:
+                cur.execute(
+                    "INSERT OR REPLACE INTO lessons (id, run_id, category, trigger, statement, "
+                    "why, how_to_apply, target, confidence, occurrences, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (lesson.id, state.id, str(lesson.category), lesson.trigger, lesson.statement,
+                     lesson.why, lesson.how_to_apply, lesson.target, lesson.confidence,
+                     lesson.occurrences, lesson.created_at),
+                )
 
-        self._conn.commit()
+            for msg in state.messages:
+                cur.execute(
+                    "INSERT OR REPLACE INTO messages (id, run_id, sender, recipient, kind, "
+                    "subject, ts) VALUES (?,?,?,?,?,?,?)",
+                    (msg.id, state.id, msg.sender, msg.recipient, str(msg.kind), msg.subject, msg.ts),
+                )
+
+            for event in events or []:
+                cur.execute(
+                    "INSERT OR REPLACE INTO events (id, run_id, seq, type, actor, ts) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (event.id, state.id, event.seq, str(event.type), event.actor, event.ts),
+                )
 
     # -- queries -----------------------------------------------------------
 

@@ -30,7 +30,7 @@ from ..models import (
     DriftSignal,
     Severity,
 )
-from .paths import matches_any, normalise_path
+from .paths import matches_any, scope_relative
 
 _TOKEN = re.compile(r"[a-z0-9_]{3,}")
 
@@ -81,8 +81,13 @@ class TurnContext:
 
 def _check_scope_paths(ctx: TurnContext) -> DriftSignal | None:
     """Files touched outside the declared scope, or inside a forbidden path."""
+    # ``scope_relative`` returns None for a rooted path this workspace cannot
+    # place. Judging such a path against workspace-relative globs would call it
+    # a violation every time, so it is dropped rather than counted: the
+    # supervisor's workspace need not be the one the agent's tools reported
+    # against, and a mismatch is not evidence about the agent.
     touched = [
-        p for p in (normalise_path(f, ctx.workspace) for f in (ctx.turn.files_touched or [])) if p
+        p for p in (scope_relative(f, ctx.workspace) for f in (ctx.turn.files_touched or [])) if p
     ]
     if not touched:
         return None

