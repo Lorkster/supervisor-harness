@@ -445,7 +445,13 @@ class Supervisor:
             self._transition(session, Phase.IMPROVING)
             return
 
+        # Before anything reads depends_on: the model names dependencies by
+        # title, and runnable_tasks matches on id. Unresolved, a dependent task
+        # is approved and then never dispatched.
+        dep_notes = phases.resolve_dependencies(tasks)
         tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
+        for task_id, entries in dep_notes.items():
+            notes.setdefault(task_id, []).extend(entries)
         for task in tasks:
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
                                                    "notes": notes.get(task.id, [])})
@@ -493,11 +499,14 @@ class Supervisor:
             for task in phases.runnable_tasks(state):
                 if task.assigned_agent_id and task.status is not TaskStatus.FAILED:
                     continue
+                # Count the attempt before building, so the agent is stamped
+                # with the attempt it is actually working -- the verifier for
+                # this attempt is matched against the same number.
+                task.attempts += 1
                 agent = phases.build_execution_agent(state, task, self.config, registry)
                 fresh.append(agent)
                 task.assigned_agent_id = agent.id
                 task.status = TaskStatus.IN_PROGRESS
-                task.attempts += 1
                 task.updated_at = now_iso()
                 session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
             if fresh:
@@ -539,7 +548,12 @@ class Supervisor:
             for task in state.tasks.values():
                 if task.status is not TaskStatus.AWAITING_VERIFICATION:
                     continue
+                # Match the attempt too. A retired verifier stays in
+                # state.agents -- the fold replays it -- so without this the
+                # first attempt's verifier suppresses every later one and a
+                # remediated task is closed on stale evidence.
                 if any(a.task_id == task.id and a.kind is AgentKind.VERIFICATION
+                       and a.attempt == task.attempts
                        for a in state.agents.values()):
                     continue
                 fresh.append(phases.build_verification_agent(state, task, self.config, registry))

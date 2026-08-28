@@ -269,6 +269,10 @@ class AgentSpec:
     budget: Budget = field(default_factory=Budget)
     host_agent_type: str | None = None   # e.g. a Claude Code subagent type
     task_id: str | None = None           # set for execution agents
+    # Which attempt of ``task_id`` this agent was built for. A remediated task
+    # needs a verifier of its own; without this the first attempt's verifier
+    # matches forever and the second attempt is never independently checked.
+    attempt: int = 0
     depends_on: list[str] = field(default_factory=list)
     status: AgentStatus = AgentStatus.PENDING
     created_at: str = field(default_factory=now_iso)
