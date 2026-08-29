@@ -127,3 +127,99 @@ async def test_a_failing_checkpoint_with_nothing_to_reopen_does_not_loop(
         if e.type.value == "note"
     ]
     assert any("no actionable remediation" in n for n in notes), notes[-5:]
+
+
+# -- who a correction is for -----------------------------------------------
+
+TWO_TASKS: dict[str, Any] = {
+    "summary": "Two independent gaps: the limiter, and the audit log.",
+    "conflicts": [],
+    "open_questions": [],
+    "recommended_mode": "execute",
+    "tasks": [
+        {
+            "title": "Add rate limiting to the login endpoint",
+            "action": "Add middleware in src/auth/login.py that limits login attempts.",
+            "motivation": "Credential stuffing is unconstrained.",
+            "dod": [
+                {
+                    "statement": "The eleventh attempt from one IP within a minute is refused",
+                    "method": "test", "command": "pytest tests/test_rate_limit.py -q",
+                    "expect": "0", "mandatory": True,
+                },
+                {
+                    "statement": "The limiter keys on account identifier as well as IP",
+                    "method": "inspection", "expect": "src/auth/login.py: account_key",
+                    "mandatory": True,
+                },
+            ],
+            "scope_paths": ["src/auth/**"],
+            "suggested_role": "security-engineer",
+        },
+        {
+            "title": "Redact secrets from the audit log",
+            "action": "Stop src/audit.py writing the bearer token into the log line.",
+            "motivation": "The audit log is readable by support staff.",
+            "dod": [
+                {
+                    "statement": "The audit line carries no bearer token",
+                    "method": "test", "command": "pytest tests/test_audit.py -q",
+                    "expect": "0", "mandatory": True,
+                },
+                {
+                    "statement": "The redaction helper is applied at the single write site",
+                    "method": "inspection", "expect": "src/audit.py: redact",
+                    "mandatory": True,
+                },
+            ],
+            "scope_paths": ["src/audit.py"],
+            "suggested_role": "implementer",
+        },
+    ],
+}
+
+LIMITER_CORRECTION = "key the limiter on the account identifier as well as the client IP"
+AUDIT_CORRECTION = "redact the refresh token as well, not only the bearer token"
+
+TARGETED_CHECKPOINT: dict[str, Any] = {
+    **FAILING_CHECKPOINT,
+    "remediation": [
+        f"Add rate limiting to the login endpoint: {LIMITER_CORRECTION}.",
+        f"Redact secrets from the audit log: {AUDIT_CORRECTION}.",
+        "Every task: state the file you changed in your report.",
+    ],
+}
+
+
+async def test_each_reopened_task_is_briefed_with_its_own_corrections(
+    supervisor: Supervisor, fake
+) -> None:
+    """A correction that names another task must not reach this one's brief.
+
+    Briefing every failed task with every correction is not a cosmetic waste:
+    the corrections are instructions, so an agent reopening the limiter was
+    told to change the audit log as well. In a real run that had to be undone
+    by hand.
+    """
+    fake.overrides["synthesis"] = TWO_TASKS
+    fake.script("verification", fake.failing_verification, fake.failing_verification)
+    fake.script("checkpoint", TARGETED_CHECKPOINT)
+
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+
+    limiter = next(t for t in state.tasks.values() if "rate limiting" in t.title)
+    audit = next(t for t in state.tasks.values() if "audit log" in t.title)
+    assert limiter.attempts >= 2 and audit.attempts >= 2, "both tasks should be reopened"
+
+    assert LIMITER_CORRECTION in limiter.action
+    assert AUDIT_CORRECTION not in limiter.action, (
+        "the limiter was briefed with the audit log's correction"
+    )
+    assert AUDIT_CORRECTION in audit.action
+    assert LIMITER_CORRECTION not in audit.action, (
+        "the audit log was briefed with the limiter's correction"
+    )
+    # A correction that names no task is everyone's.
+    assert "state the file you changed" in limiter.action
+    assert "state the file you changed" in audit.action
