@@ -60,6 +60,17 @@ class EventType(StrEnum):
     ARTIFACT_WRITTEN = "artifact_written"
     NOTE = "note"
     RUN_ENDED = "run_ended"
+    #: Never emitted: what a type this build does not define is read back as,
+    #: so the log line survives the read. See :func:`event_from_dict`.
+    UNKNOWN = "unknown"
+
+
+#: Payload key carrying the type name a log line used, on an event read as
+#: :attr:`EventType.UNKNOWN`. The fold reports that name rather than the
+#: sentinel, so the state names the type the log actually contains.
+UNRECOGNISED_TYPE_KEY = "_unrecognised_type"
+
+_KNOWN_TYPES = frozenset(t.value for t in EventType)
 
 
 @dataclass
@@ -223,7 +234,9 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
     else:
         # No branch for this type. Record it rather than drop it, so an event
         # type added later -- or misspelled -- is visible in the folded state.
-        name = str(t)
+        # A type read off disk arrives as UNKNOWN carrying its own name, which
+        # is the name worth reporting.
+        name = str(p.get(UNRECOGNISED_TYPE_KEY) or t)
         if name not in state.unhandled_events:
             state.unhandled_events.append(name)
 
@@ -244,4 +257,19 @@ def event_to_dict(event: Event) -> dict[str, Any]:
 
 
 def event_from_dict(data: dict[str, Any]) -> Event:
+    """Rebuild an event, keeping one whose type this build does not define.
+
+    Enum coercion raises for an unknown type, and :meth:`EventLog.read` treats
+    a raise as a torn line and skips it -- so a misspelled or future type in a
+    real log never reached the fold's unhandled branch at all: it was dropped a
+    layer below the code that exists to record it. Such a line is read as
+    :attr:`EventType.UNKNOWN` instead, carrying the name it actually used, so
+    the event is folded, counted and visible rather than silently absent.
+    """
+    raw = data.get("type")
+    if isinstance(raw, str) and raw not in _KNOWN_TYPES:
+        payload = data.get("payload")
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        payload[UNRECOGNISED_TYPE_KEY] = raw
+        data = {**data, "type": EventType.UNKNOWN.value, "payload": payload}
     return from_jsonable(data, Event)

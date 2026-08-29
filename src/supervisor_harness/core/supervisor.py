@@ -320,6 +320,15 @@ class Supervisor:
                 for c in state.checkpoints
             ],
             "lessons": len(state.lessons),
+            "artifacts": [
+                {"path": a.path, "kind": a.kind, "actor": a.actor, "ts": a.ts}
+                for a in state.artifacts
+            ],
+            # Types the fold has no branch for. Reported rather than kept to
+            # itself: a run replayed by an older build, or one written with a
+            # misspelled type, is projecting less than the log holds, and the
+            # state is the only place that is visible.
+            "unhandled_events": list(state.unhandled_events),
             "usage": to_jsonable(state.total_usage()),
             "error": state.error,
         }
