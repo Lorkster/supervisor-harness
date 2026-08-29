@@ -87,6 +87,17 @@ Rules:
   scope fence, the peer list, past lessons and the output contract.
 - Use `host_agent_type` as your subagent type when it is set.
 - `schema` is the exact JSON shape the answer must take.
+- **The agents share one working tree.** Packets run concurrently in the same
+  workspace, separated only by their path scopes, and a path scope does not
+  constrain git: every brief therefore forbids `git stash`, `git checkout`,
+  `git clean`, `git reset`, `git rebase` and their relatives. The harness can
+  refuse those only for an agent it drives itself; in delegated mode your own
+  permission model is the enforcement, so denying them to subagents is worth
+  doing at the host.
+- **Each run names a baseline commit**, carried in the briefs. A criterion that
+  measures the whole repository -- "the test suite still passes" -- is judged
+  against that commit plus the task's own diff, because the tree itself is
+  moving while several agents write into it.
 
 ### 3. Report
 

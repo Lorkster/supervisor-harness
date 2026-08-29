@@ -32,7 +32,10 @@ and worth stating exactly:
   itself: ``python -c`` and ``node -e`` are refused for a scoped agent, because
   source given as a string names its paths only once it is already running;
 * an agent with *no* declared scope has none of that fence -- there is nothing
-  to check a path against -- and reaches the whole machine.
+  to check a path against -- and reaches the whole machine;
+* one refusal applies to every agent, fenced or not, because it is not about a
+  path at all: no command may change the shared working tree's git state. See
+  :func:`tree_wide_git`.
 
 What that leaves open is worth stating just as exactly, because it is a property
 of the design rather than a gap in it: a check runner runs whatever the project
@@ -120,6 +123,29 @@ _INLINE_SOURCE: dict[str, _Interpreter] = {
              frozenset()),
 }
 
+# git subcommands that change tracked files in the working tree or move HEAD.
+# This is the one refusal here that is not about a path, because a path scope
+# cannot express it: the agents in a run share a single tree, separated only by
+# their scopes, and none of these is separated by a scope. ``git stash`` stashes
+# every file at once, including the ones another agent is part-way through
+# writing, and the ``git stash pop`` that follows puts them back into a tree that
+# has moved underneath them. A real run had an agent stash and pop the whole tree
+# to get itself a clean lint baseline while eight others were working in it;
+# nothing was lost, and nothing but timing prevented it. ``commit`` is here for
+# the same reason rather than for its own danger: a commit of this tree records
+# several agents' unfinished work as one change.
+GIT_TREE_SUBCOMMANDS = frozenset({
+    "stash", "checkout", "switch", "restore", "clean", "reset", "rebase",
+    "merge", "revert", "cherry-pick", "apply", "am", "pull", "commit",
+})
+
+# git's own options, which come before the subcommand. These take a value, so
+# the token after them is not the subcommand: ``git -C /tmp stash``.
+_GIT_VALUE_OPTIONS = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+    "--config-env", "--super-prefix",
+})
+
 MAX_READ_LINES = 400
 MAX_MATCHES = 60
 MAX_LIST = 200
@@ -172,6 +198,57 @@ def _inline_source_flag(tokens: list[str]) -> str | None:
                 # ``-W ignore`` and ``-Wignore`` are the same flag.
                 skip = index == len(token) - 2
                 break
+    return None
+
+
+def _git_subcommand(rest: list[str]) -> str:
+    """The subcommand of a ``git`` invocation, given the tokens after ``git``."""
+    skip = False
+    for token in rest:
+        if skip:
+            skip = False
+            continue
+        if token.startswith("-"):
+            if token in _GIT_VALUE_OPTIONS:
+                skip = True
+            continue
+        return token.lower()
+    return ""
+
+
+def tree_wide_git(command: str) -> str | None:
+    """Why this command must not touch the shared working tree, or ``None``.
+
+    Applied to every command an agent runs, whether or not it has a path scope,
+    because the hazard is the shared tree rather than the agent's fence: an
+    unscoped agent is no more entitled to stash a peer's half-written file than a
+    scoped one. For a scoped agent this is a second lock on a door the executable
+    allow-list in :meth:`Toolbox._scope_refusal` already bolts -- ``git`` is not a
+    check runner -- and it stays here so that removing one does not silently open
+    the other.
+
+    What it reads is the command's tokens, so it sees ``git stash``,
+    ``git -C . stash`` and ``make && git reset --hard`` alike. What it cannot see
+    is a name that is not spelled: ``sh -c 'git stash'`` passes git inside a
+    quoted argument, and an alias can call anything at all. For a scoped agent
+    those are closed elsewhere -- neither ``sh`` nor ``git`` is a runner it may
+    invoke. For an unscoped agent, which by design reaches the whole machine,
+    this is a guardrail against the plausible mistake and not a fence.
+    """
+    tokens = shell_split(command)
+    for index, token in enumerate(tokens):
+        if executable_name(token) != "git":
+            continue
+        subcommand = _git_subcommand(tokens[index + 1:])
+        if subcommand in GIT_TREE_SUBCOMMANDS:
+            return (
+                f"no agent may run `git {subcommand}` here: it acts on the whole "
+                "working tree, which you share with the other agents in this run, "
+                "and your path scope does not constrain it -- it can destroy or "
+                "capture work another agent is part-way through writing. If you "
+                "need a clean tree to measure something, you cannot have one: "
+                "report what you observed against the run's baseline commit instead"
+            )
     return None
 
 
@@ -347,7 +424,10 @@ class Toolbox:
         narrowed to its read-only subcommands by name, because
         ``git -c alias.s='!sh -c ...' s`` runs anything at all. Letting a scoped
         agent see its own change means fencing git's flags too, not adding it
-        here.
+        here. The tree-changing subcommands are refused a second time, for every
+        agent rather than only a fenced one, by :func:`tree_wide_git`: what makes
+        them dangerous is the tree being shared, which is true whether or not
+        this agent has a scope to violate.
 
         None of it makes this a sandbox: ``npm test`` still runs whatever
         ``package.json`` says. This module's docstring states what the fence
@@ -420,6 +500,12 @@ class Toolbox:
             refusal = self._scope_refusal(command, scope)
             if refusal is not None:
                 return ToolResult("run_command", False, refusal)
+        # After the scope fence, not before it: a scoped agent is refused git by
+        # the executable allow-list already, and the more specific refusal is the
+        # more useful one. This one exists for the agent that has no fence.
+        tree_refusal = tree_wide_git(command)
+        if tree_refusal is not None:
+            return ToolResult("run_command", False, tree_refusal)
         try:
             completed = subprocess.run(  # noqa: S602 - explicitly enabled by policy
                 command, shell=True, cwd=str(self.workspace),
@@ -498,7 +584,8 @@ def available_tools(agent: AgentSpec, policy: Policy) -> list[dict[str, str]]:
                       "does": "run one of the project's check runners (pytest, npm, "
                               "make, ...) in the workspace, naming only paths inside "
                               "your scope, and not carrying its own program inline "
-                              "(no `python -c`, no `node -e`)"})
+                              "(no `python -c`, no `node -e`). Never git: the working "
+                              "tree is shared with the other agents in this run"})
     return tools
 
 

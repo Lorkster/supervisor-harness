@@ -339,11 +339,14 @@ EXECUTION_ROLES: list[Role] = [
         charter=(
             "Implement exactly the approved task -- no more. Match the surrounding "
             "code's conventions, naming and structure. If you discover the task cannot "
-            "be done as specified, stop and report rather than substituting your own plan."
+            "be done as specified, stop and report rather than substituting your own "
+            "plan. You are writing into a tree other agents are writing into at the "
+            "same time: change your own files, and never the tree's git state."
         ),
         objectives=["Implement the approved action", "Match existing conventions",
                     "Leave the workspace in a working state"],
-        out_of_scope=["unrequested refactors", "unrelated files", "changing the task's intent"],
+        out_of_scope=["unrequested refactors", "unrelated files", "changing the task's intent",
+                      "tree-wide git state operations (stash, checkout, clean, reset, rebase)"],
         keywords=["implement", "add", "build", "create", "write", "fix", "change"],
         host_agent_hints=["general-purpose", "claude"],
     ),
@@ -359,7 +362,8 @@ EXECUTION_ROLES: list[Role] = [
         ),
         objectives=["Cover each verifiable criterion with a test",
                     "Cover error and edge-case paths", "Keep tests deterministic"],
-        out_of_scope=["changing production code to make tests pass", "unrelated test files"],
+        out_of_scope=["changing production code to make tests pass", "unrelated test files",
+                      "tree-wide git state operations (stash, checkout, clean, reset, rebase)"],
         keywords=["test", "coverage", "spec", "pytest", "jest", "unit", "integration"],
         host_agent_hints=["general-purpose", "claude"],
     ),
@@ -375,7 +379,8 @@ EXECUTION_ROLES: list[Role] = [
         ),
         objectives=["Implement the control", "Ensure it fails closed",
                     "Add a test that proves the control actually blocks"],
-        out_of_scope=["unrelated hardening", "performance work", "cosmetic changes"],
+        out_of_scope=["unrelated hardening", "performance work", "cosmetic changes",
+                      "tree-wide git state operations (stash, checkout, clean, reset, rebase)"],
         keywords=["security", "auth", "validate", "sanitize", "permission", "encrypt"],
         host_agent_hints=["general-purpose", "claude"],
     ),
@@ -390,7 +395,8 @@ EXECUTION_ROLES: list[Role] = [
             "voice and structure."
         ),
         objectives=["Update affected documentation", "Verify each claim against the code"],
-        out_of_scope=["changing code", "rewriting unrelated documents"],
+        out_of_scope=["changing code", "rewriting unrelated documents",
+                      "tree-wide git state operations (stash, checkout, clean, reset, rebase)"],
         keywords=["document", "readme", "docs", "changelog", "comment"],
         host_agent_hints=["general-purpose", "claude"],
     ),
@@ -406,12 +412,16 @@ VERIFICATION_ROLES: list[Role] = [
             "Verify each criterion independently and adversarially. Run the stated "
             "command and report its real output. Never mark a criterion passed on the "
             "implementer's assurance -- only on evidence you produced yourself. "
-            "Reporting an honest failure is a successful verification."
+            "Reporting an honest failure is a successful verification. You are not "
+            "alone in the working tree: judge a whole-repository check against the "
+            "run's baseline commit plus this task's diff, and never manipulate the "
+            "tree's git state to get yourself a cleaner measurement."
         ),
         objectives=["Verify every mandatory criterion with first-hand evidence",
                     "Record the exact evidence for each verdict",
                     "Report unmet criteria plainly"],
-        out_of_scope=["fixing the code", "renegotiating the criteria", "partial credit"],
+        out_of_scope=["fixing the code", "renegotiating the criteria", "partial credit",
+                      "tree-wide git state operations (stash, checkout, clean, reset, rebase)"],
         keywords=["verify", "check", "prove", "validate"],
         host_agent_hints=["general-purpose", "claude"],
     ),
@@ -428,7 +438,8 @@ VERIFICATION_ROLES: list[Role] = [
         objectives=["Find correctness defects in the delivered change",
                     "Check the change stayed inside the approved scope",
                     "Confirm code quality and security bars are met"],
-        out_of_scope=["redesigning the solution", "style preferences without a rule"],
+        out_of_scope=["redesigning the solution", "style preferences without a rule",
+                      "tree-wide git state operations (stash, checkout, clean, reset, rebase)"],
         keywords=["review", "audit", "inspect"],
         host_agent_hints=["code-review", "general-purpose", "claude"],
     ),

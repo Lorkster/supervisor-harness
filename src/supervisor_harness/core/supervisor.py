@@ -89,6 +89,7 @@ from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import phases
+from .baseline import BASELINE_FACT, git_baseline
 from .blackboard import Blackboard, render_context
 from .dod import verify_criterion
 from .drift import (
@@ -212,6 +213,15 @@ class Supervisor:
             backend=str(session.state.backend),
             routing={k: v for k, v in self.config.routing.items()},
         )
+
+        # Fixed at the start, before any agent has written anything, so every
+        # brief in the run names the same commit. Agents share one working tree;
+        # without a fixed point, a whole-repository criterion is measured against
+        # whatever the other agents happened to have written by then.
+        baseline = git_baseline(self.workspace)
+        if baseline:
+            session.emit(EventType.CONTEXT_SET, {"facts": {BASELINE_FACT: baseline}})
+
         return await self._advance(session)
 
     async def advance(self, run_id: str, host_agents: list[dict[str, Any]] | None = None) -> SupervisorResponse:

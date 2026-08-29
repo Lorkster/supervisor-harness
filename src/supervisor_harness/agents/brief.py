@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..core.baseline import BASELINE_FACT
 from ..models import (
     AgentSpec,
     Directive,
@@ -37,6 +38,28 @@ CORE_RULES = [
     "you found or changed, not on your plan to find or change it.",
     "Answer only with the JSON object described in the output contract.",
 ]
+
+# The one prohibition a path scope cannot express, so it is written out rather
+# than left to be inferred. Agents in a run share a single working tree,
+# separated only by their scopes, and git does not respect a scope: ``git stash``,
+# ``git checkout`` and their relatives act on every file at once, including files
+# another agent is part-way through writing. A real run had an agent stash and
+# pop the whole tree to get itself a clean lint baseline while eight others were
+# working in it. Nothing was lost, and nothing but timing prevented it.
+SHARED_TREE_RULE = (
+    "You share one working tree with the other agents in this run, and your path "
+    "scope does not constrain git. Never run `git stash`, `git checkout`, "
+    "`git clean`, `git reset` or `git rebase`, nor any other git command that "
+    "changes tracked files or moves HEAD (`switch`, `restore`, `merge`, `revert`, "
+    "`cherry-pick`, `apply`, `pull`): each acts on the whole tree at once, "
+    "including files another agent is part-way through writing, and a `git stash` "
+    "that a peer's write lands in the middle of destroys work that was never "
+    "yours. Do not `git commit` either -- a commit of this tree captures several "
+    "agents' unfinished work as one change. Read-only inspection (`git status`, "
+    "`git diff`, `git log`) is unaffected. If you need a clean tree to measure "
+    "something, you cannot have one: say so in your output and measure against "
+    "the run's baseline commit instead."
+)
 
 
 def _section(title: str, body: str) -> str:
@@ -95,7 +118,52 @@ def _scope_block(agent: AgentSpec, role: Role | None) -> str:
     if out:
         lines.append("Out of scope -- do not pursue these, even if they look worthwhile:")
         lines.append(_bullets(sorted(set(out))))
+    # Its own paragraph: a bullet list runs into the line after it otherwise.
+    lines.append("")
+    lines.append(f"Working tree: {SHARED_TREE_RULE}")
     return "\n".join(lines)
+
+
+def _baseline_block(run: RunState) -> str:
+    """What a whole-repository measurement is measured *against*.
+
+    Every agent in a run writes into the same tree, so a criterion like "the
+    existing test suite still passes" has no fixed answer: it returns whatever
+    the tree happened to hold when it was asked. One run had that criterion on
+    every task and got 87, 99 and 100 tests back from three verifiers, each of
+    which then had to reason about why its own number differed. Naming the commit
+    the run started from turns the question into a comparison an agent can
+    actually make, and makes two agents' numbers mean the same thing.
+    """
+    baseline = run.facts.get(BASELINE_FACT, "")
+    lead = (
+        f"This run's baseline is commit {baseline}."
+        if baseline
+        else "This run has no recorded baseline commit: the workspace is not a git "
+        "repository, or git could not be reached."
+    )
+    body = (
+        "The tree in front of you is not the baseline plus your own change. Other "
+        "agents are writing into it while you work, so any whole-repository "
+        "measurement -- the test suite passes, the linter is clean, the build "
+        "succeeds -- moves while you take it, and will not match the same "
+        "measurement taken by another agent.\n\n"
+        "Measure such a criterion against the baseline plus your own diff:\n"
+    )
+    return lead + "\n\n" + body + _bullets(
+        [
+            "Report the figure you actually observed and name the baseline it is "
+            "relative to. A bare count with nothing to compare it against settles "
+            "nothing.",
+            "A failure counts against this task only if it is in a file this task "
+            "touched, or you can trace it to this task's change.",
+            "A failure you cannot trace to this task belongs to a peer or to the "
+            "baseline. Say so, send a message about it, and neither fix it nor "
+            "fail this task for it.",
+            "Do not try to get yourself a clean tree -- see the working-tree rule "
+            "under Scope. Compare against the baseline instead.",
+        ]
+    )
 
 
 def _budget_block(agent: AgentSpec) -> str:
@@ -209,6 +277,7 @@ def build_execution_brief(
         _section("Findings behind this task", _bullets(supporting_findings or [])),
         _section("Your speciality", (role.charter if role else agent.brief)),
         _section("Definition of done", _dod_block(task.dod)),
+        _section("Baseline", _baseline_block(run)),
         _section("Scope", _scope_block(agent, role)),
         _section("Tools", tools),
         _section("Other agents", _peers_block(peers, agent.id)),
@@ -252,6 +321,7 @@ def build_verification_brief(
         _section("What was supposed to happen", f"{task.action}\n\n{task.motivation}"),
         _section("What the implementer reports", change_summary),
         _section("Criteria to verify", _dod_block(task.dod)),
+        _section("Baseline", _baseline_block(run)),
         _section(
             "How to verify",
             _bullets(
@@ -269,8 +339,12 @@ def build_verification_brief(
                 ]
             ),
         ),
-        _section("Scope", "Verify only the criteria listed. Do not fix anything you find; "
-                          "report it. Report regressions separately."),
+        _section(
+            "Scope",
+            "Verify only the criteria listed. Do not fix anything you find; report "
+            "it. Report regressions separately.\n\n"
+            f"Working tree: {SHARED_TREE_RULE}",
+        ),
         _section("Tools", tools),
         _section("Output contract", _contract_block(schema)),
     ]
