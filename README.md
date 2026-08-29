@@ -215,8 +215,16 @@ may not hand a runner its program inline (`python -c`, `node -e`). But a check
 runner still runs whatever the project tells it to: `npm test` runs a line of
 `package.json` and `make` runs the Makefile, either of which can write anywhere.
 It is built to keep a drifting agent inside its scope, not to contain a hostile
-one — if the workspace's own build scripts are untrusted, run the harness in a
+one -- if the workspace's own build scripts are untrusted, run the harness in a
 container. An agent with no declared scope has no fence at all.
+
+One refusal applies to every agent, scoped or not, because it is not about a
+path: no command may change the working tree's git state. `git stash`,
+`git checkout`, `git clean`, `git reset`, `git rebase` and their relatives act
+on the whole tree at once, and the agents in a run share that tree -- a stash
+taken for one agent's clean baseline can destroy another's half-written file.
+Every brief says so as well, since in host-delegated mode your own permission
+model, not the harness, is what can actually refuse the command.
 
 Tool rounds do not consume an agent's turn budget — reading three files to
 answer one question is one piece of work, not three.
@@ -309,6 +317,7 @@ src/supervisor_harness/
     dod.py         criteria validation, quality bars, verification
     blackboard.py  shared context, message routing, contradiction detection
     tools.py       sandboxed workspace tools for autonomous agents
+    baseline.py    the commit a run measures its whole-repository checks against
   mcp_server.py    MCP surface
   cli.py           command line
 ```
