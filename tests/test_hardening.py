@@ -309,11 +309,73 @@ def test_run_command_is_refused_for_a_path_outside_the_agents_scope(tmp_path: Pa
     assert "exit=" in box.call(
         "run_command", {"command": "python -m pytest src/auth"}, fenced
     ).output
-    assert box.call("run_command", {"command": "python -c \"print('ok')\""}, fenced).ok
 
     # An unfenced agent is unaffected: there is no scope to violate.
     unfenced = AgentSpec(id="c", kind=AgentKind.EXECUTION, scope=Scope())
     assert box.call("run_command", {"command": "echo infra/waf.tf"}, unfenced).ok
+
+
+def test_a_scoped_agent_may_not_hand_a_check_runner_its_program_inline(
+    tmp_path: Path,
+) -> None:
+    """``python -c`` is a check runner and an arbitrary writer in one binary.
+
+    ``python`` and ``node`` are on the check-runner list because they run the
+    project's tests, and the rest of the fence reads paths out of a command's
+    arguments. Source passed as a string names its paths only once it is
+    running, so it walked straight through: an agent fenced to ``src/auth/**``
+    wrote wherever it liked. The flag is refused now -- including bundled,
+    long-form and after another option -- while running a module or a script
+    still works, which is the only reason those interpreters are on the list.
+    """
+    (tmp_path / "src" / "auth").mkdir(parents=True)
+    (tmp_path / "src" / "auth" / "test_login.py").write_text(
+        "def test_login():\n    assert True\n", encoding="utf-8"
+    )
+    box = Toolbox(tmp_path, Policy(allow_command_execution=True))
+    fenced = AgentSpec(
+        id="b", kind=AgentKind.EXECUTION, scope=Scope(paths=["src/auth/**"]),
+    )
+
+    escape = "open('escaped.txt','w').write('x')"
+    node_escape = "require('fs').writeFileSync('escaped.txt','x')"
+    for command in (
+        f'python -c "{escape}"',
+        f'python3 -c "{escape}"',
+        f'py -c "{escape}"',
+        f'python -Ic "{escape}"',                      # bundled with another flag
+        f'python -W ignore -c "{escape}"',             # after a flag taking a value
+        f'python -Wignore -c "{escape}"',              # ... and its attached form
+        f'node -e "{node_escape}"',
+        f'node -pe "{node_escape}"',
+        f'node --eval "{node_escape}"',
+        f'node --eval="{node_escape}"',
+        "python -",                                    # the program comes from stdin
+    ):
+        result = box.call("run_command", {"command": command}, fenced)
+        assert not result.ok, command
+        assert "may not pass" in result.output, command
+        assert "exit=" not in result.output, command
+    assert not (tmp_path / "escaped.txt").exists()
+
+    # The half that has to keep working: a module, and a flag that belongs to
+    # the program rather than to the interpreter (``pytest -c`` is a config
+    # file). Both reach the shell, and the in-scope test suite passes.
+    passing = box.call(
+        "run_command", {"command": "python -m pytest src/auth -q"}, fenced
+    )
+    assert passing.ok, passing.output
+    assert "exit=0" in passing.output
+    assert "exit=" in box.call(
+        "run_command",
+        {"command": "python -m pytest src/auth -c src/auth/pytest.ini"},
+        fenced,
+    ).output
+
+    # An unfenced agent is unaffected: there is no scope to escape.
+    unfenced = AgentSpec(id="c", kind=AgentKind.EXECUTION, scope=Scope())
+    assert box.call("run_command", {"command": f'python -c "{escape}"'}, unfenced).ok
+    assert (tmp_path / "escaped.txt").exists()
 
 
 # --------------------------------------------------------------------------

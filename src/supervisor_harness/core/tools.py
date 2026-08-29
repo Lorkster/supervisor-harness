@@ -18,8 +18,7 @@ what :meth:`Toolbox._walk` yields, and it descends the workspace alone.
 ``run_command`` is the one tool here that is *not* confined to the workspace. It
 runs a real shell, whose working directory is the workspace but which can name
 any path on the machine, and no code below can stop a program that computes a
-path rather than naming one -- ``python -c`` is a check runner and an arbitrary
-writer in the same breath. What stands in its way is narrower than a sandbox,
+path rather than naming one. What stands in its way is narrower than a sandbox,
 and worth stating exactly:
 
 * it does nothing unless ``policy.allow_command_execution`` is set;
@@ -29,8 +28,20 @@ and worth stating exactly:
   :data:`.dod.VERIFY_EXECUTABLES`, and every argument it passes them that could
   name a path must fall inside the scope, with metacharacters and globs refused
   outright because they name paths no token spells;
+* those check runners may not be handed their program in the command line
+  itself: ``python -c`` and ``node -e`` are refused for a scoped agent, because
+  source given as a string names its paths only once it is already running;
 * an agent with *no* declared scope has none of that fence -- there is nothing
   to check a path against -- and reaches the whole machine.
+
+What that leaves open is worth stating just as exactly, because it is a property
+of the design rather than a gap in it: a check runner runs whatever the project
+tells it to. ``npm test`` runs a line of ``package.json``, ``make`` runs the
+Makefile, ``python -m pip`` and ``npx`` fetch and run code that was never in the
+workspace, and any of them can write wherever the harness can. The fence keeps a
+*drifting* agent inside its scope, which is what it is for; it does not contain a
+hostile one, and a workspace whose own build scripts cannot be trusted needs a
+sandbox rather than an allow-list.
 
 Verification agents deliberately have no shell at all: a criterion's command is
 run by :func:`.dod.verify_command`, itself shell-free and allow-listed, or by
@@ -91,6 +102,24 @@ _FILE_SUFFIX = re.compile(r"^[\w+.-]+\.[A-Za-z]\w*$")
 # shell, where a glob is an ordinary literal argument.
 _GLOB_CHARACTERS = "*?["
 
+# Interpreters on the check-runner list that will also run a program handed to
+# them in the command line itself, and the flags by which they do it. They earn
+# their place on that list by running the project's tests -- ``python -m pytest``
+# -- but ``python -c "open('../../x','w').write('')"`` is the same binary
+# carrying source the fence has never seen, naming its paths at runtime where no
+# argument check can reach them. A scoped agent is refused these flags; ``-m``
+# and a script path stay open. Each entry is (short source flags, long source
+# flags, short flags whose value is the next token, short flags after which the
+# arguments stop being the interpreter's own).
+_Interpreter = tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]
+_INLINE_SOURCE: dict[str, _Interpreter] = {
+    "python": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
+    "python3": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
+    "py": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
+    "node": (frozenset("ep"), frozenset({"--eval", "--print"}), frozenset("r"),
+             frozenset()),
+}
+
 MAX_READ_LINES = 400
 MAX_MATCHES = 60
 MAX_LIST = 200
@@ -105,6 +134,45 @@ class ToolResult:
     def render(self) -> str:
         status = "" if self.ok else " (failed)"
         return f"### {self.tool}{status}\n{self.output}"
+
+
+def _inline_source_flag(tokens: list[str]) -> str | None:
+    """The flag by which this command carries its own source, or ``None``.
+
+    Only the interpreter's own leading options are read. After ``-m module`` or
+    a script path the arguments belong to the program being run, where ``-c`` is
+    pytest's config file rather than Python's source, and refusing it there would
+    fence a legitimate check.
+    """
+    entry = _INLINE_SOURCE.get(executable_name(tokens[0]))
+    if entry is None:
+        return None
+    source, long_source, takes_value, terminal = entry
+
+    skip = False
+    for token in tokens[1:]:
+        if skip:  # the value of the flag before it, not a flag itself.
+            skip = False
+            continue
+        if token == "-":
+            return "-"  # the program is read from standard input.
+        if token == "--" or not token.startswith("-"):
+            return None  # the interpreter's own options have ended.
+        if token.startswith("--"):
+            name = token.partition("=")[0]
+            if name in long_source:
+                return name
+            continue
+        for index, char in enumerate(token[1:]):
+            if char in source:
+                return f"-{char}"
+            if char in terminal:
+                return None
+            if char in takes_value:
+                # ``-W ignore`` and ``-Wignore`` are the same flag.
+                skip = index == len(token) - 2
+                break
+    return None
 
 
 class Toolbox:
@@ -265,12 +333,25 @@ class Toolbox:
 
         Only an agent that actually has a fence is checked. Reading paths out of
         a command can never be complete -- a shell computes names this cannot
-        see -- so the three ways of naming a path it cannot follow are closed
+        see -- so the four ways of naming a path it cannot follow are closed
         rather than inspected: a metacharacter that chains or redirects, a glob
-        that expands to paths no token spells, and any executable outside the
-        check runners in :data:`.dod.VERIFY_EXECUTABLES`. That last one is what
-        puts ``rm``, ``cp``, ``mkdir`` and ``git checkout`` out of reach
+        that expands to paths no token spells, any executable outside the check
+        runners in :data:`.dod.VERIFY_EXECUTABLES`, and a program handed to one
+        of those runners as source on the command line. The executable rule is
+        what puts ``rm``, ``cp``, ``mkdir`` and ``git checkout`` out of reach
         entirely, rather than relying on the fence to catch their arguments.
+
+        It takes ``git status`` and ``git diff`` with them, which is deliberate:
+        nothing here consumes a diff -- a turn's ``files_touched`` is the agent's
+        own report, and the reviewer role reads files -- and git cannot be
+        narrowed to its read-only subcommands by name, because
+        ``git -c alias.s='!sh -c ...' s`` runs anything at all. Letting a scoped
+        agent see its own change means fencing git's flags too, not adding it
+        here.
+
+        None of it makes this a sandbox: ``npm test`` still runs whatever
+        ``package.json`` says. This module's docstring states what the fence
+        does and does not claim.
         """
         if not scope.paths and not scope.forbidden_paths:
             return None
@@ -302,6 +383,16 @@ class Toolbox:
                 f"check runners are reachable from the shell "
                 f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Use write_file to change "
                 "a file in your scope, or report the command for the host to run"
+            )
+
+        inline = _inline_source_flag(tokens)
+        if inline is not None:
+            return (
+                f"a scoped agent may not pass {inline!r} to {executable!r}: a program "
+                "supplied as source, rather than as a module or a file, names its "
+                "paths while it runs, so none of them can be checked against your "
+                "scope. Run a module or a file instead (python -m pytest ...), or use "
+                "write_file to change a file"
             )
 
         for token in self._path_candidates(tokens):
@@ -404,8 +495,10 @@ def available_tools(agent: AgentSpec, policy: Policy) -> list[dict[str, str]]:
                       "does": "write a file, within your scope only"})
     if policy.allow_command_execution and agent.kind.value in COMMAND_KINDS:
         tools.append({"name": "run_command", "args": "command",
-                      "does": "run one shell command in the workspace, naming only "
-                              "paths within your scope"})
+                      "does": "run one of the project's check runners (pytest, npm, "
+                              "make, ...) in the workspace, naming only paths inside "
+                              "your scope, and not carrying its own program inline "
+                              "(no `python -c`, no `node -e`)"})
     return tools
 
 
