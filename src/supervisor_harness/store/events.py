@@ -42,6 +42,7 @@ class EventType(StrEnum):
     CONTEXT_SET = "context_set"
     BRIEF_RENDERED = "brief_rendered"
     AGENT_SPAWNED = "agent_spawned"
+    AGENT_DISPATCHED = "agent_dispatched"
     AGENT_STATUS = "agent_status"
     TURN_RECORDED = "turn_recorded"
     FINDING_ADDED = "finding_added"
@@ -123,6 +124,16 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
         state.agents[spec.id] = spec
         state.turn_counts.setdefault(spec.id, 0)
 
+    elif t is EventType.AGENT_DISPATCHED:
+        # A packet went out to the host for this agent. Counted, because a host
+        # agent that never answers is otherwise indistinguishable from one still
+        # working, and the count is what the abandonment bound is measured on.
+        agent = state.agents.get(p["agent_id"])
+        if agent is not None:
+            agent.unreported_dispatches += 1
+            if not agent.unreported_since:
+                agent.unreported_since = event.ts
+
     elif t is EventType.AGENT_STATUS:
         agent = state.agents.get(p["agent_id"])
         if agent is not None:
@@ -133,6 +144,12 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
         state.turn_counts[turn.agent_id] = state.turn_counts.get(turn.agent_id, 0) + 1
         prior = state.usage.get(turn.agent_id, Usage())
         state.usage[turn.agent_id] = prior.add(turn.usage)
+        # The agent answered, so it is not silent: the abandonment bound starts
+        # again from the next packet it is handed.
+        agent = state.agents.get(turn.agent_id)
+        if agent is not None:
+            agent.unreported_dispatches = 0
+            agent.unreported_since = ""
 
     elif t is EventType.FINDING_ADDED:
         state.findings.append(from_jsonable(p["finding"], Finding))

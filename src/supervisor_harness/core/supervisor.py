@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import asyncio
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -225,6 +226,54 @@ class Supervisor:
         session.note("run resumed", phase=str(session.state.phase))
         return await self._advance(session)
 
+    async def abandon(
+        self, run_id: str, agent_id: str, reason: str = ""
+    ) -> SupervisorResponse:
+        """Give up on a host-run agent, and let its phase settle.
+
+        The host is the only party that can know one of its subagents crashed or
+        was cancelled: a host agent reports through the caller, so from here the
+        difference between "still working" and "gone" is invisible. Without this
+        the agent stays in ``ACTIVE_AGENT_STATUSES`` and its packet is re-emitted
+        on every ``advance``, for as long as anyone keeps asking.
+        """
+        session = self.store.open(run_id)
+        self._registry_for(session, None)
+        state = session.state
+
+        agent = state.agents.get(agent_id)
+        if agent is None:
+            # As with a report for an unknown id: the caller's mistake must not
+            # cost the run the work it has already done.
+            session.note("abandon for an unknown agent was rejected", agent_id=agent_id)
+            return SupervisorResponse(
+                run_id=state.id,
+                phase=str(state.phase),
+                action="await_reports",
+                message=(
+                    f"No agent {agent_id!r} in this run; nothing was changed. "
+                    f"Known agents: {', '.join(sorted(state.agents)) or '(none)'}."
+                ),
+                detail={"error": "unknown_agent", "known_agents": sorted(state.agents)},
+            )
+
+        if agent.status not in ACTIVE_AGENT_STATUSES:
+            return SupervisorResponse(
+                run_id=state.id,
+                phase=str(state.phase),
+                action="await_reports",
+                message=(
+                    f"Agent `{agent_id}` had already finished ({agent.status.value}); "
+                    "nothing was changed."
+                ),
+                detail={"error": "already_settled", "status": str(agent.status)},
+            )
+
+        self._abandon_agent(
+            session, agent, reason.strip() or "the host reported it as gone"
+        )
+        return await self._advance(session)
+
     def status(self, run_id: str) -> dict[str, Any]:
         state = self.store.load_state(run_id)
         return {
@@ -243,6 +292,10 @@ class Supervisor:
                     "title": a.title,
                     "status": str(a.status),
                     "turns": state.turn_counts.get(a.id, 0),
+                    # How silent it has been: packets handed out since it last
+                    # answered. The host can see one of its agents is overdue
+                    # before the supervisor's own bound abandons it.
+                    "unreported_dispatches": a.unreported_dispatches,
                     "drift": state.drift[a.id].score if a.id in state.drift else None,
                     "model": a.binding.ref(),
                 }
@@ -332,6 +385,14 @@ class Supervisor:
 
         if self._delegated(stage):
             agent = self._stage_agent(session, "planner", stage)
+            if agent is None:
+                # Planning was abandoned. The lenses the harness derives itself
+                # are a poorer plan than a model's, but they are a plan, and the
+                # findings are what the run is for: it continues on them.
+                session.note("planning abandoned; continuing on the derived lens plan")
+                self._spawn(session, fallback)
+                self._transition(session, Phase.ANALYZING)
+                return None
             self._transition(session, Phase.ANALYZING)
             packet = self._stage_packet(session, agent, system, user, PLANNING_SCHEMA, "planning")
             return SupervisorResponse(
@@ -387,7 +448,9 @@ class Supervisor:
             self._spawn(session, phases.build_analysis_agents(state, self.config, registry, lenses))
             analysts = [a for a in state.agents.values() if a.kind is AgentKind.ANALYSIS]
 
-        pending = [a for a in analysts if a.status in ACTIVE_AGENT_STATUSES]
+        pending = self._reap_unreported(
+            session, [a for a in analysts if a.status in ACTIVE_AGENT_STATUSES]
+        )
         if not pending:
             self._transition(session, Phase.SYNTHESIZING)
             return None
@@ -416,6 +479,15 @@ class Supervisor:
 
         if self._delegated(stage):
             agent = self._stage_agent(session, "synthesizer", stage)
+            if agent is None:
+                # Nothing downstream exists without synthesis: no report, no
+                # tasks. The findings stay on the log, and the run says why it
+                # stopped rather than re-issuing a packet nobody will run.
+                return self._error(
+                    session,
+                    "synthesis was abandoned without being reported; the run has "
+                    "findings but no merged report or tasks",
+                )
             if state.agents[agent.id].status is AgentStatus.DONE:
                 return self._error(session, "synthesis agent finished without producing tasks")
             packet = self._stage_packet(session, agent, system, user, SYNTHESIS_SCHEMA, "synthesis")
@@ -488,10 +560,10 @@ class Supervisor:
 
     async def _continue_execution(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
-        active = [
+        active = self._reap_unreported(session, [
             a for a in state.agents.values()
             if a.kind is AgentKind.EXECUTION and a.status in ACTIVE_AGENT_STATUSES
-        ]
+        ])
 
         if not active:
             registry = self._registry_for(session, None)
@@ -538,10 +610,10 @@ class Supervisor:
         # Prove what can be proven here before asking anyone to look at it.
         self._verify_mechanically(session)
 
-        active = [
+        active = self._reap_unreported(session, [
             a for a in state.agents.values()
             if a.kind is AgentKind.VERIFICATION and a.status in ACTIVE_AGENT_STATUSES
-        ]
+        ])
         if not active:
             registry = self._registry_for(session, None)
             fresh: list[AgentSpec] = []
@@ -625,6 +697,18 @@ class Supervisor:
 
         if self._delegated(stage):
             agent = self._stage_agent(session, "checkpointer", stage, iteration=iteration)
+            if agent is None:
+                # The judged half of the checkpoint is gone, but the mechanical
+                # half was computed here and stands on its own: the run is scored
+                # on what the harness proved rather than left unjudged.
+                session.note(
+                    "checkpoint judgement abandoned; the mechanical scoring stands",
+                    iteration=iteration,
+                )
+                # The mechanical scoring standing in for the judgement it did
+                # not get: same numbers, and its gaps counted once.
+                self._apply_checkpoint(session, deterministic, replace(deterministic, gaps=[]))
+                return None
             system, user = phases.checkpoint_prompt(state, deterministic)
             packet = self._stage_packet(session, agent, system, user, CHECKPOINT_SCHEMA, "checkpoint")
             return SupervisorResponse(
@@ -711,6 +795,11 @@ class Supervisor:
 
         if self._delegated(stage):
             agent = self._stage_agent(session, "improver", stage)
+            if agent is None:
+                # Same rule as a failed learning pass: never end a run badly over
+                # the lessons it did not get to write down.
+                session.note("improvement stage abandoned; ending with the mechanical lessons")
+                return self._complete(session)
             system, user = phases.lessons_prompt(state, checkpoint)
             packet = self._stage_packet(session, agent, system, user, LESSONS_SCHEMA, "improvement")
             return SupervisorResponse(
@@ -1396,14 +1485,85 @@ class Supervisor:
             return
         session.emit(EventType.AGENT_STATUS, {"agent_id": agent.id, "status": str(status)})
 
+    def _abandon_agent(self, session: RunSession, agent: AgentSpec, reason: str) -> None:
+        """End an agent that will never report, naming it and the cause on the log.
+
+        The same convention budget exhaustion and escalation already follow: a
+        terminal transition is not just a status change, it is a note saying
+        which agent ended and why.
+        """
+        session.note(
+            f"agent `{agent.id}` abandoned: {reason}",
+            actor=agent.id,
+            role=agent.role,
+            kind=str(agent.kind),
+            task_id=agent.task_id or "",
+        )
+        self._set_status(session, agent, AgentStatus.FAILED)
+
+    def _abandonment_reason(self, agent: AgentSpec) -> str | None:
+        """Why this agent should be given up on, or ``None`` to keep waiting."""
+        policy = self.config.policy
+        limit = policy.max_unreported_dispatches
+        if limit > 0 and agent.unreported_dispatches >= limit:
+            return (
+                f"handed {agent.unreported_dispatches} packet(s) with no report back "
+                f"({limit} allowed before the supervisor gives up)"
+            )
+
+        timeout = policy.agent_timeout_seconds
+        elapsed = _seconds_since(agent.unreported_since)
+        if timeout > 0 and elapsed is not None and elapsed >= timeout:
+            return (
+                f"no report {elapsed:.0f}s after its packet went out "
+                f"(bound {timeout:.0f}s)"
+            )
+        return None
+
+    def _reap_unreported(
+        self, session: RunSession, agents: list[AgentSpec]
+    ) -> list[AgentSpec]:
+        """Abandon the agents that are past their bound; return the rest.
+
+        Only the host path needs this. An agent the harness drives itself either
+        answers, raises or runs out of turns, and every one of those already ends
+        it; a host agent has none of those paths, so silence is all there is.
+        """
+        if session.state.backend is Backend.AUTONOMOUS:
+            return agents
+        alive: list[AgentSpec] = []
+        for agent in agents:
+            reason = self._abandonment_reason(agent)
+            if reason is None:
+                alive.append(agent)
+            else:
+                self._abandon_agent(session, agent, reason)
+        return alive
+
     def _stage_agent(
         self, session: RunSession, role: str, stage: str, **extra: Any
-    ) -> AgentSpec:
-        """Find or create the pseudo-agent that carries out a supervisory stage."""
+    ) -> AgentSpec | None:
+        """Find or create the pseudo-agent that carries out a supervisory stage.
+
+        ``None`` means the stage has been given up on: either this call abandoned
+        an agent that was past its bound, or an earlier one did. A replacement is
+        deliberately not spawned -- it would put the same packet back on every
+        advance for as long as the host cannot run it, which is the loop the
+        bound exists to break. Each caller decides what its stage does without an
+        answer.
+        """
         state = session.state
-        for agent in state.agents.values():
-            if agent.role == role and agent.status in ACTIVE_AGENT_STATUSES:
+        existing = [a for a in state.agents.values() if a.role == role]
+        for agent in existing:
+            if agent.status not in ACTIVE_AGENT_STATUSES:
+                continue
+            reason = self._abandonment_reason(agent)
+            if reason is None:
                 return agent
+            self._abandon_agent(session, agent, reason)
+            return None
+        if any(a.status is AgentStatus.FAILED for a in existing):
+            return None
         spec = AgentSpec(
             run_id=state.id,
             role=role,
@@ -1429,6 +1589,7 @@ class Supervisor:
     ) -> WorkPacket:
         brief = f"{system}\n\n---\n\n{user}"
         session.emit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
+        session.emit(EventType.AGENT_DISPATCHED, {"agent_id": agent.id, "kind": kind})
         return WorkPacket(
             run_id=session.state.id,
             agent_id=agent.id,
@@ -1539,11 +1700,18 @@ class Supervisor:
         return None
 
     def _dispatch_packet(self, session: RunSession, agent: AgentSpec) -> WorkPacket:
-        """Packet for an agent being (re-)dispatched, carrying any open directive."""
-        return self._agent_packet(
+        """Packet for an agent being (re-)dispatched, carrying any open directive.
+
+        Every packet handed to the host is recorded, because the count of them
+        is the only evidence the supervisor has that an agent which never
+        answers has been asked more than once.
+        """
+        packet = self._agent_packet(
             session, agent,
             directive=self._outstanding_directive(session.state, agent),
         )
+        session.emit(EventType.AGENT_DISPATCHED, {"agent_id": agent.id, "kind": packet.kind})
+        return packet
 
     def _schema_for(self, agent: AgentSpec) -> dict[str, Any]:
         return {
@@ -1678,6 +1846,19 @@ class Supervisor:
 # --------------------------------------------------------------------------
 # Decision helpers
 # --------------------------------------------------------------------------
+
+
+def _seconds_since(ts: str) -> float | None:
+    """Seconds elapsed since an event timestamp, or ``None`` if it is unusable."""
+    if not ts:
+        return None
+    try:
+        when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - when).total_seconds()
 
 
 def _coerce_decision(raw: dict[str, Any]) -> TaskDecision:

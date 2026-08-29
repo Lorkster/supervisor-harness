@@ -9,6 +9,9 @@ The host drives a loop:
 4. ``supervisor_advance`` -- when every packet is reported, get the next phase.
 5. ``supervisor_approve`` -- after the user decides on the proposed tasks.
 
+``supervisor_abandon`` covers the case the host is the only one who can see: a
+sub-agent that crashed or was cancelled and will never report.
+
 The harness holds the state, the supervision and the persistence. The host
 contributes the tools, the repository context and the user's permission model.
 """
@@ -41,6 +44,11 @@ supervisor_report with each result.
 Do not summarise, paraphrase or improve a packet's brief before dispatching it:
 the supervisor measures drift against that exact text. Do not answer a packet
 yourself if a subagent is available; the point is parallelism and independence.
+
+If one of your subagents crashes, is cancelled, or you cannot run its packet,
+call supervisor_abandon with the agent id and what happened. The harness cannot
+tell a dead agent from a slow one, and will otherwise re-issue that packet on
+every advance. Never invent a result on a missing agent's behalf.
 
 After reporting every packet, call supervisor_advance to get the next phase.
 When the run reaches await_approval, present the proposed tasks to the user with
@@ -164,6 +172,26 @@ def build_server() -> Any:
                 "received": str(result)[:200],
             }
         return _result(await supervisor().report(run_id, agent_id, payload))
+
+    @server.tool(
+        description=(
+            "Give up on an agent that will never report -- its sub-agent crashed, "
+            "was cancelled, or you cannot run its packet. The agent is marked "
+            "failed and its phase settles instead of re-issuing the packet forever."
+        )
+    )
+    async def supervisor_abandon(
+        run_id: str, agent_id: str, reason: str = ""
+    ) -> dict[str, Any]:
+        """Report an agent as gone.
+
+        Args:
+            run_id: From the packet.
+            agent_id: From the packet.
+            reason: What happened, in one line. It goes on the run's log, so say
+                what you actually know -- "sub-agent was cancelled", not "failed".
+        """
+        return _result(await supervisor().abandon(run_id, agent_id, reason))
 
     @server.tool(
         description="Move the run to its next phase once the current packets are reported."

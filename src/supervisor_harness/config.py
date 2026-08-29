@@ -61,6 +61,16 @@ class Policy:
     drift_hard_threshold: float = 0.8   # score above which the agent is stopped
     model_drift_check: bool = True      # escalate to a model when heuristics fire
 
+    # Abandoning a host agent. A host-run agent has no failure path of its own:
+    # it reports through the caller, so a crashed or cancelled subagent is
+    # silent rather than failed, and its packet is re-emitted on every advance.
+    # These bound the silence. The dispatch count is what a host actually
+    # exercises, since the supervisor only wakes when the host calls it; the
+    # wall-clock bound is off by default because a host agent may legitimately
+    # take a long time and the host can always abandon it explicitly.
+    max_unreported_dispatches: int = 3   # packets with no report in between; 0 disables
+    agent_timeout_seconds: float = 0.0   # since the first unanswered packet; 0 disables
+
     # Quality gates
     checkpoint_threshold: float = 0.75  # mean of quality/scope/completeness to pass
     max_checkpoint_iterations: int = 3

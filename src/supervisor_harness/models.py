@@ -276,6 +276,13 @@ class AgentSpec:
     depends_on: list[str] = field(default_factory=list)
     status: AgentStatus = AgentStatus.PENDING
     created_at: str = field(default_factory=now_iso)
+    # How long this agent has been silent. A host-run agent reports through the
+    # caller, so a subagent that crashed or was cancelled looks exactly like one
+    # still working: these two are the only signals the supervisor has. Both
+    # count packets handed out since the agent last answered, and both reset the
+    # moment it does.
+    unreported_dispatches: int = 0
+    unreported_since: str = ""
 
 
 @dataclass

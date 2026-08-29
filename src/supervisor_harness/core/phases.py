@@ -478,6 +478,11 @@ def deterministic_checkpoint(state: RunState, policy: Policy, iteration: int) ->
             gaps.append(f"agent `{agent.id}` ({agent.role}) was stopped before finishing")
         elif agent.status is AgentStatus.BLOCKED:
             gaps.append(f"agent `{agent.id}` ({agent.role}) remained blocked")
+        elif agent.status is AgentStatus.FAILED:
+            # Abandoned, or blown up mid-run. Either way its share of the work
+            # was never done, and a checkpoint that cannot see that scores the
+            # run as though nothing were missing.
+            gaps.append(f"agent `{agent.id}` ({agent.role}) ended without reporting")
 
     passed = (
         not failed
