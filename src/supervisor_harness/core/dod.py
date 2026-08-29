@@ -103,6 +103,13 @@ _COVERS_CODE_QUALITY = re.compile(
 # small: the command string is copied verbatim out of a model's JSON by
 # ``parse_dod``, which makes it untrusted input, and anything outside the list
 # is a request to run arbitrary code with the harness's own permissions.
+#
+# It is an allow-list of runners, not a proof of containment: several entries
+# run whatever the project hands them (``npm test``, ``make``), and ``python``
+# and ``node`` will run source given on the command line. ``tools.py`` reuses
+# this list to fence a scoped agent's shell and refuses those inline-source
+# flags on top; a criterion command is not scoped at all, and is bounded only by
+# the user approving the task it belongs to.
 VERIFY_EXECUTABLES = frozenset({
     "python", "python3", "py", "pytest", "tox", "coverage", "mypy", "ruff",
     "flake8", "pylint", "black", "isort", "bandit",

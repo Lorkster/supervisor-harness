@@ -207,6 +207,17 @@ are additionally confined to the agent's declared scope. Shell execution is
 **off** unless you set `policy.allow_command_execution`, because in delegated
 mode that decision belongs to your host.
 
+Turning it on adds `run_command` for execution agents, and that one is a fence
+rather than a sandbox — worth reading before you enable it. A scoped agent may
+run only the project's own check runners (`pytest`, `npm`, `make`, …), may not
+use shell metacharacters or globs, may not name a path outside its scope, and
+may not hand a runner its program inline (`python -c`, `node -e`). But a check
+runner still runs whatever the project tells it to: `npm test` runs a line of
+`package.json` and `make` runs the Makefile, either of which can write anywhere.
+It is built to keep a drifting agent inside its scope, not to contain a hostile
+one — if the workspace's own build scripts are untrusted, run the harness in a
+container. An agent with no declared scope has no fence at all.
+
 Tool rounds do not consume an agent's turn budget — reading three files to
 answer one question is one piece of work, not three.
 
