@@ -5,6 +5,7 @@ Two audiences. A person inspecting or driving runs by hand:
     supervisor init
     supervisor run "harden the login endpoint" --yes
     supervisor status
+    supervisor events <run> --type note
     supervisor lessons
 
 and a host or script driving the same protocol the MCP server exposes:
@@ -29,6 +30,7 @@ from .config import KNOWN_STAGES, PROJECT_CONFIG, load_config, write_example
 from .core.supervisor import Supervisor, SupervisorResponse
 from .host.detect import detect_host
 from .models import Backend, RunMode
+from .store.events import Event, EventType, event_to_dict
 from .store.runstore import RunStore
 
 INTEGRATIONS = Path(__file__).parent / "integrations"
@@ -370,6 +372,57 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_events(args: argparse.Namespace) -> int:
+    """Print a run's event log -- the only place the diagnostic notes live."""
+    store = RunStore.discover(Path(args.workspace).resolve())
+    run_id = args.run_id or store.latest_run_id()
+    if not run_id:
+        print("No runs recorded yet.", file=sys.stderr)
+        return 1
+    # Membership rather than a path probe: the id comes from the command line
+    # and is about to be joined onto the runs directory.
+    if run_id not in store.list_run_ids():
+        print(f"error: no such run: {run_id}", file=sys.stderr)
+        return 2
+
+    wanted = args.type.strip().lower()
+    if wanted and wanted not in _EVENT_TYPES:
+        print(f"error: unknown event type '{args.type}' -- choose one of "
+              f"{', '.join(sorted(_EVENT_TYPES))}", file=sys.stderr)
+        return 2
+
+    events = [
+        event for event in store.log(run_id).read_all()
+        if event.seq > args.since and (not wanted or str(event.type) == wanted)
+    ]
+
+    if args.json:
+        _emit({"run_id": run_id, "events": [event_to_dict(e) for e in events]}, True)
+        return 0
+    if not events:
+        print("No matching events.")
+        return 0
+    for event in events:
+        print(f"{event.seq:>5}  {event.ts}  {str(event.type):<18} {event.actor:<22} "
+              f"{_event_summary(event)}")
+    return 0
+
+
+_EVENT_TYPES = {str(t) for t in EventType}
+
+
+def _event_summary(event: Event) -> str:
+    """One line of an event's payload: the note text, else its remaining fields."""
+    text = str(event.payload.get("text", "")).strip()
+    if text:
+        return text.replace("\n", " ")
+    fields = " ".join(
+        f"{key}={value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}"
+        for key, value in event.payload.items()
+    ).replace("\n", " ")
+    return fields if len(fields) <= 160 else fields[:157] + "..."
+
+
 def cmd_runs(args: argparse.Namespace) -> int:
     store = RunStore.discover(Path(args.workspace).resolve())
     store.reindex()
@@ -476,6 +529,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"supervisor-harness {__version__}")
     parser.add_argument("-w", "--workspace", default=".", help="workspace root (default: cwd)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--debug", action="store_true",
+                        help="let an unexpected failure raise, with its traceback")
 
     # The same flags again, accepted after the subcommand. argparse only looks
     # for top-level options before the subcommand, so `supervisor start x --json`
@@ -487,6 +542,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="machine-readable output")
     common.add_argument("-w", "--workspace", default=argparse.SUPPRESS,
                         help="workspace root (default: cwd)")
+    common.add_argument("--debug", action="store_true", default=argparse.SUPPRESS,
+                        help="let an unexpected failure raise, with its traceback")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -535,6 +592,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("run_id", nargs="?", default="")
     p.set_defaults(func=cmd_status)
 
+    p = sub.add_parser("events", parents=[common],
+                       help="print a run's event log, including its diagnostic notes")
+    p.add_argument("run_id", nargs="?", default="")
+    p.add_argument("-t", "--type", default="", metavar="TYPE",
+                   help="only events of this type, e.g. note")
+    p.add_argument("--since", type=int, default=0, metavar="SEQ",
+                   help="only events after this sequence number")
+    p.set_defaults(func=cmd_events)
+
     p = sub.add_parser("runs", parents=[common], help="list recent runs")
     p.add_argument("-n", "--limit", type=int, default=20)
     p.set_defaults(func=cmd_runs)
@@ -565,10 +631,14 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 130
     except FileNotFoundError as exc:
+        if args.debug:
+            raise
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 - the CLI reports, it does not traceback
-        print(f"error: {exc}", file=sys.stderr)
+        if args.debug:
+            raise
+        print(f"error: {exc}\n(re-run with --debug for a traceback)", file=sys.stderr)
         return 1
 
 

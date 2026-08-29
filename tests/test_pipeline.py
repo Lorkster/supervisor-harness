@@ -9,6 +9,7 @@ from supervisor_harness.models import (
     Phase,
     RunMode,
     TaskStatus,
+    VerifyMethod,
 )
 
 PROMPT = "Add rate limiting to the public login endpoint so credential stuffing is blocked"
@@ -54,6 +55,40 @@ async def test_quality_bars_are_added_to_proposed_tasks(supervisor: Supervisor) 
     assert "weakness" in statements          # security bar
     assert "conventions" in statements       # code-quality bar
     assert any(c["method"] in ("test", "command") for c in criteria)
+
+
+async def test_modification_cannot_drop_a_mandatory_bar(supervisor: Supervisor) -> None:
+    """Replacing a definition of done at approval re-applies the policy bars."""
+    from supervisor_harness.store.events import EventType
+
+    response = await supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    while response.action != "await_approval":
+        response = await supervisor.advance(response.run_id)
+
+    proposed = response.tasks[0]
+    before = [c["statement"] for c in proposed["definition_of_done"]]
+
+    await supervisor.approve(response.run_id, [{
+        "task_id": proposed["id"],
+        "decision": "modify",
+        "modifications": {"dod": [{"statement": "It is finished"}]},
+    }])
+
+    session = supervisor.store.open(response.run_id)
+    task = session.state.tasks[proposed["id"]]
+    statements = " ".join(c.statement.lower() for c in task.dod)
+
+    assert "weakness" in statements, "the security bar survived no modification"
+    assert "conventions" in statements, "the code-quality bar survived no modification"
+    assert any(c.method is VerifyMethod.TEST for c in task.dod),         "the test bar survived no modification"
+    assert any(c.statement == "It is finished" for c in task.dod),         "the replacement the user asked for was discarded"
+
+    notes = [e.payload.get("text", "") for e in session.events()
+             if e.type is EventType.NOTE]
+    dropped = [n for n in notes if n.startswith("modification dropped")]
+    assert dropped, "the criteria a modification removes must be named on the log"
+    for statement in before:
+        assert any(statement in n for n in dropped), f"removal of {statement!r} unrecorded"
 
 
 async def test_rejecting_every_task_still_produces_a_report(supervisor: Supervisor) -> None:

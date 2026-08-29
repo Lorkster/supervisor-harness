@@ -16,6 +16,7 @@ from ..models import (
     AgentSpec,
     AgentStatus,
     AgentTurn,
+    Artifact,
     Checkpoint,
     CriterionStatus,
     Directive,
@@ -83,7 +84,19 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
     t = event.type
 
     if t is EventType.RUN_CREATED:
-        state = from_jsonable(p.get("run", {}), RunState)
+        # Merge the genesis record's identity and configuration into the
+        # accumulator rather than replacing it: a second RUN_CREATED anywhere in
+        # the log must not discard the history folded before it, and fold()'s
+        # initial state must survive it. Phase is left to PHASE_CHANGED and
+        # RUN_ENDED, which are the events that actually move it.
+        genesis = from_jsonable(p.get("run", {}), RunState)
+        state.id = genesis.id
+        state.prompt = genesis.prompt
+        state.workspace = genesis.workspace
+        state.mode = genesis.mode
+        state.backend = genesis.backend
+        state.host = genesis.host
+        state.created_at = genesis.created_at
 
     elif t is EventType.PHASE_CHANGED:
         state.phase = Phase(p["phase"])
@@ -170,10 +183,32 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
     elif t is EventType.LESSON_LEARNED:
         state.lessons.append(from_jsonable(p["lesson"], Lesson))
 
+    elif t is EventType.ARTIFACT_WRITTEN:
+        artifact = Artifact(
+            path=str(p.get("path", "")),
+            kind=str(p.get("kind", "")),
+            actor=event.actor,
+            ts=event.ts,
+        )
+        # The report artifact is rewritten on every improvement iteration, so
+        # keep one entry per path: the latest write is the one that survives.
+        state.artifacts = [a for a in state.artifacts if a.path != artifact.path]
+        state.artifacts.append(artifact)
+
+    elif t is EventType.NOTE:
+        pass  # audit-only: a note carries nothing the state projects
+
     elif t is EventType.RUN_ENDED:
         state.phase = Phase(p.get("phase", Phase.COMPLETE))
         if p.get("error"):
             state.error = p["error"]
+
+    else:
+        # No branch for this type. Record it rather than drop it, so an event
+        # type added later -- or misspelled -- is visible in the folded state.
+        name = str(t)
+        if name not in state.unhandled_events:
+            state.unhandled_events.append(name)
 
     state.updated_at = event.ts
     return state

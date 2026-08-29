@@ -59,10 +59,9 @@ class HostSimulator:
             "verification": "verification",
         }[packet.kind]
 
-        if stage in self.answers.overrides:
-            return dict(self.answers.overrides[stage])
-
-        # Reuse the fake provider's canned answers, which key off the brief text.
+        # Reuse the fake provider's canned answers, which key off the brief
+        # text, and its script/override precedence, so a scripted stage behaves
+        # the same on this path as it does under the autonomous backend.
         from supervisor_harness.providers.base import ChatMessage, CompletionRequest
 
         request = CompletionRequest(
@@ -70,7 +69,7 @@ class HostSimulator:
             system=packet.brief[:200],
             json_schema=packet.schema,
         )
-        return getattr(self.answers, f"_{stage}")(request)
+        return self.answers.answer_for(stage, request)
 
     async def drive(self, response: SupervisorResponse, *, approve: bool = True) -> SupervisorResponse:
         """Run the loop the host-side skill is documented to run."""
@@ -190,3 +189,57 @@ async def test_host_agents_are_matched_to_roles(workspace: Path, host_config: Ha
     by_role = {p.title: p.host_agent_type for p in response.packets}
     assert by_role.get("Architecture") == "Plan", by_role
     assert by_role.get("Security") == "general-purpose", by_role
+
+
+BLOCKED_EXECUTION = {
+    "output": (
+        "Added the per-IP counter to the login handler in src/auth/login.py, but the "
+        "Redis client in src/cache.py is synchronous and the handler is async, so the "
+        "account-keyed half of the limiter cannot be finished without a decision on "
+        "which client to use."
+    ),
+    "files_touched": ["src/auth/login.py"],
+    "commands_run": [],
+    "criteria_progress": [],
+    "status": "blocked",
+    "blocked_on": "Whether to add an async Redis client or make the login handler sync.",
+}
+
+
+async def test_escalate_settles_the_agent_the_same_way_on_both_backends(
+    workspace: Path, host_config: HarnessConfig, config: HarnessConfig, fake: FakeProvider
+) -> None:
+    """An escalating execution agent ends identically whoever ran it.
+
+    ``status_after`` maps ESCALATE to BLOCKED on both paths, so the agent has to
+    leave the active set and its task has to reach verification either way --
+    otherwise the same directive finishes one backend and loops the other.
+    """
+    from supervisor_harness.models import ACTIVE_AGENT_STATUSES, AgentKind, AgentStatus
+    from supervisor_harness.providers.router import ModelRouter
+
+    fake.overrides["execution"] = dict(BLOCKED_EXECUTION)
+    store = RunStore(workspace / ".supervisor")
+    host = HostInfo(name="claude-code", workspace=str(workspace), confidence=1.0)
+
+    host_supervisor = Supervisor(workspace=workspace, config=host_config, store=store, host=host)
+    host_final = await HostSimulator(host_supervisor, fake).drive(
+        await host_supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    )
+
+    router = ModelRouter(config, host_name=host.name)
+    router.register("fake", fake)
+    autonomous = Supervisor(workspace=workspace, config=config, store=store,
+                            host=host, router=router)
+    auto_final = await autonomous.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+
+    def settled(supervisor: Supervisor, run_id: str) -> tuple[AgentStatus, TaskStatus]:
+        state = supervisor.store.load_state(run_id)
+        agent = next(a for a in state.agents.values() if a.kind is AgentKind.EXECUTION)
+        assert agent.status not in ACTIVE_AGENT_STATUSES, "an escalated agent is not still running"
+        return agent.status, state.tasks[agent.task_id].status
+
+    assert host_final.action != "failed", host_final.message
+    assert auto_final.action != "failed", auto_final.message
+    assert settled(host_supervisor, host_final.run_id) == settled(autonomous, auto_final.run_id)
+    assert settled(host_supervisor, host_final.run_id)[0] is AgentStatus.BLOCKED

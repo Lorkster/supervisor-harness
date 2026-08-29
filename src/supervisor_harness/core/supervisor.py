@@ -37,7 +37,7 @@ from ..agents.brief import (
 )
 from ..agents.registry import AgentRegistry
 from ..agents.roles import ROLES_BY_ID
-from ..config import HarnessConfig, load_config
+from ..config import KNOWN_STAGES, HarnessConfig, Policy, load_config
 from ..contracts import (
     ANALYSIS_TURN_SCHEMA,
     CHECKPOINT_SCHEMA,
@@ -71,6 +71,7 @@ from ..models import (
     Decision,
     Directive,
     DirectiveKind,
+    DoDCriterion,
     DriftAssessment,
     ExecutionTask,
     Phase,
@@ -444,7 +445,13 @@ class Supervisor:
             self._transition(session, Phase.IMPROVING)
             return
 
+        # Before anything reads depends_on: the model names dependencies by
+        # title, and runnable_tasks matches on id. Unresolved, a dependent task
+        # is approved and then never dispatched.
+        dep_notes = phases.resolve_dependencies(tasks)
         tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
+        for task_id, entries in dep_notes.items():
+            notes.setdefault(task_id, []).extend(entries)
         for task in tasks:
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
                                                    "notes": notes.get(task.id, [])})
@@ -492,11 +499,14 @@ class Supervisor:
             for task in phases.runnable_tasks(state):
                 if task.assigned_agent_id and task.status is not TaskStatus.FAILED:
                     continue
+                # Count the attempt before building, so the agent is stamped
+                # with the attempt it is actually working -- the verifier for
+                # this attempt is matched against the same number.
+                task.attempts += 1
                 agent = phases.build_execution_agent(state, task, self.config, registry)
                 fresh.append(agent)
                 task.assigned_agent_id = agent.id
                 task.status = TaskStatus.IN_PROGRESS
-                task.attempts += 1
                 task.updated_at = now_iso()
                 session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
             if fresh:
@@ -538,7 +548,12 @@ class Supervisor:
             for task in state.tasks.values():
                 if task.status is not TaskStatus.AWAITING_VERIFICATION:
                     continue
+                # Match the attempt too. A retired verifier stays in
+                # state.agents -- the fold replays it -- so without this the
+                # first attempt's verifier suppresses every later one and a
+                # remediated task is closed on stale evidence.
                 if any(a.task_id == task.id and a.kind is AgentKind.VERIFICATION
+                       and a.attempt == task.attempts
                        for a in state.agents.values()):
                     continue
                 fresh.append(phases.build_verification_agent(state, task, self.config, registry))
@@ -770,7 +785,7 @@ class Supervisor:
                 pass
 
         if agent.kind is AgentKind.EXECUTION and directive.kind in (
-            DirectiveKind.ACCEPT, DirectiveKind.STOP
+            DirectiveKind.ACCEPT, DirectiveKind.STOP, DirectiveKind.ESCALATE
         ):
             self._mark_task_awaiting_verification(session, agent, payload)
 
@@ -835,7 +850,9 @@ class Supervisor:
             brief=brief,
             task_prompt=state.prompt,
             turn_index=max(0, turns_used - 1),
-            workspace=str(self.workspace),
+            # The run records the workspace it was created against; this
+            # process's own may be a resumed cwd that the agents never saw.
+            workspace=str(state.workspace),
         )
         assessment = assess_heuristically(ctx)
         session.emit(
@@ -860,7 +877,17 @@ class Supervisor:
                 {"message_ids": [m.id for m in inbox], "agent_id": agent.id},
             )
 
-        self._set_status(session, agent, status_after(directive))
+        # A terminal directive ends the agent on both backends, so the reason it
+        # ended belongs on the log rather than only in the response the host is
+        # handed.
+        status = status_after(directive)
+        if status not in ACTIVE_AGENT_STATUSES:
+            session.note(
+                f"agent `{agent.id}` finished ({directive.kind.value}): "
+                f"{directive.rationale or 'no rationale given'}",
+                actor=agent.id,
+            )
+        self._set_status(session, agent, status)
         return directive
 
     async def supervise_with_model(
@@ -1094,7 +1121,10 @@ class Supervisor:
             task = state.tasks.get(decision.task_id)
             if task is None:
                 continue
-            _apply_modifications(task, decision.modifications)
+            for text in _apply_modifications(
+                task, decision.modifications, self.config.policy, self.workspace
+            ):
+                session.note(text, task_id=task.id)
             task.decision = decision.decision
             task.decision_note = decision.note
             task.status = {
@@ -1249,6 +1279,19 @@ class Supervisor:
                 ChatMessage("user", render_directive(directive, agent)),
             ]
 
+        # Falling out of the loop means the supervised turns ran out without a
+        # terminal directive: every turn drew a continuation, or the budget
+        # allowed none. Without a terminal status the agent stayed in
+        # ACTIVE_AGENT_STATUSES, so the phase drove it again from turn one until
+        # the run was failed for not settling.
+        turns_used = session.state.turn_counts.get(agent.id, 0)
+        session.note(
+            f"agent `{agent.id}` stopped: turn budget exhausted "
+            f"({turns_used}/{agent.budget.max_turns}) without a terminal directive",
+            actor=agent.id,
+        )
+        self._set_status(session, agent, AgentStatus.STOPPED)
+
     async def run(
         self,
         prompt: str,
@@ -1260,7 +1303,17 @@ class Supervisor:
 
         ``auto_approve`` accepts every proposed task, which is only appropriate
         for unattended use where the user has already accepted that trade.
+
+        A stage routed to the host is rejected before the run is created: there
+        is no host here to execute the packet it would produce.
         """
+        delegated = self._host_routed_stages()
+        if delegated:
+            raise ValueError(
+                "an autonomous run needs every stage routed to a model provider; "
+                f"routed to the host: {', '.join(delegated)}"
+            )
+
         response = await self.start(prompt, mode=mode, backend=Backend.AUTONOMOUS)
         while response.action not in ("complete", "failed"):
             if response.action == "await_approval":
@@ -1271,6 +1324,19 @@ class Supervisor:
                     [{"task_id": t["id"], "decision": "approve"} for t in response.tasks],
                 )
                 continue
+            if response.action in ("dispatch", "await_reports"):
+                # Nothing here runs a host packet. Advancing again would re-enter
+                # the same phase, emit the same agents and briefs, and never
+                # terminate -- so the run ends here, naming the phase and cause.
+                delegated = self._host_routed_stages()
+                session = self.store.open(response.run_id)
+                return self._error(
+                    session,
+                    f"autonomous run cannot consume a {response.action!r} response in "
+                    f"phase {response.phase}; "
+                    + (f"host-routed stage(s): {', '.join(delegated)}" if delegated
+                       else f"{len(response.packets)} packet(s) need a host"),
+                )
             response = await self.advance(response.run_id)
         return response
 
@@ -1280,6 +1346,13 @@ class Supervisor:
 
     def _delegated(self, stage: str) -> bool:
         return self.router.is_host(stage)
+
+    def _host_routed_stages(self) -> list[str]:
+        """Every configured stage that resolves to the host provider."""
+        return sorted(
+            stage for stage in set(self.config.routing) | set(KNOWN_STAGES)
+            if self._delegated(stage)
+        )
 
     def _stage_for(self, agent: AgentSpec) -> str:
         role = ROLES_BY_ID.get(agent.role)
@@ -1621,13 +1694,24 @@ def _coerce_decision(raw: dict[str, Any]) -> TaskDecision:
 _MODIFIABLE = {"title", "action", "motivation", "effort"}
 
 
-def _apply_modifications(task: ExecutionTask, modifications: dict[str, Any]) -> None:
+def _apply_modifications(
+    task: ExecutionTask,
+    modifications: dict[str, Any],
+    policy: Policy,
+    workspace: Path | None = None,
+) -> list[str]:
     """Apply the user's edits to an approved task.
 
     Only descriptive fields can be edited freely. Criteria may be replaced
     wholesale but never silently dropped, because weakening a definition of done
-    after the fact is exactly how verification stops meaning anything.
+    after the fact is exactly how verification stops meaning anything. A
+    replacement therefore passes the same gate a proposed definition of done
+    does -- the mandatory bars policy requires are re-applied and weak criteria
+    are reported -- and every criterion the edit removed is named.
+
+    Returns the notes the user should see, for the caller to record on the run.
     """
+    notes: list[str] = []
     for key, value in modifications.items():
         if key in _MODIFIABLE and isinstance(value, str):
             setattr(task, key, value)
@@ -1636,6 +1720,28 @@ def _apply_modifications(task: ExecutionTask, modifications: dict[str, Any]) -> 
 
             replacement = parse_dod(value)
             if replacement:
+                dropped = _dropped_criteria(task.dod, replacement)
                 task.dod = replacement
+                notes.extend(
+                    f"modification dropped {'mandatory ' if c.mandatory else ''}"
+                    f"criterion: {c.statement}"
+                    for c in dropped
+                )
+                _, bars = phases.prepare_tasks([task], policy, workspace)
+                notes.extend(bars.get(task.id, []))
         elif key == "scope_paths" and isinstance(value, list):
             task.scope.paths = [str(v) for v in value]
+    return notes
+
+
+def _dropped_criteria(
+    before: list[DoDCriterion], after: list[DoDCriterion]
+) -> list[DoDCriterion]:
+    """Criteria the replacement does not restate. Ids are regenerated by
+    ``parse_dod``, so the statement is what identifies a criterion here."""
+    kept = {_criterion_key(c) for c in after}
+    return [c for c in before if _criterion_key(c) not in kept]
+
+
+def _criterion_key(crit: DoDCriterion) -> str:
+    return " ".join(crit.statement.lower().split())

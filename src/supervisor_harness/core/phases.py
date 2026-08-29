@@ -294,6 +294,44 @@ def build_report(state: RunState, data: dict) -> Report:
     )
 
 
+def resolve_dependencies(tasks: list[ExecutionTask]) -> dict[str, list[str]]:
+    """Rewrite each ``depends_on`` entry to the id of the task it names.
+
+    The synthesis model writes dependencies as titles, because the ids do not
+    exist until the harness parses its answer. :func:`runnable_tasks` compares
+    them against a set of ids, so an unresolved title never matches and the
+    task is silently unrunnable for the life of the run -- a user can approve
+    work that can never be dispatched. Resolving here, once, is what makes the
+    comparison downstream meaningful.
+
+    An entry naming no task is dropped rather than left to block forever, and
+    reported per task id so the user sees it before approving.
+    """
+    by_title = {t.title.strip().casefold(): t.id for t in tasks if t.title.strip()}
+    known_ids = {t.id for t in tasks}
+    notes: dict[str, list[str]] = {}
+    for task in tasks:
+        resolved: list[str] = []
+        for dep in task.depends_on:
+            entry = str(dep).strip()
+            if entry in known_ids:
+                resolved.append(entry)
+                continue
+            match = by_title.get(entry.casefold())
+            if match is None:
+                notes.setdefault(task.id, []).append(
+                    f"dropped dependency naming no task in this plan: {entry!r}"
+                )
+            elif match == task.id:
+                notes.setdefault(task.id, []).append(
+                    f"dropped self-dependency: {entry!r}"
+                )
+            elif match not in resolved:
+                resolved.append(match)
+        task.depends_on = resolved
+    return notes
+
+
 def prepare_tasks(
     tasks: list[ExecutionTask], policy: Policy, workspace: Path | None = None
 ) -> tuple[list[ExecutionTask], dict[str, list[str]]]:
@@ -361,6 +399,7 @@ def build_execution_agent(
         budget=Budget(max_turns=config.policy.execution_max_turns),
         host_agent_type=match.name if match and match.spawnable else None,
         task_id=task.id,
+        attempt=task.attempts,
     )
 
 
@@ -385,6 +424,7 @@ def build_verification_agent(
         budget=Budget(max_turns=3),
         host_agent_type=match.name if match and match.spawnable else None,
         task_id=task.id,
+        attempt=task.attempts,
     )
 
 

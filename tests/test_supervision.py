@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from supervisor_harness.config import Policy, default_config
 from supervisor_harness.core.blackboard import Blackboard, detect_contradictions
 from supervisor_harness.core.dod import (
@@ -223,6 +225,45 @@ def test_quality_bars_apply_only_to_code_tasks() -> None:
     assert added_prose == []
 
 
+def test_quality_bars_are_not_suppressed_by_the_word_author() -> None:
+    """'author' is not 'auth': only a criterion about authorisation covers the bar."""
+    innocent = ExecutionTask(
+        title="Add a rate limiter",
+        action="Implement middleware in src/limits.py",
+        dod=[DoDCriterion(statement="The module docstring names the author",
+                          method=VerifyMethod.INSPECTION, expect="src/limits.py: Author")],
+    )
+    covered = ExecutionTask(
+        title="Add a rate limiter",
+        action="Implement middleware in src/limits.py",
+        dod=[DoDCriterion(statement="Authorisation is checked before the counter is read",
+                          method=VerifyMethod.INSPECTION, expect="src/limits.py: require_role")],
+    )
+
+    added_innocent = apply_quality_bars(innocent, Policy())
+    added_covered = apply_quality_bars(covered, Policy())
+
+    assert any("weakness" in c.statement for c in added_innocent), \
+        "the security bar was suppressed by the word 'author'"
+    assert not any("weakness" in c.statement for c in added_covered), \
+        "a criterion about authorisation should still cover the security bar"
+
+
+def test_quality_bars_are_not_suppressed_by_the_word_inspection() -> None:
+    """'inspection' is not 'spec': the test bar survives it."""
+    task = ExecutionTask(
+        title="Add a rate limiter",
+        action="Implement middleware in src/limits.py",
+        dod=[DoDCriterion(statement="A manual inspection shows the counter is shared",
+                          method=VerifyMethod.INSPECTION, expect="src/limits.py: redis")],
+    )
+
+    added = apply_quality_bars(task, Policy())
+
+    assert any(c.method is VerifyMethod.TEST for c in added), \
+        "the test bar was suppressed by the word 'inspection'"
+
+
 def test_task_is_not_done_until_every_mandatory_criterion_passes() -> None:
     task = ExecutionTask(
         title="t",
@@ -314,6 +355,62 @@ def test_a_broadcast_reaches_every_recipient_not_just_the_first() -> None:
     assert [m.id for m in Blackboard.inbox_for("agt_c", state)] == ["m1"]
     # And never back to its sender.
     assert Blackboard.inbox_for("agt_a", state) == []
+
+
+def _route_and_fold(state: RunState, message: Message) -> RunState:
+    """Route a message the way the supervisor does, then rebuild state from the log.
+
+    The routing decision is only real if it survives the round trip through the
+    event log: the supervisor emits ``MESSAGE_SENT`` and every reader -- resume,
+    audit, the next turn's inbox -- sees the folded state, not the ``Routing``.
+    """
+    from supervisor_harness.serde import to_jsonable
+    from supervisor_harness.store.events import Event, EventType, fold
+
+    routing = Blackboard(state.id).route(message, state)
+    event = Event(
+        seq=1,
+        run_id=state.id,
+        type=EventType.MESSAGE_SENT,
+        actor=message.sender,
+        payload={"message": to_jsonable(routing.message),
+                 "deliver_to": routing.deliver_to,
+                 "escalated": routing.escalate},
+    )
+    return fold([event], state)
+
+
+def test_a_message_to_an_unknown_agent_is_still_delivered_after_the_fold() -> None:
+    """The broadening survives persistence; deliver_to alone would be discarded."""
+    state = RunState(prompt=PROMPT)
+    for aid in ("agt_a", "agt_b", "agt_c"):
+        state.agents[aid] = AgentSpec(id=aid)
+
+    folded = _route_and_fold(
+        state,
+        Message(id="m1", sender="agt_a", recipient="agt_ghost",
+                kind=MessageKind.WARNING, content="the limiter must key on account"),
+    )
+
+    assert [m.id for m in folded.pending_messages("agt_b")] == ["m1"]
+    assert [m.id for m in folded.pending_messages("agt_c")] == ["m1"]
+    assert folded.pending_messages("agt_a") == [], "never back to its sender"
+    assert "agt_ghost" in folded.messages[0].supervisor_note
+
+
+def test_a_message_to_a_known_agent_reaches_only_that_inbox_after_the_fold() -> None:
+    state = RunState(prompt=PROMPT)
+    for aid in ("agt_a", "agt_b", "agt_c"):
+        state.agents[aid] = AgentSpec(id=aid)
+
+    folded = _route_and_fold(
+        state,
+        Message(id="m1", sender="agt_a", recipient="agt_b", content="just for you"),
+    )
+
+    assert [m.id for m in Blackboard.inbox_for("agt_b", folded)] == ["m1"]
+    assert Blackboard.inbox_for("agt_c", folded) == []
+    assert folded.messages[0].supervisor_note == ""
 
 
 def test_contradictions_between_lenses_are_detected() -> None:
@@ -445,3 +542,76 @@ async def test_mechanical_verdict_outranks_an_agent_claim(
     assert criterion.verified_by == "harness"
     assert "does not contain" in criterion.evidence
     assert not state.tasks[task_id].dod_satisfied()
+
+
+# --------------------------------------------------------------------------
+# Phase settlement: every path out of an agent has to be terminal
+# --------------------------------------------------------------------------
+
+
+async def test_turn_budget_exhaustion_leaves_no_agent_active(
+    supervisor: Supervisor, fake
+) -> None:
+    """An agent whose supervised loop ends without a terminal directive still settles.
+
+    ``Budget.exhausted`` reads ``max_turns=0`` as unlimited, so no STOP directive
+    is ever issued, and the driving loop runs zero turns. Before this was closed
+    the agent stayed in ``ACTIVE_AGENT_STATUSES`` and the phase drove it again on
+    every advance until the run was failed for not settling.
+    """
+    from supervisor_harness.models import ACTIVE_AGENT_STATUSES, AgentKind
+    from supervisor_harness.store.events import EventType
+
+    supervisor.config.policy.default_max_turns = 0
+
+    response = await supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    for _ in range(20):
+        if response.action in ("complete", "failed", "await_approval"):
+            break
+        response = await supervisor.advance(response.run_id)
+
+    assert response.action != "failed", response.message
+    assert "did not settle" not in response.message
+
+    session = supervisor.store.open(response.run_id)
+    analysts = [a for a in session.state.agents.values() if a.kind is AgentKind.ANALYSIS]
+    assert analysts, "the run should have spawned analysis agents"
+    assert all(a.status not in ACTIVE_AGENT_STATUSES for a in analysts)
+
+    notes = [e for e in session.events() if e.type is EventType.NOTE]
+    exhausted = [e for e in notes if "turn budget" in e.payload.get("text", "")]
+    assert exhausted, "budget exhaustion must be on the log"
+    assert {e.actor for e in exhausted} >= {a.id for a in analysts}
+
+
+async def test_autonomous_run_fails_on_a_host_routed_stage(
+    workspace: Path, config, fake
+) -> None:
+    """A stage routed to the host is named, not spun on, in an autonomous run."""
+    from supervisor_harness.host.detect import HostInfo
+    from supervisor_harness.providers.router import ModelRouter
+    from supervisor_harness.store.runstore import RunStore
+
+    config.routing["synthesis"] = "host"
+    store = RunStore(workspace / ".supervisor")
+    host = HostInfo(name="test-host", workspace=str(workspace), confidence=1.0)
+    router = ModelRouter(config, host_name=host.name)
+    router.register("fake", fake)
+    supervisor = Supervisor(workspace=workspace, config=config, store=store,
+                            host=host, router=router)
+
+    with pytest.raises(ValueError, match="synthesis"):
+        await supervisor.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+
+    # The same configuration reaching the loop -- because the precondition was
+    # bypassed, or the routing changed mid-run -- ends the run instead of
+    # re-dispatching a packet nothing here can execute.
+    def no_host_stages() -> list[str]:
+        return []
+
+    supervisor._host_routed_stages = no_host_stages
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+
+    assert response.action == "failed"
+    assert "cannot consume" in response.message
+    assert "did not settle" not in response.message
