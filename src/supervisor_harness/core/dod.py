@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -397,9 +398,27 @@ def verify_command(
             CriterionStatus.BLOCKED, f"refused to run {command!r}: {refusal}"
         )
 
+    # The allow-list clears a program name; running it needs a file. On Windows
+    # npm, npx and yarn are ``.cmd`` shims, which CreateProcess cannot launch by
+    # bare name -- so ``npm test --silent``, the command ``detect_test_command``
+    # emits for a package.json project, came back BLOCKED there, and BLOCKED is
+    # neither PASS nor WAIVED, so that criterion could never be closed. Looking
+    # the name up on PATH honours PATHEXT and hands subprocess the shim itself.
+    # This is the same search the process launcher would have done, narrowed to
+    # nothing: an unresolvable name is refused here rather than in the OSError
+    # below, so the evidence says the runner is missing.
+    argv = shell_split(command)
+    executable = shutil.which(argv[0])
+    if executable is None:
+        return VerificationOutcome(
+            CriterionStatus.BLOCKED,
+            f"refused to run {command!r}: {executable_name(argv[0])!r} is not on PATH",
+        )
+    argv[0] = executable
+
     try:
         completed = subprocess.run(  # noqa: S603 - tokenised, no shell, allow-listed
-            shell_split(command),
+            argv,
             shell=False,
             cwd=str(workspace),
             capture_output=True,
