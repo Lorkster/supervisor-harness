@@ -13,6 +13,7 @@ import pytest
 
 from supervisor_harness.models import AgentSpec, Phase, RunState
 from supervisor_harness.serde import to_jsonable
+from supervisor_harness.store.eventlog import EventLog
 from supervisor_harness.store.events import Event, EventType, fold
 from supervisor_harness.store.runstore import RunStore
 
@@ -78,6 +79,41 @@ def test_the_declared_types_the_fold_handles_are_not_reported_as_unhandled() -> 
     ])
 
     assert state.unhandled_events == []
+
+
+def test_an_unknown_event_type_reaches_the_fold_from_disk(tmp_path: Path) -> None:
+    """The fold's unhandled branch is unreachable if the read path drops the line.
+
+    Enum coercion raises for a type this build does not define, and `read`
+    treats a raise as a torn line -- so a misspelled or future type in a real
+    log was discarded one layer below the branch that exists to record it.
+    """
+    log = EventLog(tmp_path / "run_A.jsonl")
+    log.append(_event(EventType.NOTE, {"text": "run created"}, seq=0))
+    log.append(_event("future_event", {"whatever": 1}, seq=0))
+
+    events = log.read_all()
+    assert len(events) == 2, "the unknown type was dropped on the way back in"
+
+    state = fold(events)
+    assert state.unhandled_events == ["future_event"], (
+        "the fold must report the type the log actually named, not the sentinel"
+    )
+
+
+def test_a_torn_line_is_still_skipped(tmp_path: Path) -> None:
+    """Keeping an unknown type must not turn every unreadable line into one."""
+    path = tmp_path / "run_A.jsonl"
+    path.write_text(
+        '{"seq": 1, "run_id": "run_A", "type": "note", "payload": {"text": "ok"}}\n'
+        '{"seq": 2, "run_id": "run_A", "type": "no\n',
+        encoding="utf-8",
+    )
+
+    events = EventLog(path).read_all()
+
+    assert [e.seq for e in events] == [1]
+    assert fold(events).unhandled_events == []
 
 
 # -- genesis ---------------------------------------------------------------

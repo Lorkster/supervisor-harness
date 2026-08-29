@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -349,6 +350,67 @@ def test_a_criterion_may_only_invoke_a_known_check_runner(tmp_path: Path) -> Non
         outcome = verify_command(criterion, tmp_path, timeout=60)
         assert str(outcome.status) == "blocked", command
         assert "check runners" in outcome.evidence, command
+
+
+def _fake_runner(directory: Path, name: str) -> Path:
+    """A do-nothing stand-in for a check runner, launchable the way a real one is.
+
+    On Windows that means a ``.cmd`` shim, which is how npm, npx and yarn are
+    actually installed there and the whole reason this resolution is needed.
+    """
+    if os.name == "nt":
+        shim = directory / f"{name}.cmd"
+        shim.write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+        return shim
+    shim = directory / name
+    shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    shim.chmod(0o755)
+    return shim
+
+
+def test_a_criterion_command_resolves_its_runner_through_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`npm test` must run on Windows, where npm is a .cmd shim.
+
+    Commands run without a shell, and CreateProcess cannot launch a shim by
+    bare name. `detect_test_command` emits exactly `npm test --silent` for a
+    package.json project, so that criterion came back BLOCKED on Windows --
+    and BLOCKED is neither PASS nor WAIVED, so the task could never be closed.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_runner(bin_dir, "npm")
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+    criterion = DoDCriterion(
+        statement="the project's own suite passes",
+        method=VerifyMethod.TEST,
+        command="npm test --silent",
+        expect="0",
+    )
+    outcome = verify_command(criterion, tmp_path, timeout=60)
+
+    assert str(outcome.status) == "pass", outcome.evidence
+    # The evidence quotes the criterion as written, not the resolved path.
+    assert outcome.evidence.startswith("$ npm test --silent")
+
+
+def test_a_criterion_naming_a_runner_that_is_not_installed_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blocked either way, but the evidence has to name the actual problem."""
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    criterion = DoDCriterion(
+        statement="the project's own suite passes",
+        method=VerifyMethod.TEST,
+        command="yarn test",
+        expect="0",
+    )
+    outcome = verify_command(criterion, tmp_path, timeout=60)
+
+    assert str(outcome.status) == "blocked", outcome.evidence
+    assert "not on PATH" in outcome.evidence
 
 
 def test_reads_cannot_escape_the_workspace(tmp_path: Path) -> None:

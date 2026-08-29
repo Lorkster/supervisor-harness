@@ -30,7 +30,12 @@ from .config import KNOWN_STAGES, PROJECT_CONFIG, load_config, write_example
 from .core.supervisor import Supervisor, SupervisorResponse
 from .host.detect import detect_host
 from .models import Backend, RunMode
-from .store.events import Event, EventType, event_to_dict
+from .store.events import (
+    UNRECOGNISED_TYPE_KEY,
+    Event,
+    EventType,
+    event_to_dict,
+)
 from .store.runstore import RunStore
 
 INTEGRATIONS = Path(__file__).parent / "integrations"
@@ -383,7 +388,15 @@ def cmd_status(args: argparse.Namespace) -> int:
               f"(quality {checkpoint['quality']}, scope {checkpoint['scope_fidelity']}, "
               f"completeness {checkpoint['completeness']})")
 
+    if status["artifacts"]:
+        print("\n  artifacts")
+        for artifact in status["artifacts"]:
+            print(f"    {artifact['kind']:<14} {artifact['path']}")
+
     print(f"\n  findings {status['findings']}  lessons {status['lessons']}")
+    if status["unhandled_events"]:
+        print(f"  unhandled event types: {', '.join(status['unhandled_events'])}"
+              " (in the log, but nothing projects them)")
     if status["error"]:
         print(f"  error: {status['error']}")
     return 0
@@ -420,12 +433,23 @@ def cmd_events(args: argparse.Namespace) -> int:
         print("No matching events.")
         return 0
     for event in events:
-        print(f"{event.seq:>5}  {event.ts}  {str(event.type):<18} {event.actor:<22} "
+        print(f"{event.seq:>5}  {event.ts}  {_event_type_label(event):<18} {event.actor:<22} "
               f"{_event_summary(event)}")
     return 0
 
 
 _EVENT_TYPES = {str(t) for t in EventType}
+
+
+def _event_type_label(event: Event) -> str:
+    """The type the log recorded, which for an unknown one is not the sentinel.
+
+    A type this build does not define is read as ``unknown`` so the line is not
+    lost; it still carries its own name, and that is the name worth printing.
+    Filtering stays on the sentinel, so ``--type unknown`` lists all of them.
+    """
+    recorded = str(event.payload.get(UNRECOGNISED_TYPE_KEY, "")).strip()
+    return recorded or str(event.type)
 
 
 def _event_summary(event: Event) -> str:

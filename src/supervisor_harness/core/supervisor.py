@@ -320,6 +320,15 @@ class Supervisor:
                 for c in state.checkpoints
             ],
             "lessons": len(state.lessons),
+            "artifacts": [
+                {"path": a.path, "kind": a.kind, "actor": a.actor, "ts": a.ts}
+                for a in state.artifacts
+            ],
+            # Types the fold has no branch for. Reported rather than kept to
+            # itself: a run replayed by an older build, or one written with a
+            # misspelled type, is projecting less than the log holds, and the
+            # state is the only place that is visible.
+            "unhandled_events": list(state.unhandled_events),
             "usage": to_jsonable(state.total_usage()),
             "error": state.error,
         }
@@ -755,15 +764,18 @@ class Supervisor:
         state = session.state
         count = 0
         corrections = checkpoint.remediation or checkpoint.gaps
-        for task in state.tasks.values():
+        tasks = list(state.tasks.values())
+        for task in tasks:
             if task.status is not TaskStatus.FAILED or task.attempts >= self.config.policy.max_task_attempts:
                 continue
             task.status = TaskStatus.APPROVED
             task.assigned_agent_id = None
-            task.action = (
-                f"{task.action}\n\nCheckpoint corrections from attempt {task.attempts}:\n"
-                + "\n".join(f"- {c}" for c in corrections[:6])
-            )
+            mine = corrections_for_task(task, corrections, tasks)
+            if mine:
+                task.action = (
+                    f"{task.action}\n\nCheckpoint corrections from attempt {task.attempts}:\n"
+                    + "\n".join(f"- {c}" for c in mine[:6])
+                )
             task.updated_at = now_iso()
             session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
             count += 1
@@ -1859,6 +1871,41 @@ def _seconds_since(ts: str) -> float | None:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - when).total_seconds()
+
+
+def corrections_for_task(
+    task: ExecutionTask, corrections: list[str], tasks: list[ExecutionTask]
+) -> list[str]:
+    """The checkpoint corrections this task should be briefed with.
+
+    A correction is an instruction, not a note, so handing every reopened task
+    the whole list tells each agent to redo the others' work as well. In a real
+    run two remediated tasks were each briefed with the other's corrections
+    plus two concerning a third task, and a human had to filter them by hand.
+
+    A correction belongs to the task it names -- by id, as the mechanical gaps
+    and the checkpoint prompt both write it, or failing that by title. One that
+    names no task at all is addressed to the run rather than to a task, so
+    every reopened task gets it.
+    """
+    mine: list[str] = []
+    for correction in corrections:
+        named = _tasks_named_by(correction, tasks)
+        if not named or task.id in named:
+            mine.append(correction)
+    return mine
+
+
+def _tasks_named_by(correction: str, tasks: list[ExecutionTask]) -> set[str]:
+    """The ids of the tasks a correction is about; empty if it names none."""
+    text = correction.lower()
+    by_id = {t.id for t in tasks if t.id.lower() in text}
+    if by_id:
+        # An id is unambiguous, and a title can appear inside another task's
+        # title ("add a limiter" inside "add a limiter test"), so once any task
+        # is named by id the titles are not consulted.
+        return by_id
+    return {t.id for t in tasks if t.title.strip() and t.title.strip().lower() in text}
 
 
 def _coerce_decision(raw: dict[str, Any]) -> TaskDecision:

@@ -9,7 +9,7 @@ import pytest
 
 from supervisor_harness.cli import main
 from supervisor_harness.models import RunState
-from supervisor_harness.store.events import EventType
+from supervisor_harness.store.events import Event, EventType
 from supervisor_harness.store.runstore import RunStore
 
 
@@ -60,6 +60,32 @@ def test_events_command_emits_payloads_as_json(
     texts = [event["payload"]["text"] for event in payload["events"]]
     assert texts == ["run created", "agent failed: provider timed out"]
     assert payload["events"][-1]["actor"] == "agt_TEST"
+
+
+def test_an_unrecognised_event_type_is_shown_and_counted(
+    run_with_notes: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Neither the log line nor the fact that nothing projects it is hidden."""
+    store = RunStore(tmp_path / ".supervisor")
+    store.log(run_with_notes).append(
+        Event(run_id=run_with_notes, type="future_event", payload={"detail": "from a newer build"})
+    )
+    # The event went straight into the log, as one written by another build
+    # would have; drop the snapshot so the state is rebuilt from the log.
+    (store.runs_dir / run_with_notes / "state.json").unlink(missing_ok=True)
+
+    assert main(["events", run_with_notes, "-w", str(tmp_path)]) == 0
+    listing = capsys.readouterr().out
+    assert "future_event" in listing, "the line was dropped, or shown as the sentinel"
+
+    # The sentinel is what it is filed under, so one filter finds them all.
+    assert main(["events", run_with_notes, "--type", "unknown", "-w", str(tmp_path)]) == 0
+    filtered = capsys.readouterr().out
+    assert "future_event" in filtered
+    assert "phase_changed" not in filtered
+
+    assert main(["status", run_with_notes, "-w", str(tmp_path)]) == 0
+    assert "unhandled event types: future_event" in capsys.readouterr().out
 
 
 def test_events_command_rejects_an_unknown_run_and_type(
