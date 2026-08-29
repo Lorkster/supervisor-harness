@@ -264,6 +264,48 @@ def test_quality_bars_are_not_suppressed_by_the_word_inspection() -> None:
         "the test bar was suppressed by the word 'inspection'"
 
 
+def test_quality_bars_are_not_suppressed_by_a_criterion_about_output_format() -> None:
+    """'the output format' is not 'formatting': the code-quality bar survives it."""
+    innocent = ExecutionTask(
+        title="Emit the run report as JSON",
+        action="Change the reporter in src/report.py to serialise its result",
+        dod=[DoDCriterion(statement="The output format is JSON with a top-level 'items' key",
+                          method=VerifyMethod.INSPECTION, expect="src/report.py: json.dumps")],
+    )
+    covered = ExecutionTask(
+        title="Emit the run report as JSON",
+        action="Change the reporter in src/report.py to serialise its result",
+        dod=[DoDCriterion(statement="The formatter reports no diff on the files touched",
+                          method=VerifyMethod.COMMAND, command="ruff format --check src",
+                          expect="0")],
+    )
+
+    added_innocent = apply_quality_bars(innocent, Policy())
+    added_covered = apply_quality_bars(covered, Policy())
+
+    assert any("conventions" in c.statement for c in added_innocent),         "the code-quality bar was suppressed by the word 'format'"
+    assert not any("conventions" in c.statement for c in added_covered),         "a criterion about the formatter should still cover the code-quality bar"
+
+
+def test_quality_bars_are_not_suppressed_by_test_data_or_security_cameras() -> None:
+    """The same weakness in the other two lists: a subject word is not a check."""
+    task = ExecutionTask(
+        title="Import the security cameras feed",
+        action="Add the importer in src/cameras.py",
+        dod=[
+            DoDCriterion(statement="The seed test data loads without a manual step",
+                         method=VerifyMethod.INSPECTION, expect="src/cameras.py: seed"),
+            DoDCriterion(statement="Every security cameras record keeps its site id",
+                         method=VerifyMethod.INSPECTION, expect="src/cameras.py: site_id"),
+        ],
+    )
+
+    added = apply_quality_bars(task, Policy())
+
+    assert any(c.method is VerifyMethod.TEST for c in added),         "the test bar was suppressed by the phrase 'test data'"
+    assert any("weakness" in c.statement for c in added),         "the security bar was suppressed by the phrase 'security cameras'"
+
+
 def test_task_is_not_done_until_every_mandatory_criterion_passes() -> None:
     task = ExecutionTask(
         title="t",

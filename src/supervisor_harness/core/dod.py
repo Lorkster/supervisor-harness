@@ -46,6 +46,57 @@ _CODE_HINT = re.compile(
 )
 
 
+# What it takes for a proposed criterion to already cover one of the mandatory
+# bars, and so for that bar not to be added.
+#
+# Each alternative has to match a phrase that *is* the check, never one that
+# merely names its subject: "the output format is JSON" is about the data the
+# code emits, "the seed test data loads" is about a fixture, and "the security
+# cameras record" is about a domain. None of them proves anything about
+# formatting, about the suite, or about untrusted input, yet each of them
+# removed a mandatory bar while the bar was matched on a bare word. Anchoring
+# was only half the fix -- it stopped `auth` matching inside `author`, but
+# `format`, `test` and `security` are whole words in their own right.
+#
+# Every pattern below matches a subset of what its bare word list matched, so
+# the narrowing can only restore a bar that used to be suppressed; it can never
+# suppress one that used to be added.
+_COVERS_TESTS = re.compile(
+    r"""
+      \b(go|cargo|npm|yarn|pnpm|dotnet|mvn|gradle|make)\s+tests?\b
+    | \bcoverage\b
+    | \b(unit|integration|regression|smoke|e2e|end-to-end|automated|failing)[\s-]tests?\b
+    | \btests?\s+(pass\w*|cover\w*|exercise\w*|exist\w*|fail\w*)\b
+    | \b(test|spec)s?\s+(suite|case|cases|file|files)\b
+    | \b(suite|specs?)\s+pass\w*\b
+    """,
+    re.VERBOSE,
+)
+
+_COVERS_SECURITY = re.compile(
+    r"""
+      \b(injection|authn|authz|authentic|authoris|authoriz|secret
+        |validat|sanitis|sanitiz)\w*\b
+    | \bsecurity\s+(review|audit|check|checks|scan\w*|weakness\w*|issues?|risks?
+        |control|controls|implications?|boundary|hardening|posture|tests?)\b
+    | \b(review|audit|assess|check|scan)\w*\s+for\s+security\b
+    """,
+    re.VERBOSE,
+)
+
+_COVERS_CODE_QUALITY = re.compile(
+    r"""
+      \blint\w*\b
+    | \bformatt(ing|er|ers|ed)\b
+    | \b(code|coding)\s+(style|quality)\b
+    | \bstyle\s?guide\b
+    | \bstyle\s+(convention|rule)s?\b
+    | \bquality\s+(gate|bar|check|checks)\b
+    """,
+    re.VERBOSE,
+)
+
+
 # Executables a criterion's command may name. A definition of done proves
 # something by running the project's own checks, so this list is deliberately
 # small: the command string is copied verbatim out of a model's JSON by
@@ -190,15 +241,14 @@ def apply_quality_bars(
     if not touches_code(task):
         return []
 
-    # A bar is skipped only when the proposed criteria already cover it. Every
-    # alternative below is grouped so the \b anchors bind to the whole set: left
-    # ungrouped, only the first and last alternative are anchored and the rest
-    # match mid-word, so an innocent criterion naming an "author" or an
-    # "inspection" silently suppresses a mandatory bar.
+    # A bar is skipped only when the proposed criteria already cover it, which
+    # takes a phrase that means the check itself -- see the _COVERS_ patterns
+    # above. A bar a criterion can suppress by naming the task's subject matter
+    # is not a mandatory bar at all.
     existing = " ".join(c.statement.lower() + " " + c.command.lower() for c in task.dod)
     added: list[DoDCriterion] = []
 
-    if policy.require_tests and not re.search(r"\b(test|spec|coverage)\w*\b", existing):
+    if policy.require_tests and not _COVERS_TESTS.search(existing):
         added.append(
             DoDCriterion(
                 statement=(
@@ -212,11 +262,7 @@ def apply_quality_bars(
             )
         )
 
-    if policy.require_security_review and not re.search(
-        r"\b(security|injection|authn|authz|authentic|authoris|authoriz|secret"
-        r"|validat|sanitis|sanitiz)\w*\b",
-        existing,
-    ):
+    if policy.require_security_review and not _COVERS_SECURITY.search(existing):
         added.append(
             DoDCriterion(
                 statement=(
@@ -233,9 +279,7 @@ def apply_quality_bars(
             )
         )
 
-    if policy.require_code_quality and not re.search(
-        r"\b(lint|style|format|quality)\w*\b", existing
-    ):
+    if policy.require_code_quality and not _COVERS_CODE_QUALITY.search(existing):
         added.append(
             DoDCriterion(
                 statement=(
