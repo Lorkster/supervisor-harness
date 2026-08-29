@@ -274,6 +274,23 @@ def cmd_advance(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_abandon(args: argparse.Namespace) -> int:
+    sup = _supervisor(args)
+    run_id = args.run_id or sup.store.latest_run_id()
+    if not run_id:
+        print("error: no runs found", file=sys.stderr)
+        return 2
+
+    async def go() -> SupervisorResponse:
+        try:
+            return await sup.abandon(run_id, args.agent_id, args.reason)
+        finally:
+            await sup.aclose()
+
+    _print_response(asyncio.run(go()), args.json)
+    return 0
+
+
 def cmd_approve(args: argparse.Namespace) -> int:
     sup = _supervisor(args)
     run_id = args.run_id or sup.store.latest_run_id()
@@ -576,6 +593,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("advance", parents=[common], help="move a run to its next phase")
     p.add_argument("run_id", nargs="?", default="")
     p.set_defaults(func=cmd_advance)
+
+    p = sub.add_parser("abandon", parents=[common],
+                       help="give up on an agent that will never report")
+    p.add_argument("agent_id")
+    p.add_argument("run_id", nargs="?", default="")
+    p.add_argument("--reason", default="", help="what happened, for the run's log")
+    p.set_defaults(func=cmd_abandon)
 
     p = sub.add_parser("approve", parents=[common], help="decide on proposed tasks")
     p.add_argument("run_id", nargs="?", default="")

@@ -133,7 +133,34 @@ no idea it had said so.
 When every packet has been reported, call `supervisor_advance(run_id)` for the
 next phase.
 
-### 5. Approval
+### 5. Abandon
+
+A sub-agent can die: killed by an infrastructure failure, cancelled, or handed a
+packet you simply cannot run. The supervisor cannot see that -- a host agent
+reports through you, so "still working" and "gone" look identical from here.
+Say so:
+
+```jsonc
+supervisor_abandon({
+  "run_id": "run_...",
+  "agent_id": "agt_...",
+  "reason": "the sub-agent was killed by an infrastructure failure"
+})
+```
+
+The agent is marked failed, the reason goes on the run's log by name, and the
+phase settles: analysis moves to synthesis, an abandoned task falls to the
+checkpoint and is remediated on the next attempt. Do this rather than reporting
+invented output on the agent's behalf -- the supervisor is judging real work, and
+a made-up turn is worse than a missing one.
+
+If nobody says anything, the supervisor eventually concludes it on its own: an
+agent handed `policy.max_unreported_dispatches` packets (3 by default) with no
+report in between is abandoned with the same note and the same settling.
+`policy.agent_timeout_seconds` applies the same bound in wall-clock terms, and is
+off by default because a host agent may legitimately take a long time.
+
+### 6. Approval
 
 At `action: "await_approval"` the response carries `tasks` and `task_notes`.
 Present each task to the user with its `action`, `motivation` and
@@ -160,7 +187,7 @@ definition of done after approval is how verification stops meaning anything.
 **Never approve on the user's behalf.** Rejecting everything is valid: the run
 ends with the analysis report.
 
-### 6. Verification
+### 7. Verification
 
 Verification packets ask for real evidence:
 
@@ -186,7 +213,7 @@ Criteria the harness can settle itself — inspections, and commands when
 `policy.allow_command_execution` is on — are closed before verification packets
 are issued, so agents are only asked about what genuinely needs judgement.
 
-### 7. Completion
+### 8. Completion
 
 At `action: "complete"`, `report_markdown` contains the deliverable, including a
 per-criterion checklist showing what was proven and what was not. Present it as
@@ -204,6 +231,7 @@ plainly what is outstanding.
 | A verification command will not run | Report `status: "blocked"` with the real error |
 | Run interrupted | `supervisor_resume(run_id)` — findings, tasks and verification survive |
 | Unknown `agent_id` | The run is out of step; call `supervisor_status` |
+| Sub-agent crashed or was cancelled | `supervisor_abandon(run_id, agent_id, reason)` |
 
 Calls are idempotent at the phase level: `supervisor_advance` on a phase that has
 not settled returns the outstanding packets rather than skipping ahead.
@@ -218,6 +246,7 @@ Every tool has a CLI equivalent that emits the same JSON:
 supervisor start "..." --host-agents '[{"name":"general-purpose"}]' --json
 supervisor report <run_id> <agent_id> --input turn.json --json
 supervisor advance <run_id> --json
+supervisor abandon <agent_id> <run_id> --reason "sub-agent cancelled" --json
 supervisor approve <run_id> --task tsk_a:approve --task tsk_b:reject --json
 supervisor resume <run_id> --json
 ```

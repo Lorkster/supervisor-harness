@@ -94,6 +94,12 @@ run the agents it briefs and report honestly what they produced.
   issue a correction and give it another turn.
 - An agent looks plausible but off-brief → `supervisor_check_drift(run_id,
   agent_id)` asks the drift model for a second opinion.
+- A subagent crashed, was cancelled, or its packet cannot be run →
+  `supervisor_abandon(run_id, agent_id, reason)`. The harness cannot see that
+  one of your subagents died: from its side a dead agent and a working one are
+  both silence, and it will keep handing you the same packet. Say so instead of
+  inventing a result on the agent's behalf. The phase then settles: analysis
+  moves on, an abandoned task falls to the checkpoint and is retried.
 - A verification command cannot run → report `status: "blocked"` with the real
   error. A blocked criterion is honest; a fabricated pass is not.
 - The user wants to stop → the run is persisted; `supervisor_status` shows

@@ -257,6 +257,8 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `require_security_review` | true | Force a security lens and criterion |
 | `require_code_quality` | true | Insert a mandatory convention criterion |
 | `min_dod_criteria` | 2 | Reject thinner definitions of done |
+| `max_unreported_dispatches` | 3 | Packets to a silent host agent before abandoning it |
+| `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |
 | `allow_command_execution` | false | Let the harness run commands itself |
 | `apply_lessons` | true | Inject past lessons into briefs |
 
@@ -269,6 +271,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `supervisor_start` | Begin a run; returns the first work packets |
 | `supervisor_report` | Hand back one agent's result; returns a directive |
 | `supervisor_advance` | Move to the next phase once packets are reported |
+| `supervisor_abandon` | Give up on an agent whose sub-agent crashed or was cancelled |
 | `supervisor_approve` | Record the user's decisions on proposed tasks |
 | `supervisor_status` / `supervisor_runs` | Inspect runs |
 | `supervisor_resume` | Continue an interrupted run |
