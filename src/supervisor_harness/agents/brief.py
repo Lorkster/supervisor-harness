@@ -328,6 +328,10 @@ def build_verification_brief(
                 [
                     "Run the stated command yourself and report its real output. Do not "
                     "predict what it would print.",
+                    "Count what a test command actually selected. A filter that matched "
+                    "no test still exits 0 -- 'no tests ran', '[no tests to run]', "
+                    "'0 passed' -- and a criterion that ran nothing is `fail`, not a "
+                    "pass, whatever the exit code said.",
                     "For inspection criteria, read the file and quote the lines that "
                     "settle the question.",
                     "For review criteria, judge against the rubric and cite the specific "

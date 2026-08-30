@@ -532,7 +532,7 @@ class Supervisor:
         )
 
         if not tasks or not wants_execution:
-            self._write_report_artifact(session)
+            self._write_run_artifacts(session)
             self._transition(session, Phase.IMPROVING)
             return
 
@@ -540,9 +540,14 @@ class Supervisor:
         # title, and runnable_tasks matches on id. Unresolved, a dependent task
         # is approved and then never dispatched.
         dep_notes = phases.resolve_dependencies(tasks)
+        # And before anything reads rationale_refs: the model is asked for
+        # finding ids and often answers with titles, and a task that names no
+        # finding leaves the end of the run unable to say what it closed.
+        ref_notes = phases.resolve_rationale_refs(tasks, state.findings)
         tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
-        for task_id, entries in dep_notes.items():
-            notes.setdefault(task_id, []).extend(entries)
+        for extra in (dep_notes, ref_notes):
+            for task_id, entries in extra.items():
+                notes.setdefault(task_id, []).extend(entries)
         for task in tasks:
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
                                                    "notes": notes.get(task.id, [])})
@@ -1251,7 +1256,7 @@ class Supervisor:
         approved = [t for t in state.tasks.values() if t.status is TaskStatus.APPROVED]
         if not approved:
             session.note("no tasks approved; ending with the analysis report")
-            self._write_report_artifact(session)
+            self._write_run_artifacts(session)
             self._transition(session, Phase.IMPROVING)
         else:
             self._transition(session, Phase.EXECUTING)
@@ -1795,6 +1800,7 @@ class Supervisor:
             "title": task.title,
             "action": task.action,
             "motivation": task.motivation,
+            "closes_findings": task.rationale_refs,
             "risk": str(task.risk),
             "effort": task.effort,
             "suggested_role": task.suggested_role,
@@ -1814,13 +1820,30 @@ class Supervisor:
             ],
         }
 
-    def _write_report_artifact(self, session: RunSession) -> None:
-        markdown = phases.final_report_markdown(session.state)
-        path = self.store.write_artifact(session.state.id, "report.md", markdown)
+    def _write_run_artifacts(self, session: RunSession) -> None:
+        """Write the run's two documents: what happened, and what it closed.
+
+        The reconciliation is written alongside the report rather than derived
+        on request, because the question it answers -- which findings did this
+        run actually fix, and which are still open? -- is asked after the run is
+        over, and was previously reconstructed by hand from the report.
+        """
+        state = session.state
+        path = self.store.write_artifact(
+            state.id, "report.md", phases.final_report_markdown(state)
+        )
         session.emit(EventType.ARTIFACT_WRITTEN, {"path": str(path), "kind": "report"})
 
+        reconciliation = self.store.write_artifact(
+            state.id, "reconciliation.md", phases.reconciliation_markdown(state)
+        )
+        session.emit(
+            EventType.ARTIFACT_WRITTEN,
+            {"path": str(reconciliation), "kind": "reconciliation"},
+        )
+
     def _complete(self, session: RunSession) -> SupervisorResponse:
-        self._write_report_artifact(session)
+        self._write_run_artifacts(session)
         session.emit(EventType.RUN_ENDED, {"phase": str(Phase.COMPLETE)})
         session.sync_index()
         return self._final_response(session)
@@ -1844,7 +1867,15 @@ class Supervisor:
             checkpoint=to_jsonable(state.checkpoints[-1]) if state.checkpoints else None,
             detail={
                 "artifact": str(self.store.run_dir(state.id) / "artifacts" / "report.md"),
+                "reconciliation": str(
+                    self.store.run_dir(state.id) / "artifacts" / "reconciliation.md"
+                ),
                 "findings": len(state.findings),
+                "findings_open": [
+                    r.finding.id
+                    for r in phases.reconcile_findings(state)
+                    if r.state != phases.FINDING_FIXED
+                ],
                 "lessons": len(state.lessons),
                 "dod_satisfied": [t.id for t in satisfied],
                 "dod_unmet": {

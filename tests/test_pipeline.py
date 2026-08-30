@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import (
     AgentKind,
@@ -212,3 +214,40 @@ async def test_index_projects_the_run(supervisor: Supervisor) -> None:
     methods = {row["method"]: row for row in index.criteria_failure_rate()}
     assert methods, "criteria should be projected"
     assert sum(row["total"] for row in methods.values()) >= 2
+
+
+async def test_a_completed_run_reconciles_every_finding_it_produced(
+    supervisor: Supervisor,
+) -> None:
+    """The run says which findings it closed, without anyone rebuilding the
+    mapping by hand from the report."""
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    assert response.action == "complete", response.message
+
+    state = supervisor.store.load_state(response.run_id)
+    task = next(iter(state.tasks.values()))
+    assert len(task.rationale_refs) == 2, "titles should have resolved to finding ids"
+    assert set(task.rationale_refs) <= {f.id for f in state.findings}
+
+    assert response.detail["findings_open"] == []
+    assert "## Findings reconciliation" in response.report_markdown
+
+    artifact = Path(response.detail["reconciliation"])
+    assert artifact.is_file()
+    text = artifact.read_text(encoding="utf-8")
+    assert "2 finding(s): 2 fixed" in text
+    for finding in state.findings:
+        assert finding.id in text
+
+
+async def test_a_report_only_run_reconciles_its_findings_as_open(
+    supervisor: Supervisor,
+) -> None:
+    """Nothing was executed, so nothing was closed, and the artifact says so."""
+    response = await supervisor.run(PROMPT, mode=RunMode.REPORT)
+    assert response.action == "complete", response.message
+
+    text = Path(response.detail["reconciliation"]).read_text(encoding="utf-8")
+    assert "No execution task ran in this run" in text
+    assert "Still open" in text
+    assert response.detail["findings_open"]

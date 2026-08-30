@@ -4,9 +4,10 @@ A task is not done because an agent says so. It is done when each mandatory
 criterion has been independently proven, with evidence recorded against it. This
 module is what makes that claim enforceable:
 
-* :func:`validate_criteria` rejects criteria that cannot be checked at all.
-* :func:`apply_quality_bars` adds the tests / security / code-quality criteria
-  policy requires, where the task admits them.
+* :func:`validate_criteria` rejects criteria that cannot be checked at all,
+  including the ones that pass by running nothing.
+* :func:`apply_quality_bars` adds the tests / negative-test / security /
+  liveness / code-quality criteria policy requires, where the task admits them.
 * :func:`verify_criterion` proves a single criterion, either by running the
   check here or by handing it to the host to run.
 """
@@ -98,6 +99,138 @@ _COVERS_CODE_QUALITY = re.compile(
 )
 
 
+# A task whose whole point is that something must *not* happen: a fence that
+# must hold, a guard that must refuse. Both tasks that failed in a real run
+# failed on a shape nobody had tested -- ``rm -rf infra`` against a scope fence,
+# a ``PermissionError`` against a lock -- because every criterion they carried
+# was satisfiable by the implementer's own happy-path tests. A guard is only
+# proven by the case it exists to reject.
+_GUARD_TASK = re.compile(
+    r"""
+      \b(fence|fences|fencing|sandbox\w*|confine\w*|quarantine\w*)\b
+    | \b(allow|deny|block)[\s-]?lists?\b
+    | \b(traversal|injection|escap(e|es|ing)|spoof\w*|forg(e|ed|ery)|tamper\w*)\b
+    | \b(untrusted|hostile|malicious|attacker|adversar\w*)\b
+    | \b(privilege|privileges|permission|permissions|authoris\w*|authoriz\w*)\b
+    | \baccess\s+control\b
+    | \b(lock|locks|locking|mutex|semaphore|latch)\b
+    | \b(retry|retries|retrying|backoff|throttl\w*|rate[\s-]limit\w*|quota|quotas)\b
+    | \b(timeout|timeouts|deadline|deadlines)\b
+    | \bresource\s+(guard|guards|limit|limits|exhaustion|leak|leaks)\b
+    | \bout[\s-]of[\s-]scope\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# What makes a criterion a *negative* test: it names an outcome the change must
+# refuse, and it names the shape concretely enough to write down. "Rejects
+# unsafe input" is neither; "raises PermissionError when the lock file is
+# read-only" is both.
+_REFUSAL = re.compile(
+    r"""
+      \b(reject\w*|refus\w*|den(y|ies|ied)|block\w*|forbid\w*|abort\w*)\b
+    | \b(raises?|raised|throws?|thrown)\b
+    | \bfails?\s+closed\b
+    | \b(must|does|do|can|cannot|will)\s+not\b
+    | \bnon-?zero\s+exit\b
+    | \bexits?\s+[1-9]\d*\b
+    | \bleaves?\s+\w+\s+untouched\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+_CONCRETE_SHAPE = re.compile(
+    r"""
+      '[^']+'                     # a quoted literal: the input, path or command
+    | "[^"]+"
+    | `[^`]+`
+    | \b\w+(Error|Exception)\b    # a named exception
+    | \b[45]\d\d\b                # an HTTP status
+    | \.\./                       # a traversal shape
+    | \b\w[\w.-]*/[\w./*-]+       # a path or glob
+    | \brm\s+-[a-zA-Z]+\b         # a destructive command written out
+    | \bE[A-Z]{3,}\b              # an errno name
+    | \bSIG[A-Z]+\b               # a signal
+    """,
+    re.VERBOSE,
+)
+
+# Changes whose failure mode is not a wrong answer but no answer at all. The
+# standing security bar asks whether a change is safe, never whether it
+# terminates: a fix that replaced a crash with an unbounded hot spin satisfied
+# every criterion it carried.
+_LIVENESS_TASK = re.compile(
+    r"""
+      \b(lock|locks|locking|unlock\w*|mutex|semaphore|latch|barrier)\b
+    | \b(deadlock\w*|livelock\w*|starvation|contention|contended)\b
+    | \b(retry|retries|retrying|backoff|poll|polls|polling|spin\w*)\b
+    | \b(timeout|timeouts|deadline|deadlines|wait|waits|waiting|blocking)\b
+    | \b(thread|threads|threading|concurren\w*|parallelis\w*|race\s+condition)\b
+    | \b(async|await|asyncio|coroutine\w*|event\s+loop)\b
+    | \b(subprocess|socket|sockets|connection|connections|stream|streaming)\b
+    | \bI/O\b
+    | \b(queue|queues|backpressure)\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+_COVERS_LIVENESS = re.compile(
+    r"""
+      \b(hang|hangs|hanging|deadlock\w*|livelock\w*|spin\w*|busy[\s-]wait\w*)\b
+    | \bwithout\s+bound\b
+    | \bbounded[\s-]time\b
+    | \b(terminates?|completes?|returns?|finishes?)\s+(with)?in\s+\d
+    | \bwithin\s+\d+\s*(ms|secs?|seconds?|minutes?)\b
+    | \bwall[\s-]clock\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+# Flags that run a *subset* of a suite. A filter that selects nothing is not an
+# error to most runners: ``go test -run ZzzNone ./...`` exits 0 with "[no tests
+# to run]", cargo and vitest do the same, and pytest exits 5 only when every
+# test in the run was deselected -- ``pytest -k "locking or modif"`` exits 0
+# with the ``modif`` half matching nothing at all. In a real run a criterion
+# filtered on ``-k modif`` was selecting zero tests the day it was written, and
+# only a verifier that counted the selection noticed.
+_SELECTION_FLAGS = frozenset({
+    "-k", "-m", "-run", "--run", "-t", "--testNamePattern", "--test-name-pattern",
+    "--filter", "--gtest_filter", "--grep", "--example",
+})
+
+# Short selection flags whose value may be attached (``-kmodif``).
+_ATTACHABLE_FLAGS = ("-k", "-m", "-t")
+
+# A pytest/unittest node id, and an anchored name pattern: the two ways a
+# command can say exactly which tests it means instead of describing them.
+_NODE_ID = re.compile(r"[\w./\-]+\.\w+::[\w\[\].-]+")
+_ANCHORED_NAME = re.compile(r"\^[A-Za-z_]\w*\$")
+
+# An expectation that pins how many tests ran, e.g. "7 passed" or "3 selected".
+# Read as a minimum: the substring match that proves it also matches a larger
+# count, which errs towards accepting a suite that has since grown.
+_SELECTION_COUNT = re.compile(
+    r"\b\d+\s*(?:tests?\s+)?(?:passed|selected|ran\b|ok\b)", re.IGNORECASE
+)
+
+# Operators that make a filter expression select for more than one reason, so a
+# count cannot say which half of it matched.
+_FILTER_BOOLEAN = re.compile(r"\b(or|and)\b", re.IGNORECASE)
+
+# What a runner prints when its filter matched nothing.
+_RAN_NOTHING = re.compile(
+    r"""
+      no\s+tests?\s+(to\s+run|ran|were\s+run|found|matched)
+    | collected\s+0\s+items
+    | running\s+0\s+tests
+    | \b0\s+(?:tests?\s+)?(?:passed|selected|ok)\b
+    | tests?:\s+0\s+total
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
 # Executables a criterion's command may name. A definition of done proves
 # something by running the project's own checks, so this list is deliberately
 # small: the command string is copied verbatim out of a model's JSON by
@@ -134,6 +267,101 @@ class CriterionIssue:
 # --------------------------------------------------------------------------
 # Validation
 # --------------------------------------------------------------------------
+
+
+def _statement_key(statement: str) -> str:
+    """A criterion's statement, normalised for comparison."""
+    return " ".join(statement.lower().split())
+
+
+def selection_filter(command: str) -> str | None:
+    """The test-selection filter this command applies, or ``None``.
+
+    Returned as ``flag value``, so a caller can quote it back to whoever wrote
+    it. ``python -m pytest`` is not a filter: that ``-m`` names the module to
+    run, and reading it as a marker expression would flag every criterion that
+    invokes pytest the portable way.
+    """
+    tokens = shell_split(command)
+    if not tokens:
+        return None
+
+    start = 1
+    if executable_name(tokens[0]) in {"python", "python3", "py"}:
+        for index in range(1, len(tokens)):
+            if tokens[index] == "-m":
+                start = index + 2
+                break
+            if not tokens[index].startswith("-"):
+                break
+
+    for index in range(start, len(tokens)):
+        flag, separator, attached = tokens[index].partition("=")
+        if flag in _SELECTION_FLAGS:
+            value = attached if separator else (
+                tokens[index + 1] if index + 1 < len(tokens) else ""
+            )
+            return f"{flag} {value}".strip()
+        if len(flag) > 2 and not flag.startswith("--") and flag[:2] in _ATTACHABLE_FLAGS:
+            return f"{flag[:2]} {flag[2:]}"
+    return None
+
+
+def unpinned_selection(criterion: DoDCriterion) -> str | None:
+    """Why this criterion can pass having run nothing, or ``None`` if it cannot.
+
+    A filter describes the tests a criterion means, and a description goes
+    stale: rename the test, or write the filter against a test that never
+    existed, and the command still exits 0 -- the criterion now certifies the
+    absence of the tests it was written to demand. Naming node ids, or stating
+    how many tests must be selected, turns that description back into an
+    assertion.
+    """
+    selection = selection_filter(criterion.command)
+    if selection is None:
+        return None
+    if _NODE_ID.search(criterion.command) or _ANCHORED_NAME.search(criterion.command):
+        return None
+
+    expression = selection.partition(" ")[2]
+    if _FILTER_BOOLEAN.search(expression):
+        return (
+            f"the selection {selection!r} can match for more than one reason, so a "
+            "count cannot say which half of it matched and a dead term stays "
+            "invisible; name the test node ids this criterion means, as "
+            "path/to/test_file.py::test_name"
+        )
+    if _SELECTION_COUNT.search(criterion.expect):
+        return None
+    return (
+        f"the command runs a subset chosen by {selection!r}, and nothing says what "
+        "that subset is: a filter that matches no test at all still passes. Name "
+        "the test node ids, as path/to/test_file.py::test_name, or set expect to "
+        "the minimum selection, as '7 passed'"
+    )
+
+
+def has_negative_test(task: ExecutionTask) -> bool:
+    """Whether some criterion already drives a concrete refusal.
+
+    Both halves have to be in the same criterion. A definition of done that
+    says "rejects unsafe input" in one place and quotes a path in another has
+    still not said what to write.
+    """
+    for criterion in task.dod:
+        text = (
+            f"{criterion.statement} {criterion.command} "
+            f"{criterion.expect} {criterion.rubric}"
+        )
+        if _REFUSAL.search(text) and _CONCRETE_SHAPE.search(text):
+            return True
+    return False
+
+
+def _shape_hint(task: ExecutionTask) -> str:
+    """The task's own words for the failure it exists to prevent."""
+    source = task.motivation.strip() or task.action.strip() or task.title.strip()
+    return " ".join(source.split())[:240]
 
 
 def validate_criteria(criteria: list[DoDCriterion], policy: Policy) -> list[CriterionIssue]:
@@ -183,11 +411,16 @@ def validate_criteria(criteria: list[DoDCriterion], policy: Policy) -> list[Crit
                     Severity.LOW,
                 )
             )
-        if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST) and not crit.command.strip():
-            issues.append(
-                CriterionIssue(crit.id, f"method={crit.method.value} but no command given",
-                               Severity.HIGH)
-            )
+        if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST):
+            if not crit.command.strip():
+                issues.append(
+                    CriterionIssue(crit.id, f"method={crit.method.value} but no command given",
+                                   Severity.HIGH)
+                )
+            else:
+                unpinned = unpinned_selection(crit)
+                if unpinned is not None:
+                    issues.append(CriterionIssue(crit.id, unpinned, Severity.HIGH))
         if crit.method is VerifyMethod.REVIEW and not crit.rubric.strip():
             issues.append(
                 CriterionIssue(crit.id, "review criterion has no rubric to judge against",
@@ -249,15 +482,32 @@ def apply_quality_bars(
     if not touches_code(task):
         return []
 
-    # A bar is skipped only when the proposed criteria already cover it, which
-    # takes a phrase that means the check itself -- see the _COVERS_ patterns
-    # above. A bar a criterion can suppress by naming the task's subject matter
-    # is not a mandatory bar at all.
     existing = " ".join(c.statement.lower() + " " + c.command.lower() for c in task.dod)
+    subject = f"{task.title} {task.action} {task.motivation}"
+    present = {_statement_key(c.statement) for c in task.dod}
     added: list[DoDCriterion] = []
 
-    if policy.require_tests and not _COVERS_TESTS.search(existing):
-        added.append(
+    def bar(covered: bool, criterion: DoDCriterion) -> None:
+        """Add a mandatory bar unless it is covered, or already on the task.
+
+        A bar is skipped only when the proposed criteria already cover it, which
+        takes a phrase that means the check itself -- see the _COVERS_ patterns
+        above. A bar a criterion can suppress by naming the task's subject
+        matter is not a mandatory bar at all.
+
+        The second test is against the harness's own wording rather than the
+        model's: ``_apply_modifications`` re-runs this gate over a replaced
+        definition of done, so a bar the replacement kept verbatim must not be
+        added beside itself.
+        """
+        if covered or _statement_key(criterion.statement) in present:
+            return
+        present.add(_statement_key(criterion.statement))
+        added.append(criterion)
+
+    if policy.require_tests:
+        bar(
+            bool(_COVERS_TESTS.search(existing)),
             DoDCriterion(
                 statement=(
                     "Automated tests cover the behaviour changed by this task, including "
@@ -267,11 +517,37 @@ def apply_quality_bars(
                 command=detect_test_command(workspace) if workspace else "",
                 expect="0",
                 mandatory=True,
-            )
+            ),
         )
 
-    if policy.require_security_review and not _COVERS_SECURITY.search(existing):
-        added.append(
+    # A guard is proven by the case it rejects, and by nothing else. Both tasks
+    # that failed in a real run met every criterion they carried and then fell
+    # over on the first shape nobody had written down.
+    if policy.require_negative_test and _GUARD_TASK.search(subject):
+        bar(
+            has_negative_test(task),
+            DoDCriterion(
+                statement=(
+                    "A test drives the concrete failure shape this task exists to "
+                    "prevent, and asserts the change refuses it"
+                ),
+                method=VerifyMethod.REVIEW,
+                rubric=(
+                    "Name the test and quote the input it drives. Pass only if that "
+                    "input is the attack or failure shape this task was motivated by "
+                    f"-- {_shape_hint(task)} -- written out concretely: the traversal "
+                    "path, the destructive command, the exception the caller must see. "
+                    "A test that exercises only the permitted path, or that asserts on "
+                    "a log line rather than on the refusal, does not pass this "
+                    "criterion."
+                ),
+                mandatory=True,
+            ),
+        )
+
+    if policy.require_security_review:
+        bar(
+            bool(_COVERS_SECURITY.search(existing)),
             DoDCriterion(
                 statement=(
                     "The change introduces no new untrusted-input, secret-handling or "
@@ -284,11 +560,38 @@ def apply_quality_bars(
                     "nor returned, and authorisation checks fail closed."
                 ),
                 mandatory=True,
-            )
+            ),
         )
 
-    if policy.require_code_quality and not _COVERS_CODE_QUALITY.search(existing):
-        added.append(
+    # Safety is not liveness. A change that cannot be tricked can still stop
+    # answering: the crash this kind of task is usually written to fix was once
+    # replaced by an unbounded hot spin, which every criterion on it accepted.
+    if policy.require_liveness_review and _LIVENESS_TASK.search(subject):
+        bar(
+            bool(_COVERS_LIVENESS.search(existing)),
+            DoDCriterion(
+                statement=(
+                    "No wait, retry or lock this change adds can hang, deadlock or "
+                    "spin without bound"
+                ),
+                method=VerifyMethod.REVIEW,
+                rubric=(
+                    "Follow every wait, retry and lock acquisition the change adds or "
+                    "modifies. Pass only on a bounded-time demonstration: a named test "
+                    "that drives the contended or failing path to completion inside a "
+                    "stated wall-clock bound, with the measured time quoted. Reading "
+                    "the code is not a demonstration. Fail if a retry loop has neither "
+                    "a delay nor an attempt ceiling, if a lock is taken without a "
+                    "timeout, or if a failure path returns to the same wait with "
+                    "nothing changed."
+                ),
+                mandatory=True,
+            ),
+        )
+
+    if policy.require_code_quality:
+        bar(
+            bool(_COVERS_CODE_QUALITY.search(existing)),
             DoDCriterion(
                 statement=(
                     "The change follows the conventions of the files it touches and "
@@ -301,7 +604,7 @@ def apply_quality_bars(
                     "duplicates an existing helper."
                 ),
                 mandatory=True,
-            )
+            ),
         )
 
     task.dod.extend(added)
@@ -464,6 +767,20 @@ def verify_command(
                     f"command exited {completed.returncode}; a criterion is not met by "
                     "a command that failed. Express an expected failure as an exit code."
                 )
+
+    # A filter that selects nothing is not an error to most runners, so exit 0
+    # here means either "everything passed" or "nothing ran", and only the
+    # output tells them apart. ``unpinned_selection`` refuses this shape when
+    # the criterion is written; this catches the filter that went stale after
+    # it was approved, and the runner whose flag is not on that list.
+    if ok and selection_filter(command) and _RAN_NOTHING.search(output):
+        return VerificationOutcome(
+            CriterionStatus.FAIL,
+            evidence
+            + "\n\n[supervisor] the command exited 0 but its filter selected no "
+            "tests, so this criterion proved nothing. Name the test node ids it "
+            "means, or correct the filter.",
+        )
 
     return VerificationOutcome(
         CriterionStatus.PASS if ok else CriterionStatus.FAIL, evidence

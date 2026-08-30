@@ -51,9 +51,19 @@ a concrete action, a motivation tied to a finding, and a definition of done. You
 approve, modify, or reject each one. Nothing touches your code before that.
 
 **5. Done means proven.** Criteria phrased so they cannot fail ("the code is
-clean") are rejected at proposal time. Policy inserts the test, security and
-code-quality bars where the task admits them. A criterion marked passed with no
-evidence is recorded as **failed**. The final report shows the checklist.
+clean") are rejected at proposal time, and so are the ones that pass by running
+nothing: a `pytest -k` or `go test -run` filter that selects no test still exits
+0, so a criterion that filters a suite has to name node ids or state a minimum
+selection. Policy inserts the test, security and code-quality bars where the
+task admits them; a task whose point is a fence, a lock or a quota also has to
+carry the negative test for the shape it exists to refuse, and one that touches
+locking, retries or I/O has to show it still terminates in bounded time. A
+criterion marked passed with no evidence is recorded as **failed**. The final
+report shows the checklist.
+
+**5b. Every finding is accounted for.** Each task names the findings it closes,
+and the run ends with a reconciliation — finding by finding, fixed here,
+attempted, still pending, or still open — written as its own artifact.
 
 **6. It learns.** Failures that better briefing would have prevented become
 lessons, stored across runs and injected into future briefs for that role.
@@ -238,7 +248,7 @@ Everything lives under `.supervisor/` in your workspace (or `SUPERVISOR_HOME`):
 ```
 runs/<run_id>/events.jsonl    append-only, authoritative
 runs/<run_id>/state.json      derived snapshot, for fast status reads
-runs/<run_id>/artifacts/      the report and anything agents produced
+runs/<run_id>/artifacts/      report.md, reconciliation.md, agent output
 lessons.jsonl                 cross-run lessons library
 index.sqlite3                 derived, rebuildable with `supervisor reindex`
 ```
@@ -275,6 +285,8 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `require_tests` | true | Insert a mandatory test criterion |
 | `require_security_review` | true | Force a security lens and criterion |
 | `require_code_quality` | true | Insert a mandatory convention criterion |
+| `require_negative_test` | true | Demand the rejected case on a fence or guard task |
+| `require_liveness_review` | true | Demand a bounded-time proof on locking, retry or I/O |
 | `min_dod_criteria` | 2 | Reject thinner definitions of done |
 | `max_unreported_dispatches` | 3 | Packets to a silent host agent before abandoning it |
 | `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |

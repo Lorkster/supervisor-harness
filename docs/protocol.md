@@ -174,10 +174,11 @@ off by default because a host agent may legitimately take a long time.
 ### 6. Approval
 
 At `action: "await_approval"` the response carries `tasks` and `task_notes`.
-Present each task to the user with its `action`, `motivation` and
-`definition_of_done`, plus any `task_notes` — those record criteria the harness
-inserted (test, security, code-quality bars) and criteria it judged too weak to
-verify.
+Present each task to the user with its `action`, `motivation`,
+`closes_findings` and `definition_of_done`, plus any `task_notes` — those record
+criteria the harness inserted (test, negative-test, security, liveness and
+code-quality bars), criteria it judged too weak to verify, and references to
+findings it could not resolve.
 
 ```jsonc
 supervisor_approve({
@@ -227,9 +228,12 @@ are issued, so agents are only asked about what genuinely needs judgement.
 ### 8. Completion
 
 At `action: "complete"`, `report_markdown` contains the deliverable, including a
-per-criterion checklist showing what was proven and what was not. Present it as
-written. Do not describe a task as done when its criteria are unmet — say
-plainly what is outstanding.
+per-criterion checklist showing what was proven and what was not, and a
+reconciliation of every finding the run produced: fixed here, attempted, still
+pending, or still open. `detail.reconciliation` names the artifact holding the
+full finding-by-finding mapping, and `detail.findings_open` lists the finding
+ids this run did not close. Present it as written. Do not describe a task as
+done when its criteria are unmet — say plainly what is outstanding.
 
 ---
 

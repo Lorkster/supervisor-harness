@@ -10,7 +10,10 @@ from supervisor_harness.config import Policy, default_config
 from supervisor_harness.core.blackboard import Blackboard, detect_contradictions
 from supervisor_harness.core.dod import (
     apply_quality_bars,
+    selection_filter,
+    unpinned_selection,
     validate_criteria,
+    verify_command,
     verify_inspection,
 )
 from supervisor_harness.core.drift import (
@@ -304,6 +307,195 @@ def test_quality_bars_are_not_suppressed_by_test_data_or_security_cameras() -> N
 
     assert any(c.method is VerifyMethod.TEST for c in added),         "the test bar was suppressed by the phrase 'test data'"
     assert any("weakness" in c.statement for c in added),         "the security bar was suppressed by the phrase 'security cameras'"
+
+
+# --------------------------------------------------------------------------
+# Criteria that pass by running nothing
+# --------------------------------------------------------------------------
+
+
+def test_a_filtered_test_command_must_say_which_tests_it_means() -> None:
+    """A filter that selects nothing exits 0, certifying the absence of the
+    tests the criterion was written to demand."""
+    filtered = DoDCriterion(
+        statement="The modification path is covered",
+        method=VerifyMethod.TEST,
+        command="pytest -q -k modif",
+    )
+    pinned = DoDCriterion(
+        statement="The stale lock path is covered",
+        method=VerifyMethod.TEST,
+        command="pytest -q tests/test_store.py::test_stale_lock_is_broken",
+    )
+
+    issues = validate_criteria([filtered, pinned], Policy())
+
+    flagged = [i for i in issues if i.criterion_id == filtered.id]
+    assert flagged, "a -k filter matching nothing would have passed unnoticed"
+    assert "-k modif" in flagged[0].problem
+    assert flagged[0].severity is Severity.HIGH
+    assert not [i for i in issues if i.criterion_id == pinned.id]
+
+
+def test_a_minimum_selection_count_pins_a_filtered_command_too() -> None:
+    counted = DoDCriterion(
+        statement="The retry path is covered",
+        method=VerifyMethod.TEST,
+        command="pytest -q -k retry",
+        expect="4 passed",
+    )
+    assert unpinned_selection(counted) is None
+
+
+def test_a_boolean_filter_needs_node_ids_because_a_count_cannot_attribute() -> None:
+    """'-k a or b' exits 0 on b alone, and a dead 'a' stays invisible."""
+    compound = DoDCriterion(
+        statement="The retry path is covered",
+        method=VerifyMethod.TEST,
+        command="pytest -q -k 'modif or lock'",
+        expect="4 passed",
+    )
+    problem = unpinned_selection(compound)
+    assert problem is not None and "node ids" in problem
+
+
+def test_python_dash_m_pytest_is_not_a_marker_filter() -> None:
+    """That -m names the module to run; reading it as a filter would flag every
+    criterion that invokes pytest portably."""
+    assert selection_filter("python -m pytest -q") is None
+    assert selection_filter("python -m pytest -q -m slow") == "-m slow"
+    assert selection_filter("pytest -q -kmodif") == "-k modif"
+    assert selection_filter("go test -run ZzzNone ./...") == "-run ZzzNone"
+    assert selection_filter("npm test --silent") is None
+
+
+def test_a_command_whose_filter_selected_nothing_fails_at_exit_zero(tmp_path: Path) -> None:
+    """The static check refuses this shape when it is written; this is the
+    filter that went stale after the user approved it."""
+    criterion = DoDCriterion(
+        statement="The modification path is covered",
+        method=VerifyMethod.TEST,
+        command="python -c \"print('no tests to run')\" -k modif",
+        expect="0",
+    )
+
+    outcome = verify_command(criterion, tmp_path)
+
+    assert outcome.status is CriterionStatus.FAIL
+    assert "selected no" in outcome.evidence
+
+
+# --------------------------------------------------------------------------
+# Bars a guard task and a liveness task have to clear
+# --------------------------------------------------------------------------
+
+
+def _fence_task(dod: list[DoDCriterion]) -> ExecutionTask:
+    return ExecutionTask(
+        title="Fence the scoped agent shell",
+        action="Confine each command to the agent's own scope in src/tools.py",
+        motivation="A scoped agent could run rm -rf infra against the shared tree",
+        dod=dod,
+    )
+
+
+def test_a_guard_task_must_carry_the_case_it_exists_to_refuse() -> None:
+    """Both tasks that failed in a real run met every criterion they carried and
+    then fell over on a shape nobody had tested."""
+    happy = _fence_task([
+        DoDCriterion(statement="The scoped shell still runs the project's test runner",
+                     method=VerifyMethod.TEST, command="pytest -q", expect="0"),
+    ])
+    negative = _fence_task([
+        DoDCriterion(statement="A command naming 'infra/**' is refused",
+                     method=VerifyMethod.TEST,
+                     command="pytest -q tests/test_tools.py::test_refuses_outside_scope"),
+    ])
+
+    added = apply_quality_bars(happy, Policy())
+
+    bar = [c for c in added if "refuses it" in c.statement]
+    assert bar, "a happy-path definition of done proves nothing about a fence"
+    assert "rm -rf infra" in bar[0].rubric, "the bar should name the shape from the motivation"
+    assert not [c for c in apply_quality_bars(negative, Policy()) if "refuses it" in c.statement]
+
+
+def test_the_negative_bar_wants_both_halves_in_one_criterion() -> None:
+    """A refusal named in one place and a concrete shape in another has still
+    not said what to write."""
+    split = _fence_task([
+        DoDCriterion(statement="Out-of-scope commands are refused",
+                     method=VerifyMethod.REVIEW, rubric="Read the fence"),
+        DoDCriterion(statement="The runner is invoked from 'src/tools.py'",
+                     method=VerifyMethod.INSPECTION, expect="src/tools.py: run"),
+    ])
+
+    assert any("refuses it" in c.statement for c in apply_quality_bars(split, Policy()))
+
+
+def _lock_task(dod: list[DoDCriterion]) -> ExecutionTask:
+    return ExecutionTask(
+        title="Survive a locked run directory",
+        action="Retry the lock acquisition in src/store/runstore.py",
+        motivation="A PermissionError while taking the run lock kills the whole run",
+        dod=dod,
+    )
+
+
+def test_a_locking_change_must_show_it_still_terminates() -> None:
+    """The security bar asks whether a change is safe, never whether it answers:
+    a crash replaced by an unbounded hot spin passed every criterion it had."""
+    spinning = _lock_task([
+        DoDCriterion(statement="Taking a held lock raises LockBusy rather than PermissionError",
+                     method=VerifyMethod.TEST,
+                     command="pytest -q tests/test_store.py::test_busy_lock"),
+    ])
+    bounded = _lock_task([
+        DoDCriterion(statement="Taking a held lock raises LockBusy rather than PermissionError",
+                     method=VerifyMethod.TEST,
+                     command="pytest -q tests/test_store.py::test_busy_lock"),
+        DoDCriterion(statement="The retry loop completes within 2 seconds against a held lock",
+                     method=VerifyMethod.TEST,
+                     command="pytest -q tests/test_store.py::test_retry_is_bounded"),
+    ])
+
+    added = apply_quality_bars(spinning, Policy())
+
+    bar = [c for c in added if "spin without bound" in c.statement]
+    assert bar, "nothing asked whether the retry terminates"
+    assert "wall-clock" in bar[0].rubric
+    assert not [c for c in apply_quality_bars(bounded, Policy())
+                if "spin without bound" in c.statement]
+
+
+def test_the_liveness_bar_stays_off_a_change_that_cannot_hang() -> None:
+    rename = ExecutionTask(
+        title="Rename the report helper",
+        action="Rename _display to _unescape in src/report.py and its callers",
+        motivation="The name says nothing about what it does",
+        dod=[DoDCriterion(statement="No caller still names _display",
+                          method=VerifyMethod.COMMAND, command="ruff check src", expect="0")],
+    )
+
+    assert not any("spin without bound" in c.statement
+                   for c in apply_quality_bars(rename, Policy()))
+
+
+def test_the_harness_does_not_stack_its_own_bars_on_a_second_pass() -> None:
+    """``_apply_modifications`` re-runs this gate over a replaced definition of
+    done, and a bar the replacement kept must not be added beside itself."""
+    task = _fence_task([
+        DoDCriterion(statement="The scoped shell still runs the project's test runner",
+                     method=VerifyMethod.TEST, command="pytest -q", expect="0"),
+    ])
+
+    first = apply_quality_bars(task, Policy())
+    second = apply_quality_bars(task, Policy())
+
+    assert first
+    assert second == []
+    statements = [c.statement for c in task.dod]
+    assert len(statements) == len(set(statements))
 
 
 def test_task_is_not_done_until_every_mandatory_criterion_passes() -> None:

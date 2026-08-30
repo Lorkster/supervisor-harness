@@ -80,6 +80,12 @@ class Policy:
     require_tests: bool = True
     require_security_review: bool = True
     require_code_quality: bool = True
+    # A task whose point is a fence or a guard needs the case it must reject,
+    # and a task that touches locking, retries or I/O needs to say it still
+    # terminates. Both are conditional on the task's own subject matter, so
+    # neither fires on work that cannot fail that way.
+    require_negative_test: bool = True
+    require_liveness_review: bool = True
     min_dod_criteria: int = 2
 
     # Whether the harness itself may run verification commands. Off by default:
