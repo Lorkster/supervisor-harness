@@ -118,6 +118,14 @@ supervisor lessons
 non-host route (see below). `--yes` approves every proposed task without asking;
 use it only where you have accepted that trade.
 
+`--mode` says what the run should produce, and `start` takes it too:
+
+| `--mode` | The run ends with |
+| --- | --- |
+| `auto` (default) | whichever of the two synthesis judges the request to be asking for |
+| `report` | the analysis: findings, disagreements between lenses, open questions |
+| `execute` | execution tasks you approve or reject, then verified work |
+
 ### Driving the protocol yourself
 
 The CLI exposes exactly what the MCP server does, so any host can drive it:

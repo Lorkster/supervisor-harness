@@ -55,10 +55,14 @@ SHARED_TREE_RULE = (
     "including files another agent is part-way through writing, and a `git stash` "
     "that a peer's write lands in the middle of destroys work that was never "
     "yours. Do not `git commit` either -- a commit of this tree captures several "
-    "agents' unfinished work as one change. Read-only inspection (`git status`, "
-    "`git diff`, `git log`) is unaffected. If you need a clean tree to measure "
-    "something, you cannot have one: say so in your output and measure against "
-    "the run's baseline commit instead."
+    "agents' unfinished work as one change. This rule is about the tree, so it "
+    "does not forbid read-only inspection (`git status`, `git diff`, `git log`) "
+    "-- but whether you can run those at all depends on who runs your commands: "
+    "through your host's own tools they work, while the harness's own shell "
+    "offers only the project's check runners and no git at all, read-only or "
+    "not. If you need a clean tree to measure something, you cannot have one: "
+    "say so in your output and measure against the run's baseline commit "
+    "instead."
 )
 
 
