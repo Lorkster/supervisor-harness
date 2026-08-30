@@ -595,60 +595,76 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("run", parents=[common], help="run a task to completion without a host")
-    p.add_argument("prompt")
+    p.add_argument("prompt", help="what you want done, in your own words")
     p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto",
                    help="what the run should produce: 'report' ends with the analysis, "
                         "'execute' proposes tasks for you to approve, 'auto' (default) "
                         "lets synthesis decide which the request asks for")
-    p.add_argument("--backend", choices=["host", "autonomous"], default="")
+    p.add_argument("--backend", choices=["host", "autonomous"], default="",
+                   help="who runs the agents, overriding config: 'autonomous' is the "
+                        "harness against your configured models, which is what `run` "
+                        "assumes when config says host and nothing is passed here")
     p.add_argument("-y", "--yes", action="store_true",
                    help="approve every proposed task without asking")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("start", parents=[common], help="begin a host-delegated run and print its packets")
-    p.add_argument("prompt")
+    p.add_argument("prompt", help="what you want done, in your own words")
     p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto",
                    help="what the run should produce: 'report' ends with the analysis, "
                         "'execute' proposes tasks for you to approve, 'auto' (default) "
                         "lets synthesis decide which the request asks for")
-    p.add_argument("--host-agents", default="", help="JSON array of agent types you can spawn")
+    p.add_argument("--host-agents", default="", metavar="JSON",
+                   help='the subagent types you can spawn, as a JSON array of objects: '
+                        '[{"name": "general-purpose", "description": "..."}]. Roles are '
+                        'matched against these names')
     p.set_defaults(func=cmd_start)
 
     p = sub.add_parser("report", parents=[common], help="report an agent turn from a file or stdin")
-    p.add_argument("run_id")
-    p.add_argument("agent_id")
+    p.add_argument("run_id", help="the run the agent belongs to")
+    p.add_argument("agent_id", help="the agent whose turn this is, from its work packet")
     p.add_argument("-i", "--input", default="-", help="JSON file, or - for stdin")
     p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("advance", parents=[common], help="move a run to its next phase")
-    p.add_argument("run_id", nargs="?", default="")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
     p.set_defaults(func=cmd_advance)
 
     p = sub.add_parser("abandon", parents=[common],
                        help="give up on an agent that will never report")
-    p.add_argument("agent_id")
-    p.add_argument("run_id", nargs="?", default="")
+    p.add_argument("agent_id", help="the agent that crashed, was cancelled, or will "
+                                    "never report for any other reason")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
     p.add_argument("--reason", default="", help="what happened, for the run's log")
     p.set_defaults(func=cmd_abandon)
 
     p = sub.add_parser("approve", parents=[common], help="decide on proposed tasks")
-    p.add_argument("run_id", nargs="?", default="")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
     p.add_argument("--all", action="store_true", help="approve every proposed task")
     p.add_argument("--task", action="append", metavar="ID[:DECISION]",
-                   help="decide one task; unnamed tasks are rejected")
+                   help="decide one task, where DECISION is approve (the default), "
+                        "reject or defer. Repeatable. Every proposed task you do not "
+                        "name is rejected, so this says the whole decision, not part "
+                        "of it")
     p.set_defaults(func=cmd_approve)
 
     p = sub.add_parser("resume", parents=[common], help="resume a persisted run")
-    p.add_argument("run_id", nargs="?", default="")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
     p.set_defaults(func=cmd_resume)
 
     p = sub.add_parser("status", parents=[common], help="show a run in detail")
-    p.add_argument("run_id", nargs="?", default="")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("events", parents=[common],
                        help="print a run's event log, including its diagnostic notes")
-    p.add_argument("run_id", nargs="?", default="")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
     p.add_argument("-t", "--type", default="", metavar="TYPE",
                    help="only events of this type, e.g. note")
     p.add_argument("--since", type=int, default=0, metavar="SEQ",
@@ -656,12 +672,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_events)
 
     p = sub.add_parser("runs", parents=[common], help="list recent runs")
-    p.add_argument("-n", "--limit", type=int, default=20)
+    p.add_argument("-n", "--limit", type=int, default=20,
+                   help="how many to list, newest first (default: 20)")
     p.set_defaults(func=cmd_runs)
 
     p = sub.add_parser("lessons", parents=[common], help="show what previous runs taught the harness")
-    p.add_argument("-t", "--target", default="", help="filter to a role or stage")
-    p.add_argument("-n", "--limit", type=int, default=20)
+    p.add_argument("-t", "--target", default="",
+                   help="filter to a role id, 'supervisor', 'dod', or '*'")
+    p.add_argument("-n", "--limit", type=int, default=20,
+                   help="how many to show, most recent first (default: 20)")
     p.set_defaults(func=cmd_lessons)
 
     p = sub.add_parser("providers", parents=[common], help="show model routing and provider health")

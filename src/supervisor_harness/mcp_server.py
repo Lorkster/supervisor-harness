@@ -199,6 +199,14 @@ def build_server() -> Any:
     async def supervisor_advance(
         run_id: str, host_agents: list[dict[str, Any]] | None = None
     ) -> dict[str, Any]:
+        """Move to the next phase.
+
+        Args:
+            run_id: The run.
+            host_agents: Sub-agent types you can spawn, in the same shape
+                supervisor_start takes. Only needed if they have changed since
+                the run started; the ones declared then are remembered.
+        """
         return _result(await supervisor().advance(run_id, host_agents=host_agents))
 
     @server.tool(
@@ -225,6 +233,11 @@ def build_server() -> Any:
 
     @server.tool(description="Current state of a run, or the most recent one.")
     async def supervisor_status(run_id: str = "") -> dict[str, Any]:
+        """Phase, agents, drift and definition-of-done progress.
+
+        Args:
+            run_id: The run. Omit it for the most recent run in this store.
+        """
         sup = supervisor()
         target = run_id or (sup.store.latest_run_id() or "")
         if not target:
@@ -233,6 +246,11 @@ def build_server() -> Any:
 
     @server.tool(description="List recent runs with their phase and progress.")
     async def supervisor_runs(limit: int = 10) -> dict[str, Any]:
+        """Recent runs, newest first.
+
+        Args:
+            limit: How many to return. Default 10.
+        """
         sup = supervisor()
         sup.store.reindex()
         return {"runs": sup.store.index().list_runs(limit)}
@@ -241,6 +259,11 @@ def build_server() -> Any:
         description="Resume a persisted run and get the next thing to do."
     )
     async def supervisor_resume(run_id: str = "") -> dict[str, Any]:
+        """Pick a run up where it stopped.
+
+        Args:
+            run_id: The run. Omit it for the most recent run in this store.
+        """
         sup = supervisor()
         target = run_id or (sup.store.latest_run_id() or "")
         if not target:
@@ -254,6 +277,13 @@ def build_server() -> Any:
         )
     )
     async def supervisor_check_drift(run_id: str, agent_id: str) -> dict[str, Any]:
+        """Score one agent's last turn against the brief it was given.
+
+        Args:
+            run_id: The run.
+            agent_id: The agent to assess, from its packet. It must have
+                reported at least one turn: there is nothing to score otherwise.
+        """
         return await supervisor().supervise_with_model(run_id, agent_id)
 
     @server.tool(
@@ -263,6 +293,13 @@ def build_server() -> Any:
         )
     )
     async def supervisor_lessons(target: str = "", limit: int = 20) -> dict[str, Any]:
+        """What previous runs taught the harness.
+
+        Args:
+            target: Filter to a role id, "supervisor", "dod", or "*". Omit it
+                for the most recent lessons whatever they target.
+            limit: How many to return. Default 20.
+        """
         store = supervisor().store
         lessons = store.lessons_for([target], limit) if target else store.lessons()[-limit:]
         return {
