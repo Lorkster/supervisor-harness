@@ -76,7 +76,7 @@ lessons, stored across runs and injected into future briefs for that role.
 pip install -e .
 ```
 
-Then, in the project you want supervised:
+Then, in each project you want supervised:
 
 ```bash
 supervisor init
@@ -92,6 +92,41 @@ registers the MCP server in `.mcp.json`. Restart the host afterwards.
 | Both | `.mcp.json` entry for the `supervisor` MCP server |
 
 Use `--host both` to install for both, `--force` to overwrite.
+
+### Several projects
+
+`init` is per project because everything it writes is per project — your host
+finds a skill, a slash command and an MCP server by looking in the repository it
+has open. Run it in each one; nothing about the harness is bound to a single
+project.
+
+Every command takes `-w/--workspace`, so one installation drives any of them
+from anywhere:
+
+```bash
+supervisor run "Review the payment path" -w ~/code/billing --mode report
+supervisor runs -w ~/code/billing
+```
+
+What differs between projects is where the runs are kept:
+
+| | Runs, lessons and the index live in | Use it when |
+| --- | --- | --- |
+| default | `<project>/.supervisor/` — one store per project | projects are unrelated, or you want a project's history to travel with it |
+| `SUPERVISOR_HOME=~/.supervisor` | one store for every project | you want `supervisor runs` to answer across all of them, and lessons learned in one to reach the others |
+
+Configuration layers either way: a shared home's `config.json` is trusted and
+sets your defaults, and each project's own `supervisor.config.json` still tunes
+policy and routing on top of it — within the trust boundary described under
+[Which config files are trusted](#which-config-files-are-trusted).
+
+Two limits worth knowing before you rely on it. **A run is anchored to one
+workspace root**: scope globs, the tool fence and the baseline commit every
+criterion is measured against are all relative to it, so work spanning several
+repositories is several runs, not one. And under a shared `SUPERVISOR_HOME`,
+`lessons.jsonl` is rewritten without a lock, so two runs in different projects
+finishing at the same moment can lose a lesson between them. Per-project stores
+never share that file.
 
 ---
 
@@ -251,7 +286,8 @@ answer one question is one piece of work, not three.
 
 ## Persistence and resumption
 
-Everything lives under `.supervisor/` in your workspace (or `SUPERVISOR_HOME`):
+Everything lives under `.supervisor/` in your workspace, or in one shared store
+if you set `SUPERVISOR_HOME` (see [Several projects](#several-projects)):
 
 ```
 runs/<run_id>/events.jsonl    append-only, authoritative
