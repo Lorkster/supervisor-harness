@@ -147,6 +147,50 @@ def builtin_agents() -> list[AvailableAgent]:
     ]
 
 
+def _declared_agent(entry: Any) -> AvailableAgent | None:
+    """One entry of a host's declared agent list, or ``None`` if it says nothing.
+
+    The list is a description of what the caller can spawn, and it arrives from
+    a model, a CLI flag or a hand-written config, so it is normalised rather
+    than trusted to a shape. A bare name is the shape people actually write --
+    ``["general-purpose"]`` reads as obviously meant, and it used to raise
+    ``AttributeError: 'str' object has no attribute 'get'`` from inside the
+    comprehension, which named neither the flag nor the entry at fault.
+
+    An entry that is neither a name nor an object describes no agent at all, so
+    it is dropped: a declaration is not a security boundary -- it only decides
+    which role binds to which sub-agent type -- and failing a whole run over one
+    malformed entry costs more than ignoring it.
+    """
+    if isinstance(entry, str):
+        name = entry.strip()
+        return (
+            AvailableAgent(id=name, name=name, source="host")
+            if name
+            else None
+        )
+    if not isinstance(entry, dict):
+        return None
+
+    # A nameless entry is dropped for the same reason. The name is what the
+    # host is later asked to spawn -- ``host_agent_type`` on the packet -- so
+    # the old fallback to the literal "agent" bound a role to a sub-agent type
+    # no host has.
+    name = str(entry.get("name") or entry.get("id") or "").strip()
+    if not name:
+        return None
+
+    tools = entry.get("tools") or []
+    return AvailableAgent(
+        id=name,
+        name=name,
+        source="host",
+        description=str(entry.get("description", "")),
+        tools=[str(t) for t in tools] if isinstance(tools, list) else [],
+        model=str(entry.get("model", "")),
+    )
+
+
 class AgentRegistry:
     """What can run, and which of it best fits a given role."""
 
@@ -159,15 +203,9 @@ class AgentRegistry:
         self.workspace = Path(workspace)
         self.host = host
         self.host_agents: list[AvailableAgent] = [
-            AvailableAgent(
-                id=str(entry.get("name") or entry.get("id") or "agent"),
-                name=str(entry.get("name") or entry.get("id") or "agent"),
-                source="host",
-                description=str(entry.get("description", "")),
-                tools=list(entry.get("tools", []) or []),
-                model=str(entry.get("model", "")),
-            )
+            agent
             for entry in (host_declared or [])
+            if (agent := _declared_agent(entry)) is not None
         ]
         self.file_agents = discover_host_agent_files(self.workspace, host)
         self.builtins = builtin_agents()

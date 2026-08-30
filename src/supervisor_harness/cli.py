@@ -209,10 +209,40 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if response.action != "failed" else 1
 
 
+def _host_agents(raw: str) -> list[Any] | None:
+    """Parse ``--host-agents``, or say what is wrong with it.
+
+    The flag is JSON typed on a command line, so it is wrong often enough to
+    deserve an answer better than whatever the JSON decoder or the registry
+    happens to raise. The registry normalises the entries themselves -- a bare
+    name is as good as an object there -- so this only has to establish that
+    what arrived is a list at all.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, list):
+        # ValueError, not TypeError: this is a malformed flag value being
+        # reported to a person, not a type contract between two functions.
+        raise ValueError(  # noqa: TRY004
+            f"must be a JSON array, not {type(parsed).__name__}. Each entry is an "
+            'agent type you can spawn: \'["general-purpose"]\' or '
+            '\'[{"name": "general-purpose", "description": "..."}]\''
+        )
+    return parsed
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     """Begin a host-delegated run and print the first packets."""
     sup = _supervisor(args)
-    host_agents = json.loads(args.host_agents) if args.host_agents else None
+    try:
+        host_agents = _host_agents(args.host_agents)
+    except ValueError as exc:
+        print(f"error: --host-agents {exc}", file=sys.stderr)
+        return 2
 
     async def go() -> SupervisorResponse:
         try:
@@ -399,6 +429,47 @@ def cmd_status(args: argparse.Namespace) -> int:
               " (in the log, but nothing projects them)")
     if status["error"]:
         print(f"  error: {status['error']}")
+    return 0
+
+
+def cmd_drift(args: argparse.Namespace) -> int:
+    """Ask the drift model for a second opinion on one agent's last turn."""
+    sup = _supervisor(args)
+    run_id = args.run_id or sup.store.latest_run_id()
+    if not run_id:
+        print("error: no runs found", file=sys.stderr)
+        return 2
+
+    async def go() -> dict[str, Any]:
+        try:
+            return await sup.supervise_with_model(run_id, args.agent_id)
+        finally:
+            await sup.aclose()
+
+    assessment = asyncio.run(go())
+
+    if args.json:
+        _emit(assessment, True)
+        return 1 if assessment.get("error") else 0
+
+    if assessment.get("error"):
+        # The two reasons are both about the agent, not the harness: it has no
+        # heuristic assessment yet, or it has reported no turn to assess.
+        print(f"error: {assessment['error']} for {args.agent_id} in {run_id}",
+              file=sys.stderr)
+        return 1
+
+    verdict = "on brief" if assessment.get("on_task") else "off brief"
+    print(f"\nagent {args.agent_id}  drift {assessment.get('score', 0):.2f}  {verdict}")
+    print(f"judged by {assessment.get('checked_by', '(unknown)')}")
+    if assessment.get("summary"):
+        print(f"\n{assessment['summary']}")
+    signals = assessment.get("signals") or []
+    if signals:
+        print("\nsignals")
+        for signal in signals:
+            print(f"  {signal.get('kind', '?'):<16} {signal.get('detail', '')}")
+    print()
     return 0
 
 
@@ -660,6 +731,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("run_id", nargs="?", default="",
                    help="which run (default: the most recent one in this store)")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("drift", parents=[common],
+                       help="ask the drift model about an agent that looks off-brief")
+    p.add_argument("agent_id", help="the agent to assess; it must have reported a turn")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
+    p.set_defaults(func=cmd_drift)
 
     p = sub.add_parser("events", parents=[common],
                        help="print a run's event log, including its diagnostic notes")
