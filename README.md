@@ -173,6 +173,50 @@ supervisor approve <run> --all
 supervisor resume                      # picks up where it stopped
 ```
 
+### Every command
+
+`--help` on any of them says the same as this table; nothing below is a
+shorthand for something the CLI will not tell you itself.
+
+| Command | What it does | Its own arguments |
+| --- | --- | --- |
+| `init` | install host integrations and an example config into a project | `--host claude\|cursor\|both` (default: whichever host is detected), `--force` to overwrite existing files |
+| `run PROMPT` | drive a whole run to completion without a host | `--mode`, `--backend host\|autonomous`, `-y/--yes` |
+| `start PROMPT` | begin a host-delegated run and print its first work packets | `--mode`, `--host-agents` — the subagent types you can spawn, as a JSON array of objects: `'[{"name": "general-purpose", "description": "..."}]'`, whose names roles are matched against |
+| `report RUN AGENT` | hand back one agent's result | `-i/--input` a JSON file, or `-` for stdin (the default) |
+| `advance [RUN]` | move a run to its next phase once its packets are reported | — |
+| `abandon AGENT [RUN]` | give up on an agent that will never report | `--reason`, recorded on the run's log |
+| `approve [RUN]` | decide on proposed tasks | `--all`, or `--task ID[:approve\|reject\|defer]`, repeatable |
+| `resume [RUN]` | continue an interrupted run from its event log | — |
+| `status [RUN]` | show one run in detail: phase, agents, drift, criteria | — |
+| `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
+| `runs` | list recent runs in this store | `-n/--limit` (default 20) |
+| `lessons` | show what previous runs taught the harness | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit` |
+| `providers` | show stage routing and whether each provider answers | — |
+| `reindex` | rebuild `index.sqlite3` from the event logs | — |
+| `mcp` | run the MCP server on stdio; `.mcp.json` starts the same server through the `supervisor-mcp` entry point | — |
+
+Every command also takes `-w/--workspace`, `--json` and `--debug`, before or
+after the subcommand; `supervisor --version` prints the version.
+
+| Flag | Effect |
+| --- | --- |
+| `-w`, `--workspace` | which project to act on (default: the working directory) |
+| `--json` | machine-readable output, which is what a host driving the protocol wants |
+| `--debug` | let an unexpected failure raise with its traceback, instead of printing one line |
+
+**`RUN` is optional wherever it appears in brackets.** Omitted, it means the
+most recent run in the store — the workspace's own `.supervisor/`, or the
+shared one if you set `SUPERVISOR_HOME`. That is what makes
+`supervisor status`, `supervisor approve --all` and `supervisor resume` work
+with no arguments at all.
+
+Two defaults worth stating, because both decide something on your behalf.
+`run` flips to the autonomous backend when your config routes to the host,
+since a bare CLI run has no host to delegate to — pass `--backend host` if you
+meant it. And `approve --task` states the whole decision, not part of it: every
+proposed task you do not name is **rejected**.
+
 ---
 
 ## Choosing models per stage

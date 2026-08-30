@@ -253,9 +253,32 @@ not settled returns the outstanding packets rather than skipping ahead.
 
 ---
 
+## Every tool
+
+Eleven tools. The first six are the loop above; the rest are inspection you can
+call at any time.
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `supervisor_start` | `prompt`, `mode`, `host_agents`, `backend` | the run id and its first work packets |
+| `supervisor_report` | `run_id`, `agent_id`, `result` | the supervisor's directive for that agent |
+| `supervisor_advance` | `run_id`, `host_agents` | the next packets, an approval request, or completion |
+| `supervisor_abandon` | `run_id`, `agent_id`, `reason` | the phase, with that agent ended |
+| `supervisor_approve` | `run_id`, `decisions` | the first execution packets |
+| `supervisor_resume` | `run_id` (optional) | whatever the run owes next |
+| `supervisor_status` | `run_id` (optional) | phase, agents, drift, criteria |
+| `supervisor_runs` | `limit` | recent runs, newest first |
+| `supervisor_check_drift` | `run_id`, `agent_id` | a drift score and directive for one agent |
+| `supervisor_lessons` | `target`, `limit` | what previous runs taught the harness |
+| `supervisor_providers` | — | stage routing and provider health |
+
+`run_id` is optional wherever the table says so: omitted, it means the most
+recent run in the store.
+
 ## Driving it without MCP
 
-Every tool has a CLI equivalent that emits the same JSON:
+Every tool but one has a CLI equivalent that emits the same JSON, so the harness
+is usable from a shell script, CI, or a host that does not speak MCP at all:
 
 ```bash
 supervisor start "..." --host-agents '[{"name":"general-purpose"}]' --json
@@ -264,7 +287,17 @@ supervisor advance <run_id> --json
 supervisor abandon <agent_id> <run_id> --reason "sub-agent cancelled" --json
 supervisor approve <run_id> --task tsk_a:approve --task tsk_b:reject --json
 supervisor resume <run_id> --json
+supervisor status <run_id> --json
+supervisor runs --json
+supervisor lessons --json
+supervisor providers --json
 ```
 
-Which makes the harness usable from a shell script, CI, or a host that does not
-speak MCP at all.
+The exception is `supervisor_check_drift`: there is no `supervisor drift`
+command. `supervisor status` reports each agent's last drift score, but asking
+the drift model for a fresh second opinion is available only over MCP.
+
+The CLI also has commands with no tool behind them, because they are not part of
+the protocol: `init`, `run` (which drives the whole loop itself), `events`,
+`reindex`, and `mcp` (which serves the tools above). `supervisor --help` lists
+them all.
