@@ -83,7 +83,14 @@ _DOD = {
             "description": "A single condition, objectively checkable, no conjunctions",
         },
         "method": {"type": "string", "enum": VERIFY_METHODS},
-        "command": {"type": "string", "description": "Exact command for method=command|test"},
+        "command": {
+            "type": "string",
+            "description": (
+                "Exact command for method=command|test. If it selects part of a suite "
+                "(-k, -run, -t), name test node ids or set expect to a minimum count: "
+                "a filter that matches nothing exits 0 and proves nothing"
+            ),
+        },
         "expect": {
             "type": "string",
             "description": "What proves it: exit code, output substring, or file state",
@@ -229,7 +236,17 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "description": "Why this is worth doing, tied to a finding",
                     },
-                    "rationale_refs": {"type": "array", "items": {"type": "string"}},
+                    "rationale_refs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Ids of the findings this task closes, copied verbatim "
+                            "(fnd_...). Required: a task that closes no finding is "
+                            "work nothing asked for, and a finding no task names is "
+                            "reported as still open when the run ends"
+                        ),
+                        "minItems": 1,
+                    },
                     "dod": {"type": "array", "items": _DOD, "minItems": 2},
                     "scope_paths": {"type": "array", "items": {"type": "string"}},
                     "out_of_scope": {"type": "array", "items": {"type": "string"}},
@@ -238,7 +255,7 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                     "risk": {"type": "string", "enum": SEVERITIES},
                     "effort": {"type": "string", "enum": ["small", "medium", "large"]},
                 },
-                "required": ["title", "action", "motivation", "dod"],
+                "required": ["title", "action", "motivation", "rationale_refs", "dod"],
             },
         },
     },

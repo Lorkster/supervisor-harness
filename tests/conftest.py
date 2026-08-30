@@ -214,7 +214,12 @@ class FakeProvider(Provider):
                               "per IP and per account using the Redis client in src/cache.py.",
                     "motivation": "Credential stuffing against the login endpoint is currently "
                                   "unconstrained.",
-                    "rationale_refs": [],
+                    # Named as the model names them: by title, because finding
+                    # ids do not exist until the harness parses this answer.
+                    "rationale_refs": [
+                        "Login endpoint has no rate limiting",
+                        "Limiter must use a shared counter store",
+                    ],
                     "dod": [
                         {
                             "statement": "The login endpoint rejects the eleventh attempt from "

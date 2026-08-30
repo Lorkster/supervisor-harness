@@ -12,6 +12,7 @@ unavailable or answers badly.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..agents.registry import AgentRegistry
@@ -231,11 +232,33 @@ def synthesis_prompt(state: RunState, mode_hint: RunMode) -> tuple[str, str]:
         "3. Decide the deliverable: 'report' if the user wants to know something, "
         "'execute' if they want something changed.\n"
         "4. If 'execute', propose the tasks.\n\n"
+        "Every proposed task must name, in rationale_refs, the ids of the findings it "
+        "closes -- copied verbatim from the findings list below. A task that closes no "
+        "finding is work nobody asked for; a finding no task closes stays open, and the "
+        "run says so at the end.\n\n"
         "Every proposed task must carry a definition of done that someone else could "
         "verify without asking you what you meant. Each criterion must be a single "
         "condition, objectively checkable, and at least one per task must be provable "
         "by running a command, running tests, or inspecting a file for specific "
         "content. Criteria like 'the code is clean' are rejected by the harness.\n\n"
+        "Three ways a criterion looks checkable and is not. The harness rejects or "
+        "supplements all three, so write them correctly rather than have them added "
+        "for you:\n"
+        "1. A command that runs part of a suite must say which tests it means. A "
+        "filter that selects nothing still exits 0 -- 'pytest -k thing', 'go test "
+        "-run Thing' -- so name node ids "
+        "(tests/test_lock.py::test_stale_lock_is_broken), or set expect to the "
+        "minimum selection ('7 passed').\n"
+        "2. If the task exists to make something refuse -- a scope fence, an "
+        "allow-list, a lock, a quota -- one criterion must be a negative test that "
+        "drives the concrete shape from the finding that motivated it (the actual "
+        "traversal path, the actual destructive command, the actual exception) and "
+        "asserts the refusal. Criteria the implementer can satisfy with their own "
+        "happy-path tests prove nothing about a guard.\n"
+        "3. If the task touches locking, retries, timeouts or I/O, one criterion must "
+        "show it still terminates: a test that drives the contended or failing path "
+        "to completion inside a stated wall-clock bound. Replacing a crash with an "
+        "unbounded retry loop passes every other kind of criterion.\n\n"
         "Propose the smallest set of tasks that fully addresses the findings. Do not "
         "invent work the findings do not support."
     )
@@ -352,6 +375,182 @@ def prepare_tasks(
         if entries:
             notes[task.id] = entries
     return tasks, notes
+
+
+def resolve_rationale_refs(
+    tasks: list[ExecutionTask], findings: list[Finding]
+) -> dict[str, list[str]]:
+    """Rewrite each task's ``rationale_refs`` to the ids of the findings it closes.
+
+    A task is derived from findings, and until this runs nothing records which
+    ones. Without that mapping the end of a run cannot separate "fixed here"
+    from "still open", and someone reconstructs it by hand from the report --
+    which is most of a follow-up prompt, every time.
+
+    The synthesis model is asked for finding ids and frequently answers with
+    titles instead, so a title is resolved too. A reference naming no finding is
+    dropped rather than kept as a dangling id, and reported per task so the user
+    sees it before approving; so is a task that cites nothing at all, which is
+    either invented work or a mapping the model declined to make.
+    """
+    by_id = {f.id: f.id for f in findings}
+    by_title = {f.title.strip().casefold(): f.id for f in findings if f.title.strip()}
+    notes: dict[str, list[str]] = {}
+
+    for task in tasks:
+        resolved: list[str] = []
+        for raw in task.rationale_refs:
+            entry = str(raw).strip()
+            match = by_id.get(entry) or by_title.get(entry.casefold())
+            if match is None:
+                notes.setdefault(task.id, []).append(
+                    f"dropped a reference naming no finding in this run: {entry!r}"
+                )
+            elif match not in resolved:
+                resolved.append(match)
+        task.rationale_refs = resolved
+        if not resolved:
+            notes.setdefault(task.id, []).append(
+                "closes no finding: this task is not traceable to anything the "
+                "analysis established, and nothing at the end of the run will be "
+                "able to say what it fixed"
+            )
+    return notes
+
+
+# How a finding stood when the run ended. Ordered worst first: what is still
+# open is the part a reader has to act on.
+FINDING_OPEN = "open"
+FINDING_ATTEMPTED = "attempted"
+FINDING_PENDING = "pending"
+FINDING_FIXED = "fixed"
+
+_RECONCILED_ORDER = (FINDING_OPEN, FINDING_ATTEMPTED, FINDING_PENDING, FINDING_FIXED)
+
+_RECONCILED_HEADING = {
+    FINDING_OPEN: "Still open",
+    FINDING_ATTEMPTED: "Attempted, not proven",
+    FINDING_PENDING: "Approved, not finished",
+    FINDING_FIXED: "Fixed and proven in this run",
+}
+
+_UNSTARTED = (TaskStatus.PROPOSED, TaskStatus.REJECTED, TaskStatus.DEFERRED)
+
+
+@dataclass
+class ReconciledFinding:
+    """One finding, and what this run actually did about it."""
+
+    finding: Finding
+    state: str
+    reason: str
+    task_ids: list[str] = field(default_factory=list)
+
+
+def reconcile_findings(state: RunState) -> list[ReconciledFinding]:
+    """Every finding, mapped to the tasks that claimed it and how they ended.
+
+    A finding is only ``fixed`` when a task that named it was verified with its
+    definition of done met. Anything else is still the reader's problem, and
+    says which kind of problem it is.
+    """
+    out: list[ReconciledFinding] = []
+    for finding in rank_findings(state.findings):
+        tasks = [t for t in state.tasks.values() if finding.id in t.rationale_refs]
+        if not tasks:
+            out.append(
+                ReconciledFinding(finding, FINDING_OPEN, "no task claimed this finding")
+            )
+            continue
+
+        ids = [t.id for t in tasks]
+        proven = [t for t in tasks if t.status is TaskStatus.VERIFIED and t.dod_satisfied()]
+        proven_ids = {t.id for t in proven}
+        running = [
+            t for t in tasks
+            if t.status not in _UNSTARTED and t.id not in proven_ids
+        ]
+        if proven:
+            titles = ", ".join(f"{t.title!r}" for t in proven)
+            out.append(ReconciledFinding(finding, FINDING_FIXED, f"proven by {titles}", ids))
+        elif any(t.status is TaskStatus.FAILED for t in running):
+            unmet = [c.statement for t in running for c in t.unmet_criteria()]
+            out.append(
+                ReconciledFinding(
+                    finding,
+                    FINDING_ATTEMPTED,
+                    "the task failed its definition of done"
+                    + (f": {unmet[0]}" if unmet else ""),
+                    ids,
+                )
+            )
+        elif running:
+            out.append(
+                ReconciledFinding(
+                    finding,
+                    FINDING_PENDING,
+                    "approved but not verified when the run ended",
+                    ids,
+                )
+            )
+        else:
+            decided = ", ".join(sorted({t.status.value for t in tasks}))
+            out.append(
+                ReconciledFinding(
+                    finding, FINDING_OPEN, f"every task claiming it was {decided}", ids
+                )
+            )
+    return out
+
+
+def _reconciliation_counts(rows: list[ReconciledFinding]) -> str:
+    counts = {state: sum(1 for r in rows if r.state == state) for state in _RECONCILED_ORDER}
+    return (
+        f"{len(rows)} finding(s): {counts[FINDING_FIXED]} fixed, "
+        f"{counts[FINDING_ATTEMPTED]} attempted, {counts[FINDING_PENDING]} pending, "
+        f"{counts[FINDING_OPEN]} still open."
+    )
+
+
+def reconciliation_markdown(state: RunState) -> str:
+    """The run's findings, each mapped to what was done about it.
+
+    Written as an artifact of every run, because the question it answers -- what
+    did this run actually close? -- is asked after the run is over, by someone
+    who no longer has the event log in front of them.
+    """
+    rows = reconcile_findings(state)
+    lines = [f"# Findings reconciliation: {state.prompt}", ""]
+    lines.append(f"- Run `{state.id}` -- {state.phase.value}")
+    lines.append("")
+    if not rows:
+        lines += ["This run produced no findings.", ""]
+        return "\n".join(lines)
+
+    lines += [_reconciliation_counts(rows), ""]
+    if not state.approved_tasks():
+        lines += [
+            "No execution task ran in this run, so every finding below is still open.",
+            "",
+        ]
+
+    for group in _RECONCILED_ORDER:
+        entries = [r for r in rows if r.state == group]
+        if not entries:
+            continue
+        lines += [f"## {_RECONCILED_HEADING[group]}", ""]
+        for row in entries:
+            finding = row.finding
+            lines.append(
+                f"- **[{finding.severity.value}]** `{finding.id}` {finding.title}"
+            )
+            claimed = ", ".join(f"`{t}`" for t in row.task_ids)
+            lines.append(f"    - {row.reason}" + (f" ({claimed})" if claimed else ""))
+            if group != FINDING_FIXED and finding.recommendation:
+                lines.append(f"    - recommended: {_display(finding.recommendation)}")
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -782,6 +981,27 @@ def final_report_markdown(state: RunState) -> str:
                 )
             if finding.recommendation:
                 lines.append(f"    - recommended: {_display(finding.recommendation)}")
+        lines.append("")
+
+    rows = reconcile_findings(state)
+    if rows:
+        lines += ["## Findings reconciliation", ""]
+        lines.append(_reconciliation_counts(rows))
+        lines.append("")
+        outstanding = [r for r in rows if r.state != FINDING_FIXED]
+        if outstanding:
+            lines.append("Not closed by this run:")
+            for row in outstanding[:25]:
+                lines.append(
+                    f"- **[{row.finding.severity.value}]** ({row.state}) "
+                    f"{row.finding.title} -- {row.reason}"
+                )
+            if len(outstanding) > 25:
+                lines.append(f"- ...and {len(outstanding) - 25} more")
+        else:
+            lines.append("Every finding this run produced was closed and proven.")
+        lines.append("")
+        lines.append("Full mapping, finding by finding: `artifacts/reconciliation.md`.")
         lines.append("")
 
     if state.report and state.report.conflicts:
