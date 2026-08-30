@@ -113,3 +113,65 @@ def test_debug_flag_re_raises_instead_of_printing_one_line(
 
     with pytest.raises(RuntimeError, match="provider exploded"):
         main(["events", "-w", str(tmp_path), "--debug"])
+
+
+# --------------------------------------------------------------------------
+# Declared host agents, and the drift command
+# --------------------------------------------------------------------------
+
+
+def _registry(declared: list) -> list[str]:
+    from supervisor_harness.agents.registry import AgentRegistry
+    from supervisor_harness.host.detect import HostInfo
+
+    return AgentRegistry(Path("."), HostInfo(name="claude-code"), declared).spawnable_names()
+
+
+def test_a_declared_agent_may_be_written_as_a_bare_name() -> None:
+    """`--host-agents '["general-purpose"]'` is the shape people write, and it
+    used to raise AttributeError from inside the registry comprehension."""
+    assert _registry(["general-purpose", "Explore"]) == ["general-purpose", "Explore"]
+    assert _registry([{"name": "general-purpose"}]) == ["general-purpose"]
+    assert _registry(["Explore", {"name": "general-purpose"}]) == [
+        "Explore", "general-purpose",
+    ]
+
+
+def test_an_entry_that_names_no_agent_is_dropped_rather_than_invented() -> None:
+    """The name is what the host is later asked to spawn, so an entry without
+    one must not become a sub-agent type called 'agent'."""
+    assert _registry([None, 7, "", {"description": "no name"}, {"name": "real"}]) == ["real"]
+
+
+def test_host_agents_that_is_not_a_json_array_is_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["start", "harden login", "--host-agents", "{oops", "-w", str(tmp_path)]) == 2
+    assert "--host-agents is not valid JSON" in capsys.readouterr().err
+
+    assert main(["start", "harden login", "--host-agents", '{"name": "a"}',
+                 "-w", str(tmp_path)]) == 2
+    assert "must be a JSON array" in capsys.readouterr().err
+
+
+def test_drift_command_reports_an_agent_with_nothing_to_assess(
+    run_with_notes: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`supervisor_check_drift` had no CLI equivalent at all; it now has one,
+    and it fails the way the other run-scoped commands do."""
+    assert main(["drift", "agt_TEST", run_with_notes, "-w", str(tmp_path)]) == 1
+    assert "no assessment to escalate" in capsys.readouterr().err
+
+
+def test_drift_command_defaults_to_the_most_recent_run(
+    run_with_notes: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["drift", "agt_TEST", "-w", str(tmp_path)]) == 1
+    assert run_with_notes in capsys.readouterr().err
+
+
+def test_drift_command_says_so_when_there_is_no_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["drift", "agt_TEST", "-w", str(tmp_path)]) == 2
+    assert "no runs found" in capsys.readouterr().err

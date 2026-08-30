@@ -277,8 +277,8 @@ recent run in the store.
 
 ## Driving it without MCP
 
-Every tool but one has a CLI equivalent that emits the same JSON, so the harness
-is usable from a shell script, CI, or a host that does not speak MCP at all:
+Every tool has a CLI equivalent that emits the same JSON, so the harness is
+usable from a shell script, CI, or a host that does not speak MCP at all:
 
 ```bash
 supervisor start "..." --host-agents '[{"name":"general-purpose"}]' --json
@@ -291,11 +291,12 @@ supervisor status <run_id> --json
 supervisor runs --json
 supervisor lessons --json
 supervisor providers --json
+supervisor drift <agent_id> <run_id> --json
 ```
 
-The exception is `supervisor_check_drift`: there is no `supervisor drift`
-command. `supervisor status` reports each agent's last drift score, but asking
-the drift model for a fresh second opinion is available only over MCP.
+`supervisor status` reports each agent's last recorded drift score; `supervisor
+drift` is what asks the drift model for a fresh one, and is the CLI equivalent
+of `supervisor_check_drift`.
 
 The CLI also has commands with no tool behind them, because they are not part of
 the protocol: `init`, `run` (which drives the whole loop itself), `events`,

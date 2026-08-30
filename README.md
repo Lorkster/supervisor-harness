@@ -182,13 +182,14 @@ shorthand for something the CLI will not tell you itself.
 | --- | --- | --- |
 | `init` | install host integrations and an example config into a project | `--host claude\|cursor\|both` (default: whichever host is detected), `--force` to overwrite existing files |
 | `run PROMPT` | drive a whole run to completion without a host | `--mode`, `--backend host\|autonomous`, `-y/--yes` |
-| `start PROMPT` | begin a host-delegated run and print its first work packets | `--mode`, `--host-agents` — the subagent types you can spawn, as a JSON array of objects: `'[{"name": "general-purpose", "description": "..."}]'`, whose names roles are matched against |
+| `start PROMPT` | begin a host-delegated run and print its first work packets | `--mode`, `--host-agents` — the subagent types you can spawn, as a JSON array: `'["general-purpose"]'`, or `'[{"name": "general-purpose", "description": "..."}]'` when you want the description to inform role matching |
 | `report RUN AGENT` | hand back one agent's result | `-i/--input` a JSON file, or `-` for stdin (the default) |
 | `advance [RUN]` | move a run to its next phase once its packets are reported | — |
 | `abandon AGENT [RUN]` | give up on an agent that will never report | `--reason`, recorded on the run's log |
 | `approve [RUN]` | decide on proposed tasks | `--all`, or `--task ID[:approve\|reject\|defer]`, repeatable |
 | `resume [RUN]` | continue an interrupted run from its event log | — |
 | `status [RUN]` | show one run in detail: phase, agents, drift, criteria | — |
+| `drift AGENT [RUN]` | ask the drift model for a second opinion on one agent's last turn | — |
 | `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
 | `runs` | list recent runs in this store | `-n/--limit` (default 20) |
 | `lessons` | show what previous runs taught the harness | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit` |
