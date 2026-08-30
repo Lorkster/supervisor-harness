@@ -596,7 +596,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("run", parents=[common], help="run a task to completion without a host")
     p.add_argument("prompt")
-    p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto")
+    p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto",
+                   help="what the run should produce: 'report' ends with the analysis, "
+                        "'execute' proposes tasks for you to approve, 'auto' (default) "
+                        "lets synthesis decide which the request asks for")
     p.add_argument("--backend", choices=["host", "autonomous"], default="")
     p.add_argument("-y", "--yes", action="store_true",
                    help="approve every proposed task without asking")
@@ -604,7 +607,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("start", parents=[common], help="begin a host-delegated run and print its packets")
     p.add_argument("prompt")
-    p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto")
+    p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto",
+                   help="what the run should produce: 'report' ends with the analysis, "
+                        "'execute' proposes tasks for you to approve, 'auto' (default) "
+                        "lets synthesis decide which the request asks for")
     p.add_argument("--host-agents", default="", help="JSON array of agent types you can spawn")
     p.set_defaults(func=cmd_start)
 
