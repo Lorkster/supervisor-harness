@@ -25,6 +25,7 @@ from ..models import (
     Finding,
     Lesson,
     Message,
+    Note,
     Phase,
     Report,
     RunMode,
@@ -166,9 +167,19 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
 
     elif t is EventType.TURN_RECORDED:
         turn = from_jsonable(p["turn"], AgentTurn)
-        state.turn_counts[turn.agent_id] = state.turn_counts.get(turn.agent_id, 0) + 1
-        prior = state.usage.get(turn.agent_id, Usage())
-        state.usage[turn.agent_id] = prior.add(turn.usage)
+        # The body, not only the tally. Kept whole, including the turn's own
+        # findings and messages: they are projected separately as well, by the
+        # FINDING_ADDED and MESSAGE_SENT events the same turn emits, so this
+        # duplicates them -- but a half-populated ``AgentTurn`` is a trap for
+        # whoever reads one next, and the log holds the whole thing either way.
+        first_time = _upsert(state.turns, turn)
+        if first_time:
+            # Both of these are running totals, so they are the two things in
+            # this branch a replay could double. The list above cannot be, and
+            # the resets below are assignments; these needed the guard.
+            state.turn_counts[turn.agent_id] = state.turn_counts.get(turn.agent_id, 0) + 1
+            prior = state.usage.get(turn.agent_id, Usage())
+            state.usage[turn.agent_id] = prior.add(turn.usage)
         # The agent answered, so it is not silent: the abandonment bound starts
         # again from the next packet it is handed.
         agent = state.agents.get(turn.agent_id)
@@ -198,6 +209,8 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
     elif t is EventType.TASK_PROPOSED:
         task = from_jsonable(p["task"], ExecutionTask)
         state.tasks[task.id] = task
+        if p.get("notes"):
+            state.task_notes[task.id] = [str(n) for n in p["notes"]]
 
     elif t in (EventType.TASK_DECIDED, EventType.TASK_UPDATED):
         task = from_jsonable(p["task"], ExecutionTask)
@@ -250,7 +263,20 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
         state.artifacts.append(artifact)
 
     elif t is EventType.NOTE:
-        pass  # audit-only: a note carries nothing the state projects
+        # Not audit-only after all. A note is the only record of why an agent was
+        # abandoned, why a stage fell back, why an index projection failed -- so
+        # dropping it here meant every reader working from ``RunState`` reported
+        # a failed run without the sentence explaining it.
+        _upsert(
+            state.notes,
+            Note(
+                id=event.id,
+                text=str(p.get("text", "")),
+                actor=event.actor,
+                ts=event.ts,
+                context={k: str(v) for k, v in p.items() if k != "text"},
+            ),
+        )
 
     elif t is EventType.RUN_ENDED:
         state.phase = Phase(p.get("phase", Phase.COMPLETE))
@@ -276,7 +302,7 @@ def _remember(bucket: list[str], entry: str) -> None:
         bucket.append(entry)
 
 
-def _upsert(items: list[Any], new: Any) -> None:
+def _upsert(items: list[Any], new: Any) -> bool:
     """Place an item in a list by id, replacing an earlier copy of the same id.
 
     The fold was idempotent per event in its dict branches, which assign by key,
@@ -286,14 +312,19 @@ def _upsert(items: list[Any], new: Any) -> None:
     every finding, directive, message, checkpoint and lesson in it, while leaving
     agents and tasks correct. An event applied twice now says exactly what it
     said once.
+
+    Returns whether this was a new item. Callers that keep a running total
+    alongside the list -- turn counts, accumulated usage -- need to know, because
+    an increment is not idempotent on its own however careful the list is.
     """
     ident = getattr(new, "id", None)
     if ident:
         for index, existing in enumerate(items):
             if getattr(existing, "id", None) == ident:
                 items[index] = new
-                return
+                return False
     items.append(new)
+    return True
 
 
 def fold(events: list[Event], initial: RunState | None = None) -> RunState:

@@ -443,3 +443,71 @@ def test_a_snapshot_that_cannot_be_written_does_not_end_the_run(
     assert store.snapshot_error and "denied" in store.snapshot_error
     assert list((store.runs_dir / "run_A").glob(".state-*.tmp")) == []
     assert store.load_state("run_A").prompt == "from the log"
+
+
+# -- the state carries what the log holds ------------------------------------
+
+
+def test_turn_bodies_reach_the_folded_state() -> None:
+    """The fold kept the count and threw the turn away.
+
+    Everything that needed what an agent actually said -- drift's comparison
+    against the previous turn, the change summary a verifier is handed -- re-read
+    the whole of ``events.jsonl`` to get it back, once per supervised turn.
+    """
+    turn = {"id": "trn_1", "agent_id": "agt_1", "seq": 1, "output": "what it did",
+            "files_touched": ["src/a.py"]}
+    state = fold([_event(EventType.TURN_RECORDED, {"turn": turn}, seq=1)])
+
+    assert [t.id for t in state.turns] == ["trn_1"]
+    assert state.turns[0].output == "what it did"
+    assert state.turns[0].files_touched == ["src/a.py"]
+    assert state.turn_counts["agt_1"] == 1
+
+
+def test_notes_reach_the_folded_state_with_what_they_named() -> None:
+    """A note is the only record of why a run went the way it did."""
+    state = fold([
+        _event(
+            EventType.NOTE,
+            {"text": "planning abandoned; continuing on the derived lens plan",
+             "agent_id": "agt_7"},
+            seq=1,
+            actor="supervisor",
+        ),
+    ])
+
+    assert len(state.notes) == 1
+    assert "planning abandoned" in state.notes[0].text
+    assert state.notes[0].context["agent_id"] == "agt_7"
+
+
+def test_task_proposal_notes_reach_the_folded_state() -> None:
+    """What the harness corrected on a task, without rescanning for it."""
+    state = fold([
+        _event(
+            EventType.TASK_PROPOSED,
+            {"task": {"id": "tsk_1", "title": "t"}, "notes": ["dropped a vacuous criterion"]},
+            seq=1,
+        ),
+    ])
+
+    assert state.task_notes == {"tsk_1": ["dropped a vacuous criterion"]}
+
+
+def test_a_replayed_turn_does_not_inflate_the_count_or_the_usage() -> None:
+    """Both are running totals, so the list being idempotent is not enough.
+
+    It matters beyond tidiness: ``report`` refuses a turn once the count reaches
+    the agent's budget, so an inflated count locks a working agent out.
+    """
+    turn = {"id": "trn_1", "agent_id": "agt_1", "seq": 1,
+            "usage": {"input_tokens": 10, "output_tokens": 5}}
+    events = [_event(EventType.TURN_RECORDED, {"turn": turn}, seq=1)]
+
+    once, twice = fold(events), fold(events + events)
+
+    assert twice.turn_counts == once.turn_counts == {"agt_1": 1}
+    assert twice.usage["agt_1"].input_tokens == once.usage["agt_1"].input_tokens == 10
+    assert len(twice.turns) == 1
+    assert len(fold([_event(EventType.NOTE, {"text": "x"}, seq=1)] * 2).notes) == 1

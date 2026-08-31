@@ -345,6 +345,30 @@ class AgentTurn:
 
 
 @dataclass
+class Note:
+    """An audit line: why something was skipped, abandoned or fell back.
+
+    Notes carry the reasons nothing else records -- why an agent was given up on,
+    why planning fell back to the derived lenses, why an index projection failed.
+    They were emitted and then dropped by the fold, so the explanation for a
+    failed run existed only in the raw log, and every reader that works from
+    ``RunState`` -- ``status``, ``runs``, the MCP tools -- reported the failure
+    without it.
+    """
+
+    # The id of the event that carried it, so a replayed log folds to the same
+    # notes rather than a longer list of them.
+    id: str = ""
+    text: str = ""
+    actor: str = "supervisor"
+    ts: str = field(default_factory=now_iso)
+    # Whatever the caller attached alongside the text: agent_id, task_id,
+    # iteration. Kept because a note naming its subject is worth more than one
+    # that does not, and the caller already knew which it was.
+    context: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Directive:
     """The supervisor's instruction back to an agent after a turn."""
 
@@ -554,8 +578,20 @@ class RunState:
     facts: dict[str, str] = field(default_factory=dict)
     turn_counts: dict[str, int] = field(default_factory=dict)
     usage: dict[str, Usage] = field(default_factory=dict)
+    # The turns themselves, not just how many there were. The fold used to keep
+    # the count and discard the body, so everything that needed what an agent
+    # actually said -- drift's comparison against the previous turn, the change
+    # summary a verifier is given -- re-read the entire log to get it back, once
+    # per supervised turn. That made supervision quadratic in the length of the
+    # run it was supervising.
+    turns: list[AgentTurn] = field(default_factory=list)
+    notes: list[Note] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     tasks: dict[str, ExecutionTask] = field(default_factory=dict)
+    # What the harness had to correct or drop when a task was proposed, by task
+    # id. Written onto the proposal event and read back only by the approval
+    # response, which had to rescan the log to find it.
+    task_notes: dict[str, list[str]] = field(default_factory=dict)
     messages: list[Message] = field(default_factory=list)
     directives: list[Directive] = field(default_factory=list)
     drift: dict[str, DriftAssessment] = field(default_factory=dict)
