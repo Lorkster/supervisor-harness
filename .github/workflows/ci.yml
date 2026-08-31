@@ -1,0 +1,61 @@
+name: CI
+
+# The suite has only ever run on one developer's Windows machine, which is why
+# two findings from the harness's review of itself are recorded as open against
+# code paths rather than against a demonstration: creating a symlink on that host
+# fails with WinError 1314, so `search`/`list_files` reading through one could not
+# be reproduced. The POSIX branch of the file lock in store/eventlog.py has the
+# same problem in reverse -- it is reasoned about rather than executed, and POSIX
+# is where the unlink race it guards is fully live.
+#
+# Both operating systems are therefore load-bearing here, not belt and braces:
+# Linux is where those two can be proven at all, and Windows is where the harness
+# is actually developed. See docs/remediation-plan.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to a branch makes the first run's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One version failing is a fact about that version; it should not hide
+      # whether the others pass.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # 3.11 is the floor pyproject declares; 3.14 is what the harness is
+        # developed on. requires-python has no upper bound, so the newest is
+        # tested rather than assumed.
+        python: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # The console scripts are part of what is shipped, and nothing in the test
+      # suite goes through them. An import error in cli.py or a broken entry
+      # point would otherwise reach a user before it reached CI.
+      - name: Entry point
+        run: supervisor --help
+
+      - name: Test
+        run: python -m pytest -q
