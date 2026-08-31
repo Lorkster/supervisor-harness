@@ -418,7 +418,16 @@ class Supervisor:
                 self._spawn(session, fallback)
                 self._transition(session, Phase.ANALYZING)
                 return None
-            self._transition(session, Phase.ANALYZING)
+            # The phase stays CREATED until the plan actually lands. It used to
+            # move to ANALYZING here, before the planner had answered, which left
+            # a window an ordinary call sequence walks straight into: an
+            # ``advance`` while the planner packet is still out found the run in
+            # ANALYZING with no analysts, and spawned the derived fallback fleet.
+            # The planner's report then called ``_apply_plan``, which spawned the
+            # model's fleet on top -- and the guard there tests the phase, which
+            # was already ANALYZING, so nothing noticed. Two full analysis fleets
+            # for one run. Re-entering planning re-issues the same packet to the
+            # same agent instead, which the dispatch bound already accounts for.
             packet = self._stage_packet(session, agent, system, user, PLANNING_SCHEMA, "planning")
             return SupervisorResponse(
                 run_id=state.id, phase=str(state.phase), action="dispatch",
@@ -457,7 +466,21 @@ class Supervisor:
         if state.mode is RunMode.AUTO and mode is not RunMode.AUTO:
             session.emit(EventType.RUN_MODE_SET, {"mode": str(mode)})
 
-        self._spawn(session, specs)
+        # A fleet already running is the answer to this question, whoever asked
+        # it. The plan can arrive after the derived fallback fleet has been
+        # spawned -- planning abandoned, then reported late -- and adding the
+        # model's lenses on top would run the analysis twice rather than better.
+        # This is a second lock: the phase no longer moves to ANALYZING before
+        # the plan lands, so the common route into the collision is closed above.
+        running = [a for a in state.agents.values() if a.kind is AgentKind.ANALYSIS]
+        if running:
+            session.note(
+                f"plan applied after {len(running)} analysis agent(s) were already "
+                "spawned; keeping the running fleet rather than adding to it"
+            )
+        else:
+            self._spawn(session, specs)
+
         if state.phase is not Phase.ANALYZING:
             self._transition(session, Phase.ANALYZING)
 
@@ -503,6 +526,23 @@ class Supervisor:
         system, user = phases.synthesis_prompt(state, state.mode)
 
         if self._delegated(stage):
+            # Checked before ``_stage_agent`` rather than after it, which is what
+            # made this dead code. ``_stage_agent`` only ever returns an agent in
+            # ACTIVE_AGENT_STATUSES, so ``agent.status is DONE`` could not hold
+            # on anything it handed back -- and a synthesizer that had finished
+            # fell past it to a fresh spawn, with its own AGENT_SPAWNED event and
+            # its own dispatched packet, on every ``advance``. Unbounded, because
+            # nothing about the run had changed to stop the next one.
+            #
+            # The guard belongs here rather than in ``_stage_agent``: the
+            # checkpointer legitimately needs a new agent per remediation
+            # iteration under the same role, so refusing every finished stage
+            # agent centrally would break the remediation loop.
+            if any(
+                a.role == "synthesizer" and a.status is AgentStatus.DONE
+                for a in state.agents.values()
+            ):
+                return self._error(session, "synthesis agent finished without producing tasks")
             agent = self._stage_agent(session, "synthesizer", stage)
             if agent is None:
                 # Nothing downstream exists without synthesis: no report, no
@@ -513,8 +553,6 @@ class Supervisor:
                     "synthesis was abandoned without being reported; the run has "
                     "findings but no merged report or tasks",
                 )
-            if state.agents[agent.id].status is AgentStatus.DONE:
-                return self._error(session, "synthesis agent finished without producing tasks")
             packet = self._stage_packet(session, agent, system, user, SYNTHESIS_SCHEMA, "synthesis")
             return SupervisorResponse(
                 run_id=state.id, phase=str(state.phase), action="dispatch",
@@ -884,6 +922,25 @@ class Supervisor:
                 detail={"error": "unknown_agent", "known_agents": sorted(state.agents)},
             )
 
+        # Existing was the only thing asked about it. Not its status, and not
+        # whether this turn had already been reported -- so a packet reported
+        # twice was recorded twice, counted twice in ``turn_counts``, supervised
+        # twice and answered with a second directive, all for one piece of work.
+        # A host that retries a call it is unsure landed produces exactly that.
+        stale = self._stale_report_reason(state, agent)
+        if stale is not None:
+            session.note("duplicate report rejected", agent_id=agent.id, reason=stale)
+            return SupervisorResponse(
+                run_id=state.id,
+                phase=str(state.phase),
+                action="await_reports",
+                message=(
+                    f"Agent {agent_id!r} {stale}; nothing was recorded. If this was "
+                    "a retry, the first report landed and no second one is needed."
+                ),
+                detail={"error": "duplicate_report", "agent_status": str(agent.status)},
+            )
+
         if agent.kind is AgentKind.SYNTHESIS:
             return await self._report_stage(session, agent, payload)
 
@@ -912,6 +969,33 @@ class Supervisor:
             self._mark_task_awaiting_verification(session, agent, payload)
 
         return self._after_directive(session, agent, directive)
+
+    @staticmethod
+    def _stale_report_reason(state: RunState, agent: AgentSpec) -> str | None:
+        """Why this agent cannot report again, or ``None`` if it can.
+
+        Two bounds, because they catch different mistakes.
+
+        An agent that is no longer active has finished: ACTIVE_AGENT_STATUSES is
+        the harness's own definition of "can still be driven from", and a report
+        against anything outside it is late, duplicated or addressed to an agent
+        the supervisor has already given up on.
+
+        An agent still active but out of turns is the subtler case: the turn
+        contract carries no turn identifier, so two reports of the *same* turn
+        are indistinguishable from two genuine turns while the budget allows
+        more. The budget is the bound that does not need one -- past it, another
+        report cannot be work this agent was asked to do.
+        """
+        if agent.status not in ACTIVE_AGENT_STATUSES:
+            return f"is {agent.status.value} and is not accepting reports"
+        used = state.turn_counts.get(agent.id, 0)
+        if agent.budget.max_turns and used >= agent.budget.max_turns:
+            return (
+                f"has already reported {used} of its {agent.budget.max_turns} "
+                "permitted turn(s)"
+            )
+        return None
 
     def _record_turn(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
