@@ -379,6 +379,25 @@ class EventLog:
                     self.skipped_lines += 1
                     continue
 
+    def last_seq(self) -> int | None:
+        """The highest sequence on disk, or ``None`` when that cannot be read.
+
+        Read without the append lock, which is safe for the one question it
+        answers: the log is append-only, so a concurrent write can only make the
+        answer larger, and a caller comparing a snapshot against it wants to know
+        whether the snapshot is *behind*. A racing append makes it look staler,
+        never fresher, which is the direction that fails safe.
+
+        ``None`` rather than a raise, because the callers are readers: a log too
+        damaged to yield a sequence should not stop ``supervisor status`` from
+        reporting what it can. :meth:`append` still refuses that log outright,
+        since writing to it would restart numbering.
+        """
+        try:
+            return self._last_seq_unlocked()
+        except CorruptLog:
+            return None
+
     def read_all(self) -> list[Event]:
         return sorted(self.read(), key=lambda e: e.seq)
 

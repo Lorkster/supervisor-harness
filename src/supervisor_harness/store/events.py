@@ -329,13 +329,18 @@ def _apply_contained(state: RunState, event: Event) -> RunState:
     only its projection.
     """
     try:
-        return _apply(state, event)
+        state = _apply(state, event)
     except Exception as exc:  # noqa: BLE001 - one bad record must not end the replay
         _remember(
             state.rejected_events,
             f"{event.type} ({exc.__class__.__name__}: {exc})",
         )
-        return state
+    # Advanced whether or not the event applied. The watermark answers "which
+    # events has this state seen?", not "which ones did it like": a record that
+    # was rejected here will be rejected identically on every replay, so holding
+    # the mark back for it would make a current snapshot look permanently stale.
+    state.last_seq = max(state.last_seq, event.seq)
+    return state
 
 
 def event_to_dict(event: Event) -> dict[str, Any]:

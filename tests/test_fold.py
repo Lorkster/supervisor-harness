@@ -7,6 +7,8 @@ asked about rather than one the fold happened to generate.
 
 from __future__ import annotations
 
+import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -276,15 +278,20 @@ def test_load_state_reports_the_run_id_it_was_asked_for(tmp_path: Path) -> None:
 
 
 def test_load_state_corrects_a_snapshot_carrying_the_wrong_id(tmp_path: Path) -> None:
-    """The directory name is the run's identity; the snapshot is derived."""
+    """The directory name is the run's identity; the snapshot is derived.
+
+    ``last_seq`` matches the log deliberately. The snapshot has to be *current*
+    for this property to be the one under test -- a snapshot behind the log is
+    now discarded in favour of the fold, and would prove nothing about ids.
+    """
     store = _store(tmp_path)
     store.log("run_A").append(Event(run_id="run_A", type=EventType.NOTE))
-    store.save_snapshot(RunState(id="run_B", prompt="stale"))
+    store.save_snapshot(RunState(id="run_B", prompt="written under the wrong id", last_seq=1))
     (store.runs_dir / "run_B" / "state.json").replace(store.runs_dir / "run_A" / "state.json")
 
     state = store.load_state("run_A")
     assert state.id == "run_A"
-    assert state.prompt == "stale"
+    assert state.prompt == "written under the wrong id"
 
 
 def test_load_state_refuses_a_run_that_does_not_exist(tmp_path: Path) -> None:
@@ -312,3 +319,127 @@ def test_a_run_reports_the_lines_its_log_could_not_read(tmp_path: Path) -> None:
 
     assert state.damaged_lines == 2
     assert store.load_state("run_A").damaged_lines == 2
+
+
+# -- the snapshot answers to the log ----------------------------------------
+
+
+def test_a_snapshot_behind_the_log_loses_to_it(tmp_path: Path) -> None:
+    """The snapshot is a cache, and it used to win on the strength of parsing.
+
+    The fold was reached only when ``json.loads`` threw, so a snapshot that
+    parsed but was *behind* -- what two processes reporting at once produce --
+    was preferred over a log that was correct, for as long as the file sat there.
+    Nothing compared the two, and nothing could: the state recorded no position
+    in the log at all.
+    """
+    store = _store(tmp_path)
+    log = store.log("run_A")
+    log.append(Event(run_id="run_A", type=EventType.RUN_CREATED,
+                     payload={"run": to_jsonable(RunState(id="run_A", prompt="the real prompt"))}))
+    log.append(Event(run_id="run_A", type=EventType.PHASE_CHANGED, payload={"phase": "analyzing"}))
+
+    # What a process that had folded only the first event would leave behind.
+    store.save_snapshot(RunState(id="run_A", prompt="the real prompt", last_seq=1))
+
+    state = store.load_state("run_A")
+    assert state.last_seq == 2
+    assert state.phase is Phase.ANALYZING, "the log held a phase the snapshot had not seen"
+
+
+def test_a_current_snapshot_is_still_preferred_to_a_fold(tmp_path: Path) -> None:
+    """The watermark must not turn the cache off; it decides when to trust it."""
+    store = _store(tmp_path)
+    store.log("run_A").append(Event(run_id="run_A", type=EventType.NOTE))
+    store.save_snapshot(RunState(id="run_A", prompt="only in the snapshot", last_seq=1))
+
+    assert store.load_state("run_A").prompt == "only in the snapshot"
+
+
+def test_a_snapshot_written_before_the_watermark_existed_reads_as_stale(
+    tmp_path: Path,
+) -> None:
+    """Such a file carries no position, so it is refolded once and rewritten."""
+    store = _store(tmp_path)
+    store.log("run_A").append(Event(run_id="run_A", type=EventType.RUN_CREATED,
+                                    payload={"run": to_jsonable(RunState(id="run_A", prompt="from the log"))}))
+    snapshot = store.runs_dir / "run_A" / "state.json"
+    snapshot.write_text(
+        json.dumps({"id": "run_A", "prompt": "from a build with no last_seq"}), encoding="utf-8"
+    )
+
+    assert store.load_state("run_A").prompt == "from the log"
+
+
+def test_the_fold_records_the_position_it_reached() -> None:
+    """A rejected event still advances the mark: it will be rejected every time."""
+    state = fold([
+        _event(EventType.NOTE, seq=1),
+        _event(EventType.PHASE_CHANGED, {"phase": "not_a_phase"}, seq=2),
+        _event(EventType.NOTE, seq=3),
+    ])
+
+    assert state.last_seq == 3
+    assert len(state.rejected_events) == 1
+
+
+def test_concurrent_snapshot_writers_never_leave_a_partial_file(tmp_path: Path) -> None:
+    """The temporary file used to be named after its target, so it was shared.
+
+    ``state.json.tmp`` is the same name for every writer of a run, so two
+    processes reporting at once wrote into one file and renamed it twice, and the
+    survivor held an interleaving of both. Every read below must see a whole,
+    parseable snapshot -- never a half-written one.
+    """
+    store = _store(tmp_path)
+    store.log("run_A").append(Event(run_id="run_A", type=EventType.NOTE))
+    big = "x" * 200_000  # large enough that a partial write would be visible
+    errors: list[BaseException] = []
+    start = threading.Barrier(6)
+
+    def write(n: int) -> None:
+        try:
+            start.wait(timeout=5.0)
+            for _ in range(10):
+                store.save_snapshot(RunState(id="run_A", prompt=f"{big}{n}", last_seq=1))
+                store.load_state("run_A")  # must always parse
+        except BaseException as exc:  # noqa: BLE001 - re-raised through the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write, args=(n,)) for n in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert store.load_state("run_A").prompt.startswith(big)
+    leftovers = list((store.runs_dir / "run_A").glob(".state-*.tmp"))
+    assert leftovers == [], f"temporary files left behind: {leftovers}"
+
+
+def test_a_snapshot_that_cannot_be_written_does_not_end_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The snapshot is derived, so losing it must cost only the fold it saved.
+
+    The same rule ``sync_index`` states for the index. It is true rather than
+    merely intended now that ``load_state`` rebuilds from the log whenever the
+    snapshot is missing, unreadable or behind. The event log, which is not
+    derived, still fails loudly -- that difference is the point.
+    """
+    store = _store(tmp_path)
+    log = store.log("run_A")
+    log.append(Event(run_id="run_A", type=EventType.RUN_CREATED,
+                     payload={"run": to_jsonable(RunState(id="run_A", prompt="from the log"))}))
+
+    def denied(self: Path, target: object) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(Path, "replace", denied)
+    monkeypatch.setattr("supervisor_harness.store.runstore.time.sleep", lambda _s: None)
+
+    assert store.save_snapshot(RunState(id="run_A", prompt="never lands", last_seq=1)) is False
+    assert store.snapshot_error and "denied" in store.snapshot_error
+    assert list((store.runs_dir / "run_A").glob(".state-*.tmp")) == []
+    assert store.load_state("run_A").prompt == "from the log"
