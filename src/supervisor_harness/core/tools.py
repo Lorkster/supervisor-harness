@@ -385,18 +385,11 @@ class Toolbox:
         root = self.workspace.resolve()
         out: list[Path] = []
         for path in self.workspace.rglob("*"):
-            if path.is_symlink():
-                continue
             if not path.is_file():
                 continue
             if any(part in SKIP_DIRS for part in path.parts):
                 continue
             if path.suffix.lower() in BINARY_SUFFIXES:
-                continue
-            try:
-                if root not in path.resolve().parents:
-                    continue
-            except OSError:
                 continue
             out.append(path)
         return out
