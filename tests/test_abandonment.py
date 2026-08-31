@@ -157,7 +157,6 @@ async def test_the_wall_clock_bound_abandons_a_silent_agent(
 ) -> None:
     """The same bound expressed in elapsed time, with the dispatch count off."""
     host_config.policy.max_unreported_dispatches = 0      # disabled
-    host_config.policy.agent_timeout_seconds = 0.05
     store = RunStore(workspace / ".supervisor")
     host = HostInfo(name="claude-code", workspace=str(workspace), confidence=1.0)
     supervisor = Supervisor(workspace=workspace, config=host_config, store=store, host=host)
@@ -166,6 +165,16 @@ async def test_the_wall_clock_bound_abandons_a_silent_agent(
     run_id = response.run_id
     dispatched = {p.agent_id for p in response.packets}
 
+    # Armed only now. The bound used to be set before the run started, which put
+    # it against the test's own setup rather than against a silent agent: on a
+    # loaded machine, getting as far as the analysis fan-out takes longer than
+    # 50ms, so the agents were abandoned -- correctly -- before the test had
+    # finished dispatching them, and `_reach_analysis` failed on a fan-out of
+    # one. `_abandonment_reason` reads the policy on each call, so arming it here
+    # measures what the test is named for. Reproduced at 3 failures in 8
+    # concurrent runs; nil in 12 unloaded ones, which is why it survived until
+    # there was CI.
+    host_config.policy.agent_timeout_seconds = 0.05
     await asyncio.sleep(0.1)
     response = await supervisor.advance(run_id)
 
