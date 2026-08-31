@@ -580,6 +580,12 @@ class RunState:
     # is not an event cannot describe itself -- so this is stamped by the store
     # after reading rather than accumulated by a branch below.
     damaged_lines: int = 0
+    # The highest event sequence this state has seen. It is what makes the
+    # snapshot answerable to the log: a reader compares it against the log's own
+    # tail and can tell a current snapshot from one another process wrote before
+    # the events it is missing. Zero on a snapshot written before this existed,
+    # which reads as stale exactly once and is then rewritten.
+    last_seq: int = 0
     report: Report | None = None
     checkpoint_iteration: int = 0
     error: str = ""

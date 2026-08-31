@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,12 @@ from .index import RunIndex
 HOME_ENV = "SUPERVISOR_HOME"
 DEFAULT_DIRNAME = ".supervisor"
 
+#: How many times a snapshot rename waits out a reader before giving up, and
+#: how long it pauses between attempts. Windows refuses to replace a file another
+#: handle has open, and a reader's hold is measured in milliseconds.
+SNAPSHOT_REPLACE_RETRIES = 10
+SNAPSHOT_REPLACE_BACKOFF = 0.02
+
 
 class RunStore:
     """Filesystem-backed store for every run the harness has executed."""
@@ -36,6 +44,10 @@ class RunStore:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.lessons_path = self.root / "lessons.jsonl"
         self._index: RunIndex | None = None
+        #: Why the last snapshot write did not land, or ``None``. Recorded
+        #: rather than raised: the snapshot is derived, and the log answers
+        #: every question it does.
+        self.snapshot_error: str | None = None
 
     @classmethod
     def discover(cls, workspace: Path | str | None = None) -> "RunStore":
@@ -98,7 +110,20 @@ class RunStore:
         return ids[0] if ids else None
 
     def load_state(self, run_id: str) -> RunState:
-        """Read the snapshot if present, else rebuild from the log.
+        """Read the snapshot if it is current, else rebuild from the log.
+
+        The snapshot is a cache of the fold, and it used to be preferred on the
+        strength of parsing: the fold was reached only when ``json.loads`` threw.
+        A snapshot that parsed but was *behind* -- written by a process that had
+        folded fewer events, which is what concurrent reporters produce -- was
+        therefore preferred over a log that was correct, for as long as the file
+        sat there. Nothing compared the two, and nothing could: the state
+        recorded no position in the log at all.
+
+        :attr:`RunState.last_seq` is that position, so the two are now
+        comparable, and the log wins whenever the snapshot is behind it. A
+        snapshot written before the field existed carries zero and is read as
+        stale exactly once.
 
         The id is stamped from ``run_id`` the way :meth:`open` does, so a log
         whose genesis record is missing or unreadable still reports the run that
@@ -112,17 +137,97 @@ class RunStore:
             try:
                 state = from_jsonable(json.loads(snapshot.read_text(encoding="utf-8")), RunState)
                 state.id = run_id
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                # OSError included for the same reason the rename retries: on
+                # Windows a read racing a replace is denied outright. The log is
+                # always able to answer, so a snapshot that cannot be read right
+                # now is simply not used.
+                return self._fold_log(run_id)
+
+            tail = self.log(run_id).last_seq()
+            # ``None`` means the log yields no sequence at all. The fold of such
+            # a log is an empty state, which is strictly worse than a snapshot
+            # that at least parsed, so the snapshot stands and its damage is
+            # reported by the read that produced it.
+            if tail is None or state.last_seq >= tail:
                 return state
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
         return self._fold_log(run_id)
 
-    def save_snapshot(self, state: RunState) -> None:
-        """Write the derived snapshot atomically so a crash cannot half-write it."""
+    def save_snapshot(self, state: RunState) -> bool:
+        """Write the derived snapshot atomically so a crash cannot half-write it.
+
+        The docstring was true of the rename and of nothing else. The temporary
+        file's name was ``state.json.tmp``, derived from the target and therefore
+        the *same name for every writer of this run* -- so two processes
+        reporting at once wrote into one file and renamed it twice, and the
+        survivor was whichever finished last, holding an interleaving of both.
+        The name is now unique per write, so concurrent writers cannot meet in
+        it, and the rename stays the atomic step it always was.
+
+        Nothing was flushed to the platter either. ``write_text`` returns once
+        the data is in the page cache, and the rename could reach disk before the
+        contents it was renaming, so a power loss could leave ``state.json``
+        present, complete-looking and empty. The file is fsynced before it is
+        renamed, which is the ordering that makes the rename mean something.
+
+        A snapshot behind the one already on disk is still written rather than
+        refused: it is a cache, and :meth:`load_state` compares it against the
+        log before trusting it, so a stale write costs a fold on the next read
+        and is corrected by the next event. Refusing it here would mean reading
+        the existing file on every append to answer a question the reader already
+        answers properly.
+
+        Returns whether the file was written. A failure to write it is not fatal
+        and never propagates, for the same reason :meth:`RunSession.sync_index`
+        gives about the index: this is derived data, and losing it must not take
+        the run down. That is now true rather than merely intended --
+        ``load_state`` rebuilds from the log whenever the snapshot is missing,
+        unreadable or behind, so the worst a failed write costs is the fold it
+        was there to save. The event log, which is not derived, still fails
+        loudly; the difference is deliberate.
+        """
         path = self.run_dir(state.id) / "state.json"
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(to_jsonable(state), indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        payload = json.dumps(to_jsonable(state), indent=2, ensure_ascii=False)
+        handle, name = tempfile.mkstemp(dir=path.parent, prefix=".state-", suffix=".tmp")
+        tmp = Path(name)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            self._replace_snapshot(tmp, path)
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            self.snapshot_error = str(exc)
+            return False
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        self.snapshot_error = None
+        return True
+
+    @staticmethod
+    def _replace_snapshot(tmp: Path, path: Path) -> None:
+        """Rename the new snapshot over the old one, waiting out a live reader.
+
+        POSIX replaces a file that is open elsewhere without comment. Windows
+        refuses it: a reader holding ``state.json`` -- ``supervisor status``
+        against a run that is reporting, which is an ordinary thing to do --
+        makes the rename raise ``PermissionError``, and that used to come out of
+        ``save_snapshot``, out of ``emit``, and end the run over a *cache write*.
+
+        A reader's hold is short, so the rename is retried briefly. If it still
+        will not go, the exception stands: at that point the cause is not a
+        passing reader.
+        """
+        for attempt in range(SNAPSHOT_REPLACE_RETRIES + 1):
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError:
+                if attempt == SNAPSHOT_REPLACE_RETRIES:
+                    raise
+                time.sleep(SNAPSHOT_REPLACE_BACKOFF)
 
     # -- artifacts ---------------------------------------------------------
 
