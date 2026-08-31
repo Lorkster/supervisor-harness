@@ -55,10 +55,10 @@ each, in the style the history already uses.
 | # | batch | findings | status |
 |---|---|---|---|
 | 0 | CI on Linux and Windows | — | **done** — `ci/linux-and-windows-matrix` |
-| 1 | Give the execution fence a floor | 1 | **done** — `fix/execution-fence-floor`, uncommitted |
+| 1 | Give the execution fence a floor | 1 | **done** — `fix/execution-fence-floor` |
 | 2 | Make the log survive a torn write and a bad payload | 5 | **done** — `fix/log-durability-and-fold-containment` |
 | 3 | Make the snapshot answerable to the log | 2 (+2 dup) | **done** — `fix/snapshot-watermark-and-atomic-write` |
-| 4 | Stop the phase machine issuing the same work twice | 3 | not started |
+| 4 | Stop the phase machine issuing the same work twice | 3 | **done** — `fix/phase-machine-double-dispatch` |
 | 5a | Fix the tool-round loop | 2 | not started |
 | 5b | Project turns and notes into RunState | 2 (+1 dup) | not started |
 | 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | not started |
@@ -255,6 +255,33 @@ in `save_snapshot` with a payload around 100 KB; on Windows it surfaces as
 **Done:** `advance()` before the planner reports yields one fleet; a duplicate
 `report()` is rejected by name; repeated `advance()` past synthesis spawns
 nothing.
+
+**Landed on `fix/phase-machine-double-dispatch`.** The phase stays CREATED until
+the plan lands, so an `advance` during planning re-offers planning;
+`_apply_plan` keeps a fleet that is already running rather than adding to it;
+`_stale_report_reason` refuses a report from an agent outside
+ACTIVE_AGENT_STATUSES or past its turn budget, as a response rather than a
+failure; and the synthesis DONE check moved *before* `_stage_agent`. Three tests
+in `tests/test_host_delegation.py`, all failing against the previous commit. 186
+tests pass, 6/6 under parallel load.
+
+**Two things worth knowing before touching this code again.** The DONE guard
+stays at the synthesis call site rather than moving into `_stage_agent`, which
+would be tidier and wrong: the checkpointer takes a new agent per remediation
+iteration under the same role, so refusing every finished stage agent centrally
+would break the remediation loop. And `_stage_agent` accepts `**extra` and never
+reads it — the `iteration=iteration` the checkpointer passes does nothing, and
+role alone is that agent's whole identity. Not a finding, not fixed here.
+
+**Reproductions worth keeping.** The double fleet: `start`, then `advance`
+*before* reporting the planner, then report and advance. Against the unfixed
+code the first `advance` hands back `analysis` packets and the run ends with four
+analysis agents against `max_analysis_lenses = 3`. The synthesis respawn needs a
+run sitting in SYNTHESIZING whose synthesizer is already DONE — which
+`_report_stage` produces whenever `_apply_synthesis` raises after the status is
+set, since it is not wrapped and the transition is the last thing it does. The
+test reconstructs that by writing the phase back, because a normal report always
+transitions away.
 
 ### 5a · Fix the tool-round loop
 
