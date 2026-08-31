@@ -54,7 +54,7 @@ each, in the style the history already uses.
 
 | # | batch | findings | status |
 |---|---|---|---|
-| 0 | CI on Linux and Windows | — | not started |
+| 0 | CI on Linux and Windows | — | **done** — `ci/linux-and-windows-matrix` |
 | 1 | Give the execution fence a floor | 1 | **done** — `fix/execution-fence-floor`, uncommitted |
 | 2 | Make the log survive a torn write and a bad payload | 5 | not started |
 | 3 | Make the snapshot answerable to the log | 2 (+2 dup) | not started |
@@ -82,6 +82,26 @@ branch of `FileLock` is reasoned about rather than executed.
 
 **Done:** matrix job, Python 3.11–3.13, Linux and Windows, existing tests green
 on both.
+
+**Landed on `ci/linux-and-windows-matrix`.** `.github/workflows/ci.yml`: 2 OS × 4
+Python versions, `fail-fast: false`, plus a `supervisor --help` smoke step
+because nothing in the suite goes through the console scripts. The matrix runs
+3.11 through **3.14** rather than 3.13 — `requires-python` has no upper bound and
+3.14 is what the harness is developed on, so the newest is tested rather than
+assumed. No lint gate: `ruff` reports 59 findings on `main` against defaults this
+project has never configured, and a gate that is red on arrival tells nobody
+anything. 168 tests pass on all eight jobs.
+
+**What it found immediately.** `test_the_wall_clock_bound_abandons_a_silent_agent`
+set `agent_timeout_seconds` to 50 ms *before* the run started, so the bound ran
+against the test's own setup: reaching the analysis fan-out takes longer than
+50 ms on a loaded machine, the agents were abandoned correctly by the mechanism
+under test before the test had dispatched them, and `_reach_analysis` failed on a
+fan-out of one. Three failures in eight concurrent local runs, none in twelve
+unloaded ones — which is how it survived until there was somewhere busy to run
+it. The bound is now armed after the run reaches analysis. Nothing about the
+harness changed, and the test still fails with the bound disabled, so it has not
+gone vacuous.
 
 ### 1 · Give the execution fence a floor
 
