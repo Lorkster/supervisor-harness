@@ -20,7 +20,7 @@ from ..ids import now_iso
 from ..models import Lesson, RunState
 from ..serde import from_jsonable, to_jsonable
 from .eventlog import EventLog
-from .events import Event, EventType, _apply, fold
+from .events import Event, EventType, _apply_contained, fold
 from .index import RunIndex
 
 HOME_ENV = "SUPERVISOR_HOME"
@@ -69,9 +69,21 @@ class RunStore:
         """Resume an existing run by replaying its log."""
         if not self.exists(run_id):
             raise FileNotFoundError(f"no such run: {run_id}")
-        state = fold(self.log(run_id).read_all())
-        state.id = run_id
+        state = self._fold_log(run_id)
         return RunSession(self, state)
+
+    def _fold_log(self, run_id: str) -> RunState:
+        """Replay one run's log, keeping what the read itself could not recover.
+
+        The count of unreadable lines belongs on the state rather than on the
+        log object: it is a fact about this run that every reader needs, and the
+        log is constructed and discarded per call.
+        """
+        log = self.log(run_id)
+        state = fold(log.read_all())
+        state.id = run_id
+        state.damaged_lines = log.skipped_lines
+        return state
 
     def list_run_ids(self) -> list[str]:
         if not self.runs_dir.exists():
@@ -103,9 +115,7 @@ class RunStore:
                 return state
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
-        state = fold(self.log(run_id).read_all())
-        state.id = run_id
-        return state
+        return self._fold_log(run_id)
 
     def save_snapshot(self, state: RunState) -> None:
         """Write the derived snapshot atomically so a crash cannot half-write it."""
@@ -209,7 +219,7 @@ class RunSession:
         """Append an event, apply it to in-memory state, and snapshot."""
         event = Event(run_id=self.state.id, type=type, actor=actor, payload=payload or {})
         self._log.append(event)
-        self.state = _apply(self.state, event)
+        self.state = _apply_contained(self.state, event)
         self._pending_index = True
         self.store.save_snapshot(self.state)
         return event
@@ -222,7 +232,7 @@ class RunSession:
         ]
         self._log.append_many(built)
         for event in built:
-            self.state = _apply(self.state, event)
+            self.state = _apply_contained(self.state, event)
         self._pending_index = True
         self.store.save_snapshot(self.state)
         return built
@@ -256,5 +266,5 @@ class RunSession:
 
     def reload(self) -> RunState:
         """Re-fold from the log; use when another process may have written."""
-        self.state = fold(self._log.read_all())
+        self.state = self.store._fold_log(self.state.id)
         return self.state

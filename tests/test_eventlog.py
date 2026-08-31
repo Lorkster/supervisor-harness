@@ -15,7 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from supervisor_harness.store.eventlog import EventLog, FileLock, LockTimeout
+from supervisor_harness.store.eventlog import (
+    CorruptLog,
+    EventLog,
+    FileLock,
+    LockTimeout,
+)
 from supervisor_harness.store.events import Event, EventType
 
 
@@ -215,6 +220,58 @@ def test_sequence_numbers_are_unique_and_contiguous_under_concurrent_appends(
     seqs = sorted(e.seq for e in EventLog(path).read_all())
     assert seqs == list(range(1, writers * per_writer + 1))
     assert not path.with_suffix(".lock").exists()
+
+
+def test_an_append_after_a_torn_record_does_not_destroy_the_next_one(
+    tmp_path: Path,
+) -> None:
+    """The torn record is lost. The one written after it must not be.
+
+    A process killed mid-write leaves a line with no newline. The next append
+    opened in ``"a"`` and wrote onto the end of it, fusing the fragment and the
+    following record into one line that parses as neither -- so a crash cost two
+    records instead of one, and nothing said so.
+    """
+    path = tmp_path / "run_A.jsonl"
+    log = EventLog(path)
+    log.append(_event(1))
+
+    # A write that died before its newline.
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"seq": 2, "run_id": "r", "type": "no')
+
+    log.append(_event(3))
+
+    events = log.read_all()
+    assert [e.payload["i"] for e in events] == [1, 3]
+    assert log.skipped_lines == 1, "the torn fragment, and only it, was lost"
+
+
+def test_a_log_that_yields_no_sequence_refuses_the_append(tmp_path: Path) -> None:
+    """Numbering must never restart over records that already exist.
+
+    ``_last_seq_unlocked`` returned 0 for a log it could not read at all, so the
+    next append took sequence 1 while records numbered 1..n were already on
+    disk. ``read_all`` sorts on that number, so the total order every replay
+    depends on was gone -- silently, and permanently, because the log is
+    append-only.
+    """
+    path = tmp_path / "run_A.jsonl"
+    path.write_text("\n".join("not json at all" for _ in range(300)), encoding="utf-8")
+
+    with pytest.raises(CorruptLog) as excinfo:
+        EventLog(path).append(_event(1))
+
+    assert "300 line(s)" in str(excinfo.value)
+    assert "not json at all" in path.read_text(encoding="utf-8"), "the log is left alone"
+
+
+def test_a_blank_log_is_not_treated_as_damaged(tmp_path: Path) -> None:
+    """A file of newlines has no history to lose, so it starts from zero."""
+    path = tmp_path / "run_A.jsonl"
+    path.write_text("\n\n\n", encoding="utf-8")
+
+    assert EventLog(path).append(_event(1)).seq == 1
 
 
 def test_batched_and_single_appends_share_one_sequence_space(tmp_path: Path) -> None:

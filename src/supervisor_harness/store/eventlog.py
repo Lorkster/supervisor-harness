@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
+from typing import BinaryIO
 
 from .events import Event, event_from_dict, event_to_dict
 
@@ -42,6 +43,16 @@ BLANK_TOKEN_GRACE = 1.0
 
 class LockTimeout(RuntimeError):
     """Raised when the log lock could not be acquired in time."""
+
+
+class CorruptLog(RuntimeError):
+    """Raised when a non-empty log yields no sequence number at all.
+
+    Appending to such a file would restart sequencing at 1 and silently destroy
+    the total order every replay depends on, which is worse than refusing: the
+    run stops with the path named, and the log on disk is left exactly as found
+    for whoever has to look at it.
+    """
 
 
 class FileLock:
@@ -205,6 +216,31 @@ class EventLog:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = FileLock(self.path.with_suffix(".lock"))
+        #: Lines the most recent :meth:`read` could not parse. A line that is not
+        #: an event cannot describe itself, so it can never reach the fold; this
+        #: is the only place its loss is countable. Reset by each read.
+        self.skipped_lines = 0
+
+    def _terminate_last_line(self, handle: BinaryIO) -> None:
+        """Close an unterminated final record before anything is appended to it.
+
+        A process killed mid-write leaves a line with no newline. The next append
+        opened in ``"a"`` and wrote straight onto the end of it, producing one
+        line that is the tail of the torn record followed by a whole good one --
+        neither of which parses. Measured before this existed: a log holding one
+        good record, a torn fragment and a third append read back as **one**
+        event. The fragment was expected to be lost; the *following* record was
+        not, and nothing said so.
+
+        Terminating the fragment first costs one byte and confines the damage to
+        the record that was actually torn.
+        """
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            return
+        handle.seek(-1, os.SEEK_END)
+        if handle.read(1) != b"\n":
+            handle.write(b"\n")
 
     # -- writing -----------------------------------------------------------
 
@@ -233,29 +269,33 @@ class EventLog:
                 self._lock.release()
             return
 
+    @staticmethod
+    def _encode(event: Event) -> bytes:
+        return (json.dumps(event_to_dict(event), ensure_ascii=False) + "\n").encode("utf-8")
+
     def append(self, event: Event) -> Event:
         """Assign the next sequence number and durably append one event."""
-        with self._write_lock():
+        with self._write_lock(), self.path.open("ab+") as handle:
+            self._terminate_last_line(handle)
             event.seq = self._next_seq_unlocked()
-            with self.path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(event_to_dict(event), ensure_ascii=False) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            handle.write(self._encode(event))
+            handle.flush()
+            os.fsync(handle.fileno())
         return event
 
     def append_many(self, events: list[Event]) -> list[Event]:
         """Append a batch atomically with respect to other writers."""
         if not events:
             return []
-        with self._write_lock():
+        with self._write_lock(), self.path.open("ab+") as handle:
+            self._terminate_last_line(handle)
             seq = self._next_seq_unlocked()
-            with self.path.open("a", encoding="utf-8", newline="\n") as handle:
-                for event in events:
-                    event.seq = seq
-                    seq += 1
-                    handle.write(json.dumps(event_to_dict(event), ensure_ascii=False) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            for event in events:
+                event.seq = seq
+                seq += 1
+                handle.write(self._encode(event))
+            handle.flush()
+            os.fsync(handle.fileno())
         return events
 
     def _next_seq_unlocked(self) -> int:
@@ -296,13 +336,36 @@ class EventLog:
                     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                         continue
                 if window >= size:
-                    return 0
+                    # The whole file has been read and nothing in it carries a
+                    # sequence. A file of blank lines has no history to lose, so
+                    # it starts from zero like an empty one; a file with content
+                    # that yields no sequence is damaged, and returning 0 here
+                    # restarted numbering at 1 while records numbered 1..n were
+                    # already on disk. Two events would then share a sequence,
+                    # read_all() sorts on it, and the total order the replay
+                    # depends on is gone -- silently, and permanently, because
+                    # the log is append-only.
+                    if not lines:
+                        return 0
+                    raise CorruptLog(
+                        f"{self.path} holds {len(lines)} line(s) and no readable "
+                        "sequence number; refusing to append, because numbering "
+                        "would restart at 1 over records that already exist"
+                    )
                 window = min(size, window * 4)
 
     # -- reading -----------------------------------------------------------
 
     def read(self) -> Iterator[Event]:
-        """Yield every well-formed event, skipping any torn trailing line."""
+        """Yield every well-formed event, counting any line that is not one.
+
+        Skipping an unreadable line is right -- there is nothing else to do with
+        it -- but doing so silently meant a log could lose records and still read
+        back as a complete, plausible run. :attr:`skipped_lines` is what makes
+        the loss countable, and the store carries it into ``RunState`` so it
+        reaches ``supervisor status`` rather than staying in this object.
+        """
+        self.skipped_lines = 0
         if not self.path.exists():
             return
         with self.path.open("r", encoding="utf-8") as handle:
@@ -313,6 +376,7 @@ class EventLog:
                 try:
                     yield event_from_dict(json.loads(line))
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    self.skipped_lines += 1
                     continue
 
     def read_all(self) -> list[Event]:

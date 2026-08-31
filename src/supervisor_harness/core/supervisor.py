@@ -339,6 +339,12 @@ class Supervisor:
             # misspelled type, is projecting less than the log holds, and the
             # state is the only place that is visible.
             "unhandled_events": list(state.unhandled_events),
+            # The three ways a run can be projecting less than its log holds, or
+            # its log less than was written to it. All three used to be silent,
+            # and a run missing records read back as a complete, plausible one.
+            "orphaned_events": list(state.orphaned_events),
+            "rejected_events": list(state.rejected_events),
+            "damaged_lines": state.damaged_lines,
             "usage": to_jsonable(state.total_usage()),
             "error": state.error,
         }

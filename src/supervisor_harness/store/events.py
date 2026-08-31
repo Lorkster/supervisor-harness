@@ -95,6 +95,16 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
     p = event.payload
     t = event.type
 
+    def orphan(target: str) -> None:
+        """Record an event whose branch exists but whose target does not.
+
+        A no-op here is indistinguishable from an event that had nothing to do,
+        which is what made a log disagreeing with itself fold to a state that
+        looked complete. Deduplicated by type and target, so a run that keeps
+        reporting against one absent agent records it once.
+        """
+        _remember(state.orphaned_events, f"{t} -> {target}")
+
     if t is EventType.RUN_CREATED:
         # Merge the genesis record's identity and configuration into the
         # accumulator rather than replacing it: a second RUN_CREATED anywhere in
@@ -144,11 +154,15 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
             agent.unreported_dispatches += 1
             if not agent.unreported_since:
                 agent.unreported_since = event.ts
+        else:
+            orphan(p["agent_id"])
 
     elif t is EventType.AGENT_STATUS:
         agent = state.agents.get(p["agent_id"])
         if agent is not None:
             agent.status = AgentStatus(p["status"])
+        else:
+            orphan(p["agent_id"])
 
     elif t is EventType.TURN_RECORDED:
         turn = from_jsonable(p["turn"], AgentTurn)
@@ -163,16 +177,16 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
             agent.unreported_since = ""
 
     elif t is EventType.FINDING_ADDED:
-        state.findings.append(from_jsonable(p["finding"], Finding))
+        _upsert(state.findings, from_jsonable(p["finding"], Finding))
 
     elif t is EventType.DIRECTIVE_ISSUED:
-        state.directives.append(from_jsonable(p["directive"], Directive))
+        _upsert(state.directives, from_jsonable(p["directive"], Directive))
 
     elif t is EventType.DRIFT_ASSESSED:
         state.drift[p["agent_id"]] = from_jsonable(p["assessment"], DriftAssessment)
 
     elif t is EventType.MESSAGE_SENT:
-        state.messages.append(from_jsonable(p["message"], Message))
+        _upsert(state.messages, from_jsonable(p["message"], Message))
 
     elif t is EventType.MESSAGE_DELIVERED:
         ids = set(p.get("message_ids", []))
@@ -191,7 +205,14 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
 
     elif t is EventType.CRITERION_VERIFIED:
         task = state.tasks.get(p["task_id"])
-        if task is not None:
+        if task is None:
+            orphan(p["task_id"])
+        elif not any(crit.id == p["criterion_id"] for crit in task.dod):
+            # The task is here but this criterion is not: a definition of done
+            # that was replaced after the verdict was recorded. Worth naming
+            # separately, since the task existing makes it look accounted for.
+            orphan(f"{p['task_id']}/{p['criterion_id']}")
+        else:
             for crit in task.dod:
                 if crit.id == p["criterion_id"]:
                     crit.status = CriterionStatus(p["status"])
@@ -205,11 +226,16 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
 
     elif t is EventType.CHECKPOINT_RECORDED:
         checkpoint = from_jsonable(p["checkpoint"], Checkpoint)
-        state.checkpoints.append(checkpoint)
-        state.checkpoint_iteration = checkpoint.iteration
+        _upsert(state.checkpoints, checkpoint)
+        # The high-water mark, not the last one seen. Assignment let a replayed
+        # or out-of-order checkpoint move the counter backwards, and the
+        # remediation budget is bounded on it -- so an iteration folded twice, or
+        # a log read in a different order, silently bought the run another round
+        # of remediation it had already spent.
+        state.checkpoint_iteration = max(state.checkpoint_iteration, checkpoint.iteration)
 
     elif t is EventType.LESSON_LEARNED:
-        state.lessons.append(from_jsonable(p["lesson"], Lesson))
+        _upsert(state.lessons, from_jsonable(p["lesson"], Lesson))
 
     elif t is EventType.ARTIFACT_WRITTEN:
         artifact = Artifact(
@@ -244,12 +270,72 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
     return state
 
 
+def _remember(bucket: list[str], entry: str) -> None:
+    """Record a diagnostic once. Deduplicated, so a repeat costs nothing."""
+    if entry not in bucket:
+        bucket.append(entry)
+
+
+def _upsert(items: list[Any], new: Any) -> None:
+    """Place an item in a list by id, replacing an earlier copy of the same id.
+
+    The fold was idempotent per event in its dict branches, which assign by key,
+    and not in its list branches, which appended unconditionally. That asymmetry
+    was per-branch rather than by design: replaying a log -- which ``reindex``,
+    ``RunSession.reload`` and every second reader do routinely -- duplicated
+    every finding, directive, message, checkpoint and lesson in it, while leaving
+    agents and tasks correct. An event applied twice now says exactly what it
+    said once.
+    """
+    ident = getattr(new, "id", None)
+    if ident:
+        for index, existing in enumerate(items):
+            if getattr(existing, "id", None) == ident:
+                items[index] = new
+                return
+    items.append(new)
+
+
 def fold(events: list[Event], initial: RunState | None = None) -> RunState:
-    """Rebuild run state by replaying events in order."""
+    """Rebuild run state by replaying events in order.
+
+    One event's failure is contained to that event. The fold used to apply every
+    record with nothing around it, so a single malformed payload -- a phase name
+    this build does not define, a task that will not deserialise -- raised out of
+    ``fold``, out of ``RunStore.open`` and out of every command that reads a run.
+    The log is append-only, so that state was permanent: the run could never be
+    opened again, and the events after the bad one were unreachable even though
+    they were intact.
+
+    Skipping the event is the lesser loss, and it is recorded rather than
+    swallowed: :attr:`RunState.rejected_events` carries what failed and why, and
+    ``supervisor status`` reports it. Nothing here repairs the log -- the record
+    stays on disk exactly as written, because it is the audit trail and this is
+    only its projection.
+    """
     state = initial or RunState()
     for event in sorted(events, key=lambda e: e.seq):
-        state = _apply(state, event)
+        state = _apply_contained(state, event)
     return state
+
+
+def _apply_contained(state: RunState, event: Event) -> RunState:
+    """Apply one event, recording rather than raising when it cannot be applied.
+
+    Used by :func:`fold` and by ``RunSession.emit``, so a payload that cannot be
+    projected costs the same either way: the live session stays usable, and the
+    run can still be reopened afterwards. The event itself is already on disk by
+    the time this runs and stays there -- the log is the audit trail, and this is
+    only its projection.
+    """
+    try:
+        return _apply(state, event)
+    except Exception as exc:  # noqa: BLE001 - one bad record must not end the replay
+        _remember(
+            state.rejected_events,
+            f"{event.type} ({exc.__class__.__name__}: {exc})",
+        )
+        return state
 
 
 def event_to_dict(event: Event) -> dict[str, Any]:

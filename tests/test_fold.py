@@ -116,6 +116,119 @@ def test_a_torn_line_is_still_skipped(tmp_path: Path) -> None:
     assert fold(events).unhandled_events == []
 
 
+# -- containment -----------------------------------------------------------
+
+
+def test_one_unapplicable_event_does_not_end_the_replay() -> None:
+    """A single bad payload used to make a run permanently unresumable.
+
+    ``fold`` applied every record with nothing around it, so one payload the
+    build could not project raised out of ``fold``, out of ``RunStore.open`` and
+    out of every command that reads a run. The log is append-only, so that state
+    was permanent, and the intact events after the bad one were unreachable.
+    """
+    state = fold([
+        _event(EventType.PHASE_CHANGED, {"phase": "analyzing"}, seq=1),
+        _event(EventType.PHASE_CHANGED, {"phase": "not_a_phase"}, seq=2),
+        _event(EventType.FINDING_ADDED, {"finding": {"id": "fnd_1", "title": "kept"}}, seq=3),
+    ])
+
+    assert state.phase is Phase.ANALYZING, "the good events either side still applied"
+    assert [f.id for f in state.findings] == ["fnd_1"]
+    assert len(state.rejected_events) == 1
+    assert "phase_changed" in state.rejected_events[0]
+
+
+def test_an_event_whose_target_is_absent_is_recorded_not_ignored() -> None:
+    """A no-op is indistinguishable from an event that had nothing to do.
+
+    An AGENT_STATUS naming an agent the log never spawned, or a
+    CRITERION_VERIFIED for a task that is not there, simply fell through. A log
+    disagreeing with itself folded to a state that looked complete.
+    """
+    state = fold([
+        _event(EventType.AGENT_STATUS, {"agent_id": "agt_ghost", "status": "done"}, seq=1),
+        _event(EventType.AGENT_DISPATCHED, {"agent_id": "agt_ghost"}, seq=2),
+        _event(
+            EventType.CRITERION_VERIFIED,
+            {"task_id": "tsk_ghost", "criterion_id": "crt_1", "status": "pass"},
+            seq=3,
+        ),
+    ])
+
+    assert state.orphaned_events == [
+        "agent_status -> agt_ghost",
+        "agent_dispatched -> agt_ghost",
+        "criterion_verified -> tsk_ghost",
+    ]
+
+
+def test_a_repeated_orphan_is_recorded_once() -> None:
+    """The record is a diagnostic, not a tally; it must not grow per event."""
+    events = [
+        _event(EventType.AGENT_STATUS, {"agent_id": "agt_ghost", "status": "done"}, seq=i)
+        for i in range(1, 6)
+    ]
+    assert fold(events).orphaned_events == ["agent_status -> agt_ghost"]
+
+
+# -- idempotence -----------------------------------------------------------
+
+
+def test_replaying_the_log_does_not_duplicate_what_it_records() -> None:
+    """The dict branches were idempotent and the list branches were not.
+
+    That asymmetry was per-branch rather than by design. Replaying a log --
+    which ``reindex``, ``reload`` and every second reader do routinely --
+    duplicated every finding, directive, message, checkpoint and lesson in it,
+    while leaving agents and tasks correct.
+    """
+    events = [
+        _event(EventType.FINDING_ADDED, {"finding": {"id": "fnd_1", "title": "one"}}, seq=1),
+        _event(EventType.DIRECTIVE_ISSUED, {"directive": {"id": "dir_1"}}, seq=2),
+        _event(EventType.MESSAGE_SENT, {"message": {"id": "msg_1"}}, seq=3),
+        _event(EventType.LESSON_LEARNED, {"lesson": {"id": "lsn_1"}}, seq=4),
+        _event(
+            EventType.CHECKPOINT_RECORDED,
+            {"checkpoint": {"id": "chk_1", "iteration": 1}},
+            seq=5,
+        ),
+    ]
+
+    once = fold(events)
+    twice = fold(events + events)
+
+    for name in ("findings", "directives", "messages", "lessons", "checkpoints"):
+        assert len(getattr(twice, name)) == len(getattr(once, name)) == 1, name
+
+
+def test_a_replayed_checkpoint_does_not_extend_the_remediation_budget() -> None:
+    """The counter is a high-water mark, not the last iteration seen.
+
+    Assignment let a replayed or out-of-order checkpoint move it backwards, and
+    the remediation budget is bounded on it -- so a log read in a different order
+    silently bought the run another round it had already spent.
+    """
+    def checkpoint(ident: str, iteration: int, *, seq: int) -> Event:
+        return _event(
+            EventType.CHECKPOINT_RECORDED,
+            {"checkpoint": {"id": ident, "iteration": iteration}},
+            seq=seq,
+        )
+
+    assert fold([checkpoint("chk_1", 1, seq=1), checkpoint("chk_2", 2, seq=2)]).checkpoint_iteration == 2
+
+    # The later record carries the lower iteration: an earlier checkpoint
+    # re-emitted, or two writers whose records landed in the other order.
+    # Assignment took the last one seen and handed the run a spent round back.
+    assert fold([checkpoint("chk_2", 2, seq=1), checkpoint("chk_1", 1, seq=2)]).checkpoint_iteration == 2
+
+    # And folding onto a state that already holds a higher mark, as any replay
+    # onto a live state does.
+    resumed = fold([checkpoint("chk_1", 1, seq=1)], initial=RunState(checkpoint_iteration=3))
+    assert resumed.checkpoint_iteration == 3
+
+
 # -- genesis ---------------------------------------------------------------
 
 
@@ -181,3 +294,21 @@ def test_load_state_refuses_a_run_that_does_not_exist(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         store.load_state("run_missing")
     assert not (store.runs_dir / "run_missing").exists()
+
+
+def test_a_run_reports_the_lines_its_log_could_not_read(tmp_path: Path) -> None:
+    """A line that is not an event cannot describe itself, so it must be counted.
+
+    Skipping it is right -- there is nothing else to do with it -- but doing so
+    silently meant a log could lose records and still read back as a complete,
+    plausible run. The count is the only trace such a line leaves.
+    """
+    store = _store(tmp_path)
+    store.log("run_A").append(Event(run_id="run_A", type=EventType.NOTE, payload={"text": "ok"}))
+    with (store.runs_dir / "run_A" / "events.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write("this is not an event\n{ also not one\n")
+
+    state = store.open("run_A").state
+
+    assert state.damaged_lines == 2
+    assert store.load_state("run_A").damaged_lines == 2
