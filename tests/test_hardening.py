@@ -378,6 +378,94 @@ def test_a_scoped_agent_may_not_hand_a_check_runner_its_program_inline(
     assert (tmp_path / "escaped.txt").exists()
 
 
+def test_no_agent_may_write_into_git_or_the_harness_store(tmp_path: Path) -> None:
+    """The floor holds for an agent whose task declared no scope at all.
+
+    ``Scope.paths`` defaults to ``[]`` and is filled from the synthesis model, and
+    the check read ``if scope.paths and not matches_any(...)`` -- so a task the
+    model gave no scope produced an execution agent fenced by nothing but the
+    workspace. ``write_file`` needs no policy switch and no shell, which put
+    ``.git/hooks/pre-commit`` -- a script the user runs at their next commit --
+    inside reach with ``allow_command_execution`` false throughout, and the event
+    log the run is judged against with it.
+    """
+    box = Toolbox(tmp_path, Policy(), tmp_path / ".supervisor")
+    unscoped = AgentSpec(id="b", kind=AgentKind.EXECUTION, scope=Scope())
+
+    for path in (
+        ".git/hooks/pre-commit",
+        ".git/config",
+        "vendor/lib/.git/hooks/pre-commit",  # a submodule is a repository too
+        ".hg/hgrc",
+        ".svn/entries",
+        ".supervisor/runs/run_1/events.jsonl",
+    ):
+        result = box.call(
+            "write_file", {"path": path, "content": "#!/bin/sh\n"}, unscoped
+        )
+        assert not result.ok, path
+        assert "no agent may write" in result.output, path
+        assert not (tmp_path / path).exists(), path
+
+    # The same agent's ordinary work is untouched: an empty scope still means
+    # the workspace, and now means the workspace minus the floor.
+    assert box.call("write_file", {"path": "src/foo.py", "content": "x = 1\n"}, unscoped).ok
+    assert (tmp_path / "src" / "foo.py").exists()
+
+
+def test_the_floor_outranks_a_scope_that_names_it(tmp_path: Path) -> None:
+    """A scope describes a task; it does not grant anything.
+
+    The floor is checked before the scope for this reason: a task whose scope
+    names ``.git`` -- however the model came to write that -- must not thereby
+    authorise a hook.
+    """
+    box = Toolbox(tmp_path, Policy())
+    misscoped = AgentSpec(
+        id="b", kind=AgentKind.EXECUTION, scope=Scope(paths=[".git/**", "src/**"])
+    )
+
+    result = box.call(
+        "write_file", {"path": ".git/hooks/pre-commit", "content": "x"}, misscoped
+    )
+    assert not result.ok
+    assert "no agent may write" in result.output
+    assert box.call("write_file", {"path": "src/a.py", "content": "x"}, misscoped).ok
+
+
+def test_a_store_moved_into_the_workspace_is_fenced_where_it_actually_is(
+    tmp_path: Path,
+) -> None:
+    """``SUPERVISOR_HOME`` can put the log where the name check cannot see it."""
+    box = Toolbox(tmp_path, Policy(), tmp_path / "var" / "sup")
+    unscoped = AgentSpec(id="b", kind=AgentKind.EXECUTION, scope=Scope())
+
+    assert not box.call(
+        "write_file", {"path": "var/sup/runs/r/events.jsonl", "content": "x"}, unscoped
+    ).ok
+    # A sibling of the store is ordinary workspace, not part of the fence.
+    assert box.call("write_file", {"path": "var/notes.md", "content": "x"}, unscoped).ok
+
+
+def test_the_floor_also_refuses_a_command_that_names_a_hook(tmp_path: Path) -> None:
+    """Refused for the unscoped agent, which is the one that proves the rule.
+
+    Every other path check in the command fence sits behind the early return that
+    lets an unscoped agent through, so this is the only one it meets. It is not a
+    complete fence for that agent and does not claim to be -- a command that
+    computes a path still reaches the floor -- but the naive form is closed.
+    """
+    box = Toolbox(tmp_path, Policy(allow_command_execution=True))
+    unscoped = AgentSpec(id="c", kind=AgentKind.EXECUTION, scope=Scope())
+
+    result = box.call(
+        "run_command", {"command": "python .git/hooks/pre-commit"}, unscoped
+    )
+    assert not result.ok
+    assert "exit=" not in result.output  # it was refused, not run
+    assert "no agent may write" in result.output
+
+
 # --------------------------------------------------------------------------
 # Model-authored commands
 # --------------------------------------------------------------------------

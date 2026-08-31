@@ -13,7 +13,13 @@ Ollama, OpenRouter and Anthropic.
 the workspace by :meth:`Toolbox._resolve`, which refuses any path resolving
 outside it. ``list_files`` and ``search`` take no path at all: they report only
 what :meth:`Toolbox._walk` yields, and it descends the workspace alone.
-``write_file`` is confined further, to the agent's declared scope.
+``write_file`` is confined further, to the agent's declared scope, and further
+again by a floor that holds whether or not the agent declared one: no agent
+writes into a version control directory or into the harness's own store. See
+:data:`VCS_DIRS`. An agent whose task arrived with no scope used to be confined
+by nothing but the workspace, which put ``.git/hooks/pre-commit`` -- a shell
+script the user runs at their next commit -- inside the reach of a tool that is
+handed out with no policy switch at all.
 
 ``run_command`` is the one tool here that is *not* confined to the workspace. It
 runs a real shell, whose working directory is the workspace but which can name
@@ -33,9 +39,13 @@ and worth stating exactly:
   source given as a string names its paths only once it is already running;
 * an agent with *no* declared scope has none of that fence -- there is nothing
   to check a path against -- and reaches the whole machine;
-* one refusal applies to every agent, fenced or not, because it is not about a
-  path at all: no command may change the shared working tree's git state. See
-  :func:`tree_wide_git`.
+* two refusals apply to every agent, fenced or not, because neither is about
+  this agent's scope: no command may change the shared working tree's git state
+  (:func:`tree_wide_git`), and none may name a path under the floor
+  (:data:`VCS_DIRS`, :data:`STORE_DIRS`). The floor is complete for a scoped
+  agent, whose commands cannot name a path any other way; for an unscoped one it
+  catches the command that names what it means and nothing more, since the
+  checks that close the other three ways sit behind the same early return.
 
 What that leaves open is worth stating just as exactly, because it is a property
 of the design rather than a gap in it: a check runner runs whatever the project
@@ -62,6 +72,7 @@ from typing import Any
 
 from ..config import Policy
 from ..models import AgentSpec, Scope
+from ..store.runstore import DEFAULT_DIRNAME
 from .dod import (
     VERIFY_EXECUTABLES,
     executable_name,
@@ -81,6 +92,29 @@ BINARY_SUFFIXES = {
     ".tar", ".exe", ".dll", ".so", ".dylib", ".woff", ".woff2", ".ttf", ".mp4",
     ".mp3", ".wav", ".bin", ".sqlite3", ".db", ".pyc",
 }
+
+# Directories no agent may write into, whatever its scope says. This is the one
+# part of the fence that does not come from the model, and it is a floor rather
+# than a default: an agent whose task declared no scope is held to it too.
+#
+# Before it existed, ``Scope.paths`` defaulting to ``[]`` meant *unrestricted* --
+# ``if scope.paths and not matches_any(...)`` -- so a task the synthesis model
+# gave no scope produced an execution agent that could write anywhere in the
+# workspace, including both of these.
+#
+# A file under a version control directory is executed by the tool itself:
+# ``.git/hooks/pre-commit`` runs at the user's next commit, and ``.git/config``
+# names a pager, an alias or an fsmonitor that is a shell command. A write there
+# is code execution reached without the shell, so ``allow_command_execution``
+# never sees it, and it outlives the run. The harness's own store holds the event
+# log every claim in the run is judged against; an agent that can rewrite it can
+# report whatever it likes about itself.
+#
+# Deliberately not ``SKIP_DIRS``: that list is about what is expensive or
+# pointless to *read*, and half of it -- ``dist``, ``build``, ``node_modules`` --
+# is written by ordinary work.
+VCS_DIRS = frozenset({".git", ".hg", ".svn"})
+STORE_DIRS = frozenset({DEFAULT_DIRNAME})
 
 # Which agent kinds may change the workspace. Analysis, synthesis and
 # verification agents observe; only execution changes things. A shell writes
@@ -255,11 +289,71 @@ def tree_wide_git(command: str) -> str | None:
 class Toolbox:
     """The tools an autonomous agent may use, sandboxed to one workspace."""
 
-    def __init__(self, workspace: Path, policy: Policy) -> None:
+    def __init__(
+        self, workspace: Path, policy: Policy, store_root: Path | None = None
+    ) -> None:
         self.workspace = Path(workspace).resolve()
         self.policy = policy
+        self._store_prefix = self._relative_store(store_root)
+
+    def _relative_store(self, store_root: Path | None) -> str | None:
+        """Where the harness's store sits inside the workspace, if it does.
+
+        A store outside the workspace needs no fence: :meth:`_resolve` already
+        refuses every path that leaves it. One inside it is reachable, and this
+        is what names it. ``.supervisor`` is fenced by name as well, in
+        :data:`STORE_DIRS`, so the default holds even for a toolbox built without
+        a store -- as every test that constructs one directly does. This prefix
+        is for the store that has been moved, by ``SUPERVISOR_HOME`` pointing
+        somewhere inside the tree being worked on.
+
+        A store root that *is* the workspace is a misconfiguration rather than a
+        location to fence: taking it literally would refuse every write in the
+        run. It is left to the name check like any other tree.
+        """
+        if store_root is None:
+            return None
+        try:
+            prefix = Path(store_root).resolve().relative_to(self.workspace).as_posix()
+        except (ValueError, OSError):
+            return None
+        return prefix if prefix not in ("", ".") else None
 
     # -- path safety -------------------------------------------------------
+
+    def _floor_refusal(self, rel: str) -> str | None:
+        """Why no agent may write this workspace-relative path, or ``None``.
+
+        Every segment is checked rather than the first, so a submodule's
+        ``vendor/lib/.git`` is refused by the same rule as the repository's own,
+        and so is a nested store. The refusal names the directory that caused it,
+        because an agent told only that a path is forbidden tends to try a
+        neighbouring one.
+        """
+        for part in rel.split("/"):
+            if part in VCS_DIRS:
+                return (
+                    f"{rel} is inside {part!r}, which no agent may write whatever "
+                    f"its scope says: {part}/hooks and {part}/config are run by the "
+                    "tool itself, so writing there executes code rather than "
+                    "changing the project. Change a file in the project instead"
+                )
+            if part in STORE_DIRS:
+                return (
+                    f"{rel} is inside the harness's own store ({part!r}), which no "
+                    "agent may write: it holds the event log this run is judged "
+                    "against. Report what you found instead of writing it there"
+                )
+        if self._store_prefix is not None and (
+            rel == self._store_prefix or rel.startswith(self._store_prefix + "/")
+        ):
+            return (
+                f"{rel} is inside the harness's own store "
+                f"({self._store_prefix!r}), which no agent may write: it holds the "
+                "event log this run is judged against. Report what you found "
+                "instead of writing it there"
+            )
+        return None
 
     def _resolve(self, raw: str) -> Path | None:
         """Resolve a path inside the workspace, or ``None`` if it escapes."""
@@ -351,6 +445,14 @@ class Toolbox:
             return ToolResult("write_file", False, f"{path!r} is outside the workspace")
 
         rel = target.relative_to(self.workspace).as_posix()
+
+        # Before the scope, and whether or not there is one: the floor is not
+        # about this agent's fence, and an agent that declared no scope is
+        # exactly the one with nothing else standing in its way.
+        floor = self._floor_refusal(rel)
+        if floor is not None:
+            return ToolResult("write_file", False, floor)
+
         if scope is not None:
             if matches_any(rel, scope.forbidden_paths):
                 return ToolResult("write_file", False, f"{rel} is a forbidden path for this agent")
@@ -400,6 +502,33 @@ class Toolbox:
                 candidates.append(token)
         return candidates
 
+    def _floor_command_refusal(self, command: str) -> str | None:
+        """Why this command names a path under the floor, or ``None``.
+
+        Applied to every agent, like :func:`tree_wide_git` and for the same
+        reason: what it refuses is not a property of this agent's scope. For a
+        scoped agent it is a second lock on a door the executable allow-list
+        already bolts -- no program that writes a file is reachable from that
+        shell at all -- and it stays here so that removing one does not silently
+        open the other.
+
+        For an *unscoped* agent it is the only path check there is, and it is not
+        a complete one: the allow-list, the metacharacter refusal and the glob
+        refusal all sit behind the early return below, so a command that computes
+        a path rather than naming it still reaches the floor. Closing that means
+        deciding whether an unscoped agent should hold a shell at all, which is a
+        policy question rather than this defect. What it does close is the naive
+        form -- an agent that names the path it means.
+        """
+        for token in self._path_candidates(shell_split(command)):
+            rel = scope_relative(token, self.workspace.as_posix())
+            if rel is None or rel.startswith("../"):
+                continue
+            refusal = self._floor_refusal(rel)
+            if refusal is not None:
+                return refusal
+        return None
+
     def _scope_refusal(self, command: str, scope: Scope) -> str | None:
         """Why this command escapes the agent's fence, or ``None`` if it does not.
 
@@ -433,6 +562,10 @@ class Toolbox:
         ``package.json`` says. This module's docstring states what the fence
         does and does not claim.
         """
+        floor = self._floor_command_refusal(command)
+        if floor is not None:
+            return floor
+
         if not scope.paths and not scope.forbidden_paths:
             return None
 

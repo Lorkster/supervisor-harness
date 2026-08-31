@@ -183,7 +183,7 @@ class Supervisor:
         self.store = store or RunStore.discover(self.workspace)
         self.host = host or detect_host(self.workspace)
         self.router = router or ModelRouter(self.config, host_name=self.host.name)
-        self.toolbox = Toolbox(self.workspace, self.config.policy)
+        self.toolbox = Toolbox(self.workspace, self.config.policy, self.store.root)
 
     # ------------------------------------------------------------------
     # Lifecycle
