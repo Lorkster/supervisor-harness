@@ -751,3 +751,22 @@ async def test_a_settled_agent_is_not_handed_a_stale_directive(
     # A later accept settles it.
     state.directives.append(Directive(agent_id=agent.id, kind=DirectiveKind.ACCEPT))
     assert Supervisor._outstanding_directive(state, agent) is None
+
+
+def test_the_supervisor_reads_turns_from_state_not_by_rescanning_the_log() -> None:
+    """Three call sites re-parsed the whole log because the fold dropped turns.
+
+    One of them, ``_previous_turns``, runs once per supervised turn, so the cost
+    of supervising a run was quadratic in the length of the run being supervised
+    -- against the largest file the harness writes. Asserted structurally because
+    the regression is silent: a reintroduced rescan returns the right answer and
+    only costs time, so no behavioural test would notice it.
+    """
+    source = Path(inspect.getsourcefile(Supervisor) or "")
+    body = inspect.getsource(Supervisor)
+
+    assert "session.events()" not in body, (
+        f"a full log rescan is back in {source.name}; read RunState.turns instead"
+    )
+    for method in (Supervisor._previous_turns, Supervisor._change_summary):
+        assert "state.turns" in inspect.getsource(method), method.__name__

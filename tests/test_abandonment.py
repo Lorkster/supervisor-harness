@@ -289,3 +289,36 @@ async def test_an_abandoned_checkpoint_is_judged_on_the_mechanical_scoring(
     # And the rest of the run is unaffected.
     final = await HostSimulator(host_supervisor, fake).drive(response)
     assert final.action == "complete", final.message
+
+
+async def test_status_reports_the_note_explaining_a_failed_agent(
+    workspace: Path, host_config: HarnessConfig, fake: FakeProvider
+) -> None:
+    """The reason existed only in the raw log, where no reader was looking.
+
+    ``supervisor status`` reported an agent as FAILED and said nothing about
+    why; the sentence naming the agent and its cause was emitted as a NOTE, and
+    the fold dropped every one of them. Only ``supervisor events --type note``
+    could retrieve it, which is not where anyone looks first.
+    """
+    host_config.policy.max_unreported_dispatches = 0
+    store = RunStore(workspace / ".supervisor")
+    host = HostInfo(name="claude-code", workspace=str(workspace), confidence=1.0)
+    supervisor = Supervisor(workspace=workspace, config=host_config, store=store, host=host)
+
+    response = await _reach_analysis(supervisor, fake)
+    run_id = response.run_id
+    silent = response.packets[0].agent_id
+    host_config.policy.agent_timeout_seconds = 0.05
+    await asyncio.sleep(0.1)
+    await supervisor.advance(run_id)
+
+    status = supervisor.status(run_id)
+    assert status["notes"], "status reported a failed run with no reason attached"
+    abandoned = [n for n in status["notes"] if "abandoned" in n["text"]]
+    assert any(silent in n["text"] for n in abandoned), (
+        f"no note in status names the abandoned agent: {[n['text'] for n in status['notes']]}"
+    )
+    # The log stays the complete record; status carries the tail of it.
+    assert status["note_count"] >= len(status["notes"])
+    assert len(status["notes"]) == len(_notes(supervisor, run_id)[-len(status["notes"]):])

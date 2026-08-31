@@ -108,6 +108,10 @@ from .tools import Toolbox, render_results, render_tools_section
 # reading without answering is its own kind of drift, so rounds are capped.
 MAX_TOOL_ROUNDS = 6
 
+#: How many of a run's notes ``status`` returns. The whole list is in the state
+#: and all of it is in the log; this is what fits in an answer meant to be read.
+STATUS_NOTE_LIMIT = 20
+
 # Directives that leave the agent owing another turn. The rest (accept, stop,
 # escalate) settle it, so there is nothing outstanding to re-issue.
 CONTINUATION_DIRECTIVES = frozenset({
@@ -345,6 +349,17 @@ class Supervisor:
             "orphaned_events": list(state.orphaned_events),
             "rejected_events": list(state.rejected_events),
             "damaged_lines": state.damaged_lines,
+            # Why things went the way they did: an agent abandoned, a stage
+            # fallen back, an index projection failed. The fold used to drop
+            # these, so a failed run reported its failure without the sentence
+            # explaining it, and only `supervisor events --type note` could say.
+            # Newest last, and capped -- a long run's early notes are audit
+            # material for the log, not context for a status read.
+            "notes": [
+                {"text": n.text, "actor": n.actor, "ts": n.ts, **n.context}
+                for n in state.notes[-STATUS_NOTE_LIMIT:]
+            ],
+            "note_count": len(state.notes),
             "usage": to_jsonable(state.total_usage()),
             "error": state.error,
         }
@@ -605,11 +620,7 @@ class Supervisor:
             self._transition(session, Phase.EXECUTING)
             return None
 
-        notes: dict[str, list[str]] = {}
-        for event in session.events():
-            if event.type is EventType.TASK_PROPOSED and event.payload.get("notes"):
-                task = event.payload.get("task") or {}
-                notes[str(task.get("id"))] = list(event.payload["notes"])
+        notes = {t.id: list(state.task_notes[t.id]) for t in proposed if t.id in state.task_notes}
 
         return SupervisorResponse(
             run_id=state.id,
@@ -1840,36 +1851,34 @@ class Supervisor:
     def _change_summary(self, session: RunSession, task: ExecutionTask | None) -> str:
         if task is None:
             return ""
+        state = session.state
         parts: list[str] = []
-        for event in session.events():
-            if event.type is not EventType.TURN_RECORDED:
-                continue
-            turn = event.payload.get("turn") or {}
-            agent = session.state.agents.get(str(turn.get("agent_id", "")))
+        for turn in state.turns:
+            agent = state.agents.get(turn.agent_id)
             if agent is None or agent.task_id != task.id:
                 continue
-            if turn.get("output"):
-                parts.append(str(turn["output"]))
-            if turn.get("files_touched"):
-                parts.append("Files touched: " + ", ".join(str(f) for f in turn["files_touched"]))
+            if turn.output:
+                parts.append(turn.output)
+            if turn.files_touched:
+                parts.append("Files touched: " + ", ".join(turn.files_touched))
         return "\n\n".join(parts[-4:])
 
+    @staticmethod
     def _previous_turns(
-        self, session: RunSession, agent_id: str, before: str | None = None
+        session: RunSession, agent_id: str, before: str | None = None
     ) -> list[AgentTurn]:
-        from ..serde import from_jsonable
+        """This agent's turns, from the folded state rather than from the log.
 
-        turns: list[AgentTurn] = []
-        for event in session.events():
-            if event.type is not EventType.TURN_RECORDED:
-                continue
-            raw = event.payload.get("turn") or {}
-            if raw.get("agent_id") != agent_id:
-                continue
-            if before and raw.get("id") == before:
-                continue
-            turns.append(from_jsonable(raw, AgentTurn))
-        return turns
+        All three readers here used to re-parse the whole of ``events.jsonl``,
+        because the fold kept the turn *count* and discarded the body. This one
+        is called once per supervised turn, from ``_supervise``, so the cost of
+        supervising a run was quadratic in the length of the run being
+        supervised -- and the log is the largest file the harness writes.
+        """
+        return [
+            turn for turn in session.state.turns
+            if turn.agent_id == agent_id and not (before and turn.id == before)
+        ]
 
     @staticmethod
     def _usage_from(payload: dict[str, Any]) -> Usage:
