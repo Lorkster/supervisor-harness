@@ -841,7 +841,15 @@ def test_search_does_not_read_through_a_symlink(tmp_path: Path) -> None:
 
 
 def test_search_does_not_read_through_a_symlinked_directory(tmp_path: Path) -> None:
-    """A file under a linked directory has no link in its own path."""
+    """A file under a linked directory has no link in its own path.
+
+    A guard rather than a demonstration, and worth saying which: with ``_walk``'s
+    containment reverted this test still passes, because ``rglob`` on these
+    Python versions does not descend through the directory link, so the file is
+    never walked at all. The ``resolve()`` check exists because that behaviour is
+    not something to depend on -- ``**`` and symlinks changed in 3.13, and the
+    walk should be correct regardless of which way it goes.
+    """
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("SUPERSECRET-canary-value\n", encoding="utf-8")
