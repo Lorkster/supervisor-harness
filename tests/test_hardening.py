@@ -221,11 +221,25 @@ def test_a_mismatched_workspace_is_not_read_as_a_scope_violation() -> None:
 
 
 def test_the_turn_context_is_built_from_the_workspace_recorded_on_the_run() -> None:
-    """A resumed process must supervise against the run's workspace, not its own."""
-    source = Path(inspect.getsourcefile(Supervisor._supervise) or "")
-    body = inspect.getsource(Supervisor._supervise)
-    assert "workspace=str(state.workspace)" in body, source
-    assert "workspace=str(self.workspace)" not in body, source
+    """A resumed process must supervise against the run's workspace, not its own.
+
+    The method is found by what it builds rather than by its name: the
+    construction moved from ``_supervise`` to ``_assess_drift`` when verification
+    turns began to be assessed too, and a test pinned to a name fails for the
+    move rather than for the property. Scoping to that method also matters --
+    ``self.workspace`` is the right answer at run *creation*, where the process's
+    own workspace is the one being recorded.
+    """
+    source = Path(inspect.getsourcefile(Supervisor) or "")
+    builders = {
+        name: inspect.getsource(fn)
+        for name, fn in vars(Supervisor).items()
+        if callable(fn) and "TurnContext(" in inspect.getsource(fn)
+    }
+    assert builders, f"nothing in {source.name} builds a TurnContext any more"
+    for name, body in builders.items():
+        assert "workspace=str(state.workspace)" in body, f"{source.name}:{name}"
+        assert "workspace=str(self.workspace)" not in body, f"{source.name}:{name}"
 
 
 # --------------------------------------------------------------------------

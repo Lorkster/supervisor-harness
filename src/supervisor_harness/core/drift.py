@@ -29,6 +29,7 @@ from ..models import (
     DriftAssessment,
     DriftSignal,
     Severity,
+    Usage,
 )
 from .paths import matches_any, scope_relative
 
@@ -376,6 +377,7 @@ def decide_directive(
     turns_used: int,
     inbox: list | None = None,
     prior_corrections: int = 0,
+    usage: Usage | None = None,
 ) -> Directive:
     """Choose what to tell the agent next.
 
@@ -390,7 +392,13 @@ def decide_directive(
     remaining = max(0, agent.budget.max_turns - turns_used)
     inbox = inbox or []
 
-    exhausted = agent.budget.exhausted(turns_used)
+    # All four ceilings, not just the turn count. The other three defaulted to
+    # zero here, so `Budget.max_tokens`, `max_seconds` and `max_tool_calls` were
+    # declared, documented and unenforceable.
+    spent = usage or Usage()
+    exhausted = agent.budget.exhausted(
+        turns_used, spent.total_tokens, spent.seconds, spent.tool_calls
+    )
     if exhausted:
         return Directive(
             agent_id=agent.id,

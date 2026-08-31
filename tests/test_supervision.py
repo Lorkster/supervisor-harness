@@ -38,6 +38,7 @@ from supervisor_harness.models import (
     RunState,
     Scope,
     Severity,
+    Usage,
     VerifyMethod,
 )
 
@@ -129,6 +130,50 @@ def test_budget_exhaustion_stops_the_agent() -> None:
 
     assert directive.kind is DirectiveKind.STOP
     assert "budget" in directive.rationale
+
+
+@pytest.mark.parametrize(
+    ("budget", "usage", "expected"),
+    [
+        (Budget(max_turns=6, max_tokens=1000), Usage(input_tokens=800, output_tokens=300), "token"),
+        (Budget(max_turns=6, max_seconds=60), Usage(seconds=61.0), "time"),
+        (Budget(max_turns=6, max_tool_calls=20), Usage(tool_calls=20), "tool-call"),
+    ],
+)
+def test_every_declared_ceiling_stops_the_agent_not_only_the_turn_count(
+    budget: Budget, usage: Usage, expected: str
+) -> None:
+    """Three of the four ceilings were declared, documented and unenforceable.
+
+    ``Budget.exhausted`` accepts tokens, seconds and tool calls, and the only
+    call site passed none of them, so each defaulted its way to zero and only the
+    turn count was ever checked.
+    """
+    agent = _agent(budget=budget)
+    turn = AgentTurn(output="Still working through the handler.")
+    directive = decide_directive(
+        _assess(agent, turn), agent, turn, Policy(), turns_used=1, usage=usage
+    )
+
+    assert directive.kind is DirectiveKind.STOP
+    assert expected in directive.rationale, directive.rationale
+
+
+def test_an_agent_inside_every_ceiling_is_not_stopped() -> None:
+    """The ceilings must bite only when reached, on a backend that reports zero.
+
+    A host that cannot measure a figure omits it, so it arrives as zero -- which
+    has to read as "no evidence it was exceeded", not as "it was".
+    """
+    agent = _agent(budget=Budget(max_turns=6, max_tokens=1000, max_seconds=60, max_tool_calls=20))
+    turn = AgentTurn(output="Read the handler and traced the rate limiter.",
+                     files_touched=["src/auth/a.py"])
+
+    for usage in (Usage(), Usage(input_tokens=10, output_tokens=5, seconds=1.0, tool_calls=2)):
+        directive = decide_directive(
+            _assess(agent, turn), agent, turn, Policy(), turns_used=1, usage=usage
+        )
+        assert directive.kind is not DirectiveKind.STOP, usage
 
 
 def test_completion_claim_is_refused_when_coverage_is_thin() -> None:

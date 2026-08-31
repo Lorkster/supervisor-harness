@@ -375,3 +375,86 @@ async def test_advancing_past_a_finished_synthesis_spawns_nothing(
         f"{len(after.agents) - baseline} pseudo-agent(s) spawned by five advances"
     )
     assert len([a for a in after.agents.values() if a.role == "synthesizer"]) == 1
+
+
+# -- the agent that judges the work is supervised too ------------------------
+
+
+async def _drive_to_verification(
+    supervisor: Supervisor, fake: FakeProvider
+) -> SupervisorResponse:
+    """Run the host loop honestly until a verification packet is dispatched."""
+    simulator = HostSimulator(supervisor, fake)
+    response = await supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    for _ in range(40):
+        if response.action == "dispatch" and response.packets[0].kind == "verification":
+            return response
+        if response.action == "await_approval":
+            response = await supervisor.approve(
+                response.run_id,
+                [{"task_id": t["id"], "decision": "approve"} for t in response.tasks],
+            )
+            continue
+        if response.action == "dispatch":
+            last = response
+            for packet in response.packets:
+                last = await supervisor.report(
+                    packet.run_id, packet.agent_id, simulator._answer_for(packet)
+                )
+            response = (
+                last if last.action in ("dispatch", "await_approval")
+                else await supervisor.advance(response.run_id)
+            )
+            continue
+        response = await supervisor.advance(response.run_id)
+    raise AssertionError("never reached verification")
+
+
+async def test_a_verification_turn_is_recorded_and_assessed(
+    host_supervisor: Supervisor, fake: FakeProvider
+) -> None:
+    """The one agent whose whole job is judgement had no supervision at all.
+
+    Both report paths jumped straight to the verdict, so a verifier produced no
+    turn event: its reasoning, self-assessment, blocked_on and usage reached
+    nothing, and it was the only agent in a run with no drift score.
+    """
+    simulator = HostSimulator(host_supervisor, fake)
+    response = await _drive_to_verification(host_supervisor, fake)
+    packet = response.packets[0]
+
+    answer = dict(simulator._answer_for(packet))
+    answer["usage"] = {"input_tokens": 120, "output_tokens": 40}
+    await host_supervisor.report(packet.run_id, packet.agent_id, answer)
+
+    state = host_supervisor.store.load_state(packet.run_id)
+    turns = [t for t in state.turns if t.agent_id == packet.agent_id]
+    assert len(turns) == 1, "the verifier's turn reached neither the log nor the state"
+    assert state.turn_counts[packet.agent_id] == 1
+    assert packet.agent_id in state.drift, "the verifier was the one agent never assessed"
+    # And the usage it reported is accumulated, which is what a ceiling measures.
+    assert state.usage[packet.agent_id].total_tokens == 160
+
+
+async def test_a_verifier_cannot_report_twice(
+    host_supervisor: Supervisor, fake: FakeProvider
+) -> None:
+    """Verification is a single judgement, and the budget now says so.
+
+    ``Budget(max_turns=3)`` was unreachable -- ``_report_verification`` settles
+    the task and ends the agent on its first report -- so the declared budget
+    described something the code never allowed. It is 1, and now that the turn is
+    recorded, the bound is real.
+    """
+    simulator = HostSimulator(host_supervisor, fake)
+    response = await _drive_to_verification(host_supervisor, fake)
+    packet = response.packets[0]
+    answer = simulator._answer_for(packet)
+
+    await host_supervisor.report(packet.run_id, packet.agent_id, answer)
+    before = host_supervisor.store.load_state(packet.run_id)
+    second = await host_supervisor.report(packet.run_id, packet.agent_id, answer)
+    after = host_supervisor.store.load_state(packet.run_id)
+
+    assert second.detail.get("error") == "duplicate_report"
+    assert after.turn_counts[packet.agent_id] == before.turn_counts[packet.agent_id] == 1

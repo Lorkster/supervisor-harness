@@ -620,7 +620,15 @@ def build_verification_agent(
         scope=Scope(out_of_scope=list(role.out_of_scope)),
         binding=config.binding_for("verification"),
         backend=state.backend,
-        budget=Budget(max_turns=3),
+        # One turn, because one is what the code allows: `_report_verification`
+        # settles the task and ends the agent on its first report, so the 3 this
+        # used to declare was never reachable. Verification is a single judgement
+        # by design -- a verifier given more turns would be negotiating with
+        # itself over a verdict it has already reached -- so the budget is
+        # corrected to match rather than the behaviour being loosened to match
+        # the budget. Now that verification turns are recorded, this is enforced:
+        # a second report is refused by the turn-budget bound in `report`.
+        budget=Budget(max_turns=1),
         host_agent_type=match.name if match and match.spawnable else None,
         task_id=task.id,
         attempt=task.attempts,

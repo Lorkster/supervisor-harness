@@ -124,9 +124,32 @@ _TOOL_CALLS = {
 }
 
 
+#: What a turn cost. Optional on every schema that carries it, because a host
+#: that cannot measure a figure should omit it rather than invent one -- but
+#: without the field there is no way to report it at all, and there was no such
+#: field anywhere in this module. ``Budget`` declares ceilings on tokens, seconds
+#: and tool calls; on the default host backend ``state.usage`` stayed empty, so
+#: those three ceilings could not be enforced even in principle. The harness
+#: fills this in itself when it drives the model, from the provider's own count.
+_USAGE = {
+    "type": "object",
+    "description": (
+        "What this turn cost, if you can measure it. Omit any figure you cannot "
+        "-- an absent number is read as unknown, a wrong one is read as fact."
+    ),
+    "properties": {
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "seconds": {"type": "number"},
+        "tool_calls": {"type": "integer"},
+    },
+}
+
+
 ANALYSIS_TURN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "usage": _USAGE,
         "reasoning": {"type": "string", "description": "How you reached these conclusions"},
         "output": {"type": "string", "description": "Your analysis, written for a reader"},
         "findings": {"type": "array", "items": _FINDING},
@@ -151,6 +174,7 @@ ANALYSIS_TURN_SCHEMA: dict[str, Any] = {
 EXECUTION_TURN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "usage": _USAGE,
         "reasoning": {"type": "string"},
         "output": {"type": "string", "description": "What you changed and why"},
         "files_touched": {"type": "array", "items": {"type": "string"}},
@@ -180,6 +204,7 @@ EXECUTION_TURN_SCHEMA: dict[str, Any] = {
 PLANNING_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "usage": _USAGE,
         "restated_goal": {"type": "string", "description": "The task in your own words"},
         "mode": {
             "type": "string",
@@ -213,6 +238,7 @@ PLANNING_SCHEMA: dict[str, Any] = {
 SYNTHESIS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "usage": _USAGE,
         "summary": {"type": "string", "description": "What the analysis established, in prose"},
         "conflicts": {
             "type": "array",
@@ -301,6 +327,7 @@ DRIFT_SCHEMA: dict[str, Any] = {
 VERIFICATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "usage": _USAGE,
         "results": {
             "type": "array",
             "items": {
@@ -325,6 +352,7 @@ VERIFICATION_SCHEMA: dict[str, Any] = {
 CHECKPOINT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "usage": _USAGE,
         "quality": {"type": "number", "minimum": 0, "maximum": 1},
         "scope_fidelity": {
             "type": "number", "minimum": 0, "maximum": 1,
@@ -351,6 +379,7 @@ CHECKPOINT_SCHEMA: dict[str, Any] = {
 LESSONS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "usage": _USAGE,
         "lessons": {
             "type": "array",
             "items": {
