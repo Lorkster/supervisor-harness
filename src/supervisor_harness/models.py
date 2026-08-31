@@ -203,13 +203,25 @@ class Budget:
     max_seconds: int = 0       # 0 = unlimited
     max_tool_calls: int = 0    # 0 = unlimited
 
-    def exhausted(self, turns: int, tokens: int = 0, seconds: float = 0.0) -> str | None:
+    def exhausted(
+        self, turns: int, tokens: int = 0, seconds: float = 0.0, tool_calls: int = 0
+    ) -> str | None:
+        """The ceiling this agent has reached, or ``None``.
+
+        Every argument but ``turns`` used to default its way to zero at the only
+        call site, so three of the four declared ceilings were documentation. The
+        caller now passes the agent's accumulated usage, and a figure the backend
+        cannot measure arrives as zero -- which reads as "no evidence it was
+        exceeded" rather than as "it was not".
+        """
         if self.max_turns and turns >= self.max_turns:
             return f"turn budget exhausted ({turns}/{self.max_turns})"
         if self.max_tokens and tokens >= self.max_tokens:
             return f"token budget exhausted ({tokens}/{self.max_tokens})"
         if self.max_seconds and seconds >= self.max_seconds:
             return f"time budget exhausted ({seconds:.0f}s/{self.max_seconds}s)"
+        if self.max_tool_calls and tool_calls >= self.max_tool_calls:
+            return f"tool-call budget exhausted ({tool_calls}/{self.max_tool_calls})"
         return None
 
 

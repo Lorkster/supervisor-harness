@@ -956,6 +956,12 @@ class Supervisor:
             return await self._report_stage(session, agent, payload)
 
         if agent.kind is AgentKind.VERIFICATION:
+            # Recorded and assessed like any other turn before its verdict is
+            # applied. This path used to jump straight to the verdict, so the one
+            # agent whose whole job is judgement produced no turn event at all:
+            # its reasoning, self-assessment, blocked_on and usage reached
+            # nothing, and it was the only agent in a run with no drift score.
+            self._assess_drift(session, agent, self._record_turn(session, agent, payload))
             return self._report_verification(session, agent, payload)
 
         turn = self._record_turn(session, agent, payload)
@@ -1052,19 +1058,26 @@ class Supervisor:
                 actor=turn.agent_id,
             )
 
-    def _supervise(self, session: RunSession, agent: AgentSpec, turn: AgentTurn) -> Directive:
-        """Assess the turn and issue the directive that governs the next one."""
+    def _assess_drift(
+        self, session: RunSession, agent: AgentSpec, turn: AgentTurn
+    ) -> DriftAssessment:
+        """Score one turn against the brief the agent was given, and record it.
+
+        Separate from :meth:`_supervise` because a verification turn wants this
+        half and not the other. A verifier is settled by its own verdict, so
+        issuing it a directive would compute an instruction nothing acts on --
+        the pattern this codebase keeps finding and removing. It still gets
+        assessed: a verifier judging things outside the task it was handed is
+        exactly the drift worth catching, and it was the one agent in a run with
+        no assessment at all.
+        """
         state = session.state
         turns_used = state.turn_counts.get(agent.id, 0)
-        brief = state.briefs.get(agent.id) or agent.brief
-
-        previous = self._previous_turns(session, agent.id, before=turn.id)
-
         ctx = TurnContext(
             agent=agent,
             turn=turn,
-            previous_turns=previous,
-            brief=brief,
+            previous_turns=self._previous_turns(session, agent.id, before=turn.id),
+            brief=state.briefs.get(agent.id) or agent.brief,
             task_prompt=state.prompt,
             turn_index=max(0, turns_used - 1),
             # The run records the workspace it was created against; this
@@ -1076,6 +1089,13 @@ class Supervisor:
             EventType.DRIFT_ASSESSED,
             {"agent_id": agent.id, "assessment": to_jsonable(assessment)},
         )
+        return assessment
+
+    def _supervise(self, session: RunSession, agent: AgentSpec, turn: AgentTurn) -> Directive:
+        """Assess the turn and issue the directive that governs the next one."""
+        state = session.state
+        turns_used = state.turn_counts.get(agent.id, 0)
+        assessment = self._assess_drift(session, agent, turn)
 
         inbox = Blackboard.inbox_for(agent.id, state)
         prior_corrections = sum(
@@ -1086,6 +1106,9 @@ class Supervisor:
         directive = decide_directive(
             assessment, agent, turn, self.config.policy, turns_used,
             inbox=inbox, prior_corrections=prior_corrections,
+            # What the agent has spent so far, including the turn just recorded.
+            # Without it only the turn ceiling was ever checked.
+            usage=state.usage.get(agent.id),
         )
         session.emit(EventType.DIRECTIVE_ISSUED, {"directive": to_jsonable(directive)})
         if inbox:
@@ -1469,6 +1492,10 @@ class Supervisor:
                 return
 
             if agent.kind is AgentKind.VERIFICATION:
+                # Same as the host path: the turn is recorded and assessed
+                # before the verdict is applied, so a verifier's work is visible
+                # on both backends rather than on neither.
+                self._assess_drift(session, agent, self._record_turn(session, agent, payload))
                 self._report_verification(session, agent, payload)
                 return
 
