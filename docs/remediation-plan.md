@@ -60,7 +60,7 @@ each, in the style the history already uses.
 | 3 | Make the snapshot answerable to the log | 2 (+2 dup) | **done** — `fix/snapshot-watermark-and-atomic-write` |
 | 4 | Stop the phase machine issuing the same work twice | 3 | **done** — `fix/phase-machine-double-dispatch` |
 | 5a | Fix the tool-round loop | 2 | not started |
-| 5b | Project turns and notes into RunState | 2 (+1 dup) | not started |
+| 5b | Project turns and notes into RunState | 2 (+1 dup) | **done** — `fix/project-turns-and-notes` |
 | 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | not started |
 | 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | not started |
 | 8 | Retention and index convergence | 6 | not started |
@@ -313,6 +313,36 @@ projection, and it must not be trusted before it carries a watermark.
 
 **Done:** no full `session.events()` rescan remains in `core/supervisor.py`;
 `status()` reports the note explaining a failed agent.
+
+**Landed on `fix/project-turns-and-notes`.** `RunState` gains `turns`, `notes`
+and `task_notes`; all three rescans are gone. Turns are kept whole — including
+the findings and messages their own events also project — because a
+half-populated `AgentTurn` is a trap and the log holds the whole thing anyway.
+`status` reports the last `STATUS_NOTE_LIMIT` notes plus the total. Six tests
+across `test_fold.py`, `test_hardening.py` and `test_abandonment.py`, all failing
+against the previous commit. 192 tests pass, 6/6 under parallel load.
+
+**Measured, since the point was cost.** One `_previous_turns` call, and the run
+it implies at one call per supervised turn:
+
+| turns | log rescan | state read | per run |
+|---|---|---|---|
+| 50 | 10.4 ms | 0.002 ms | 0.5 s → 0.0001 s |
+| 200 | 38.1 ms | 0.009 ms | 7.6 s → 0.0018 s |
+| 600 | 112.8 ms | 0.034 ms | 67.7 s → 0.0205 s |
+
+`state.json` for a complete run grows 124,060 → 139,064 bytes (12%).
+`core/supervisor.py` is nine lines *longer*, not shorter: three loops came out
+and the docstrings explaining what replaced them went in. Batch 9 does not
+inherit a smaller module from this.
+
+**Two things done that were not asked for.** `turn_counts` and `usage` are
+running totals in the TURN_RECORDED branch, so a replay doubled them even after
+batch 2 made the lists idempotent; `_upsert` now reports whether the item was
+new. That matters because batch 4 made `turn_counts` a bound on accepting
+reports, so an inflated count locks a working agent out. And the absent rescan is
+asserted structurally, because a reintroduced one returns the right answer and
+only costs time — no behavioural test would catch it coming back.
 
 ### 6 · Supervise verification, and enforce the whole budget
 
