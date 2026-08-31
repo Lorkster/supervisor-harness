@@ -15,7 +15,15 @@ import pytest
 from supervisor_harness.config import HarnessConfig, Policy, default_config
 from supervisor_harness.core.supervisor import Supervisor, SupervisorResponse
 from supervisor_harness.host.detect import HostInfo
-from supervisor_harness.models import Backend, Phase, RunMode, TaskStatus
+from supervisor_harness.models import (
+    AgentKind,
+    AgentStatus,
+    Backend,
+    Phase,
+    RunMode,
+    TaskStatus,
+)
+from supervisor_harness.store.events import EventType
 from supervisor_harness.store.runstore import RunStore
 
 from .conftest import FakeProvider
@@ -243,3 +251,127 @@ async def test_escalate_settles_the_agent_the_same_way_on_both_backends(
     assert auto_final.action != "failed", auto_final.message
     assert settled(host_supervisor, host_final.run_id) == settled(autonomous, auto_final.run_id)
     assert settled(host_supervisor, host_final.run_id)[0] is AgentStatus.BLOCKED
+
+
+# -- the phase machine must not issue the same work twice --------------------
+
+
+async def test_advancing_before_the_planner_reports_does_not_double_the_fleet(
+    host_supervisor: Supervisor, fake: FakeProvider
+) -> None:
+    """An ordinary call sequence used to buy two full analysis fleets.
+
+    The phase moved to ANALYZING before the planner had answered, so an
+    ``advance`` while its packet was still out found the run in ANALYZING with no
+    analysts and spawned the derived fallback fleet. The planner's report then
+    called ``_apply_plan``, which spawned the model's fleet on top -- and the
+    guard there tests the phase, which was already ANALYZING, so nothing noticed.
+    """
+    simulator = HostSimulator(host_supervisor, fake)
+    started = await host_supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    planner = started.packets[0]
+    assert planner.kind == "planning"
+
+    # The host asks what to do next before it has run the planner.
+    impatient = await host_supervisor.advance(started.run_id)
+    assert impatient.action == "dispatch"
+    assert [p.kind for p in impatient.packets] == ["planning"], (
+        "an advance during planning must re-offer planning, not open analysis"
+    )
+
+    await host_supervisor.report(
+        planner.run_id, planner.agent_id, simulator._answer_for(planner)
+    )
+    analysis = await host_supervisor.advance(started.run_id)
+
+    state = host_supervisor.store.load_state(started.run_id)
+    analysts = [a for a in state.agents.values() if a.kind is AgentKind.ANALYSIS]
+    assert len(analysts) == len(analysis.packets)
+    assert len(analysts) <= host_supervisor.config.policy.max_analysis_lenses, (
+        f"{len(analysts)} analysis agents spawned for one run"
+    )
+
+
+async def test_a_packet_reported_twice_is_rejected_by_name(
+    host_supervisor: Supervisor, fake: FakeProvider
+) -> None:
+    """A host retrying a call it is unsure landed must not buy a second turn.
+
+    ``report`` asked only whether the agent existed -- not its status, not
+    whether this turn had already been reported -- so one piece of work was
+    recorded twice, counted twice in ``turn_counts``, supervised twice and
+    answered with a second directive.
+    """
+    simulator = HostSimulator(host_supervisor, fake)
+    started = await host_supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    planner = started.packets[0]
+    answer = simulator._answer_for(planner)
+
+    first = await host_supervisor.report(planner.run_id, planner.agent_id, answer)
+    assert first.action != "await_reports" or first.detail.get("error") != "duplicate_report"
+
+    before = host_supervisor.store.load_state(started.run_id)
+    second = await host_supervisor.report(planner.run_id, planner.agent_id, answer)
+    after = host_supervisor.store.load_state(started.run_id)
+
+    assert second.detail.get("error") == "duplicate_report"
+    assert planner.agent_id in second.message
+    assert after.turn_counts[planner.agent_id] == before.turn_counts[planner.agent_id]
+    assert len(after.agents) == len(before.agents), "the retry spawned something"
+
+
+async def test_advancing_past_a_finished_synthesis_spawns_nothing(
+    host_supervisor: Supervisor, fake: FakeProvider
+) -> None:
+    """The DONE guard was unreachable, so each advance spawned a synthesizer.
+
+    ``_stage_agent`` only ever returns an agent in ACTIVE_AGENT_STATUSES, so the
+    check for a finished one could not hold on anything it handed back -- and a
+    synthesizer that had answered fell past it to a fresh spawn, with its own
+    AGENT_SPAWNED event and its own dispatched packet, every time. Nothing about
+    the run changed to stop the next one.
+
+    Reaching that state means a run sitting in SYNTHESIZING whose synthesizer is
+    already DONE, which ``_report_stage`` produces whenever ``_apply_synthesis``
+    raises after the status has been set -- it is not wrapped, and the phase
+    transition is the last thing it does. The log is the source of truth, so the
+    state is reconstructed here by writing the phase back, which is what such a
+    crash leaves behind.
+    """
+    simulator = HostSimulator(host_supervisor, fake)
+    response = await host_supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+
+    for _ in range(30):
+        if response.action == "dispatch" and response.packets[0].kind == "synthesis":
+            break
+        if response.action == "dispatch":
+            last = response
+            for packet in response.packets:
+                last = await host_supervisor.report(
+                    packet.run_id, packet.agent_id, simulator._answer_for(packet)
+                )
+            response = (
+                last if last.action == "dispatch"
+                else await host_supervisor.advance(response.run_id)
+            )
+            continue
+        response = await host_supervisor.advance(response.run_id)
+    else:
+        raise AssertionError("never reached synthesis")
+
+    synth = response.packets[0]
+    await host_supervisor.report(synth.run_id, synth.agent_id, simulator._answer_for(synth))
+
+    session = host_supervisor.store.open(synth.run_id)
+    assert session.state.agents[synth.agent_id].status is AgentStatus.DONE
+    session.emit(EventType.PHASE_CHANGED, {"phase": str(Phase.SYNTHESIZING)})
+
+    baseline = len(session.state.agents)
+    for _ in range(5):
+        await host_supervisor.advance(synth.run_id)
+    after = host_supervisor.store.load_state(synth.run_id)
+
+    assert len(after.agents) == baseline, (
+        f"{len(after.agents) - baseline} pseudo-agent(s) spawned by five advances"
+    )
+    assert len([a for a in after.agents.values() if a.role == "synthesizer"]) == 1
