@@ -57,7 +57,7 @@ each, in the style the history already uses.
 | 0 | CI on Linux and Windows | — | **done** — `ci/linux-and-windows-matrix` |
 | 1 | Give the execution fence a floor | 1 | **done** — `fix/execution-fence-floor`, uncommitted |
 | 2 | Make the log survive a torn write and a bad payload | 5 | **done** — `fix/log-durability-and-fold-containment` |
-| 3 | Make the snapshot answerable to the log | 2 (+2 dup) | not started |
+| 3 | Make the snapshot answerable to the log | 2 (+2 dup) | **done** — `fix/snapshot-watermark-and-atomic-write` |
 | 4 | Stop the phase machine issuing the same work twice | 3 | not started |
 | 5a | Fix the tool-round loop | 2 | not started |
 | 5b | Project turns and notes into RunState | 2 (+1 dup) | not started |
@@ -204,6 +204,36 @@ in the store — wire it.
 
 **Done:** a snapshot written from an older fold is rejected in favour of the log;
 two concurrent emitters cannot leave a truncated `state.json`.
+
+**Landed on `fix/snapshot-watermark-and-atomic-write`.** `RunState.last_seq` is
+maintained by `_apply_contained` and advanced whether or not the event applied;
+`EventLog.last_seq()` reads the log's tail without the append lock (append-only
+means a race can only make a snapshot look staler, which fails safe);
+`load_state` prefers the log whenever the snapshot is behind. `save_snapshot`
+writes through a `mkstemp` name, fsyncs before the rename, and returns whether it
+landed. Seven tests in `tests/test_fold.py`, all failing against the previous
+commit. 183 tests pass, 6/6 under parallel load.
+
+**Two things the finding did not name, both found by writing the concurrency
+test.** Windows refuses to replace a file another handle has open, so a
+`supervisor status` against a reporting run could make the rename raise — the
+rename now waits the reader out, and `load_state` catches `OSError` and falls
+back to the log from its side. And a snapshot that cannot be written is no longer
+fatal at all: that is the rule `sync_index` already states for the index, and it
+became true of the snapshot only once `load_state` could rebuild from the log.
+`RunStore.snapshot_error` records why a write did not land.
+
+**Not done, deliberately.** This batch was also supposed to wire
+`RunSession.reload`. There is still no caller that needs one — `Supervisor` opens
+a fresh session per operation and `emit` keeps state in step within one — so
+inventing a call site to close a line item would be worse than leaving it to
+batch 9's dead-code decision. It does now go through `_fold_log`.
+
+**Reproductions worth keeping.** The watermark defect shows up as: append two
+events, `save_snapshot(fold(log.read_all()[:1]))`, then `load_state` returns the
+phase from the *first* event only. The shared-temp-name defect needs two threads
+in `save_snapshot` with a payload around 100 KB; on Windows it surfaces as
+`WinError 32` naming `state.json.tmp` itself.
 
 ### 4 · Stop the phase machine issuing the same work twice
 
