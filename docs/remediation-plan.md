@@ -61,7 +61,7 @@ each, in the style the history already uses.
 | 4 | Stop the phase machine issuing the same work twice | 3 | **done** — `fix/phase-machine-double-dispatch` |
 | 5a | Fix the tool-round loop | 2 | not started |
 | 5b | Project turns and notes into RunState | 2 (+1 dup) | **done** — `fix/project-turns-and-notes` |
-| 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | not started |
+| 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | **done** — `fix/verification-turns-and-budget` |
 | 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | not started |
 | 8 | Retention and index convergence | 6 | not started |
 | 9 | Collapse the backend split, then the module | 8 (+2 dup) | not started |
@@ -361,6 +361,36 @@ Depends on 5b.
 
 **Done:** a verification turn appears in the log and in `RunState`; a budget with
 a token ceiling stops an agent that exceeds it on both backends.
+
+**Landed on `fix/verification-turns-and-budget`.** `_assess_drift` is the half of
+`_supervise` both report paths share; verification turns are recorded and
+assessed before the verdict is applied. Measured on a complete run: three
+verification agents, 0/3 with a turn recorded and 0/3 assessed → 3/3 on both.
+`decide_directive` takes the agent's accumulated usage and checks all four
+ceilings; `max_tool_calls` had no parameter and now has one. Every schema an
+agent or stage reports through carries an optional `usage` object — without it
+`state.usage` stayed empty on the host backend and three ceilings were
+unenforceable in principle. Six tests, all failing against the previous commit.
+198 pass, 6/6 under parallel load.
+
+**A budget corrected rather than a behaviour loosened.** `Budget(max_turns=3)`
+for verification was unreachable — `_report_verification` settles the task and
+ends the agent on its first report. It is 1 now: verification is a single
+judgement by design, and a verifier given more turns would be negotiating with
+itself over a verdict it has already reached.
+
+**Why the verifier gets an assessment but not a directive.** It is settled by its
+own verdict, so a directive would compute an instruction nothing acts on — the
+pattern batch 4 and `fnd_01M130M6QP8NP2` are both about. The assessment is still
+worth having: a verifier judging outside its task is exactly the drift to catch.
+
+**One trap, for whoever writes the next structural test.**
+`test_the_turn_context_is_built_from_the_workspace_recorded_on_the_run` pinned
+`TurnContext` to `_supervise` by name and broke on the move. Widening it to the
+whole class was the *wrong* fix: `workspace=str(self.workspace)` is correct at
+run creation, where the process's workspace is the one being recorded, so the
+class-wide assertion caught a legitimate use. It now locates the method by what
+it builds.
 
 ### 7 · Harden the sandbox and the config trust boundary
 
