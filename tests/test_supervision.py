@@ -728,17 +728,28 @@ def test_config_layers_merge(tmp_path: Path, monkeypatch) -> None:
     from supervisor_harness.config import load_config
 
     (tmp_path / "supervisor.config.json").write_text(
-        '{"policy": {"require_tests": false, "max_parallel_agents": 9},'
-        ' "routing": {"drift": "ollama:qwen3.5:9b"}}',
+        '{"policy": {"require_tests": false, "max_parallel_agents": 9,'
+        ' "default_max_turns": 4}, "routing": {"drift": "ollama:qwen3.5:9b"}}',
         encoding="utf-8",
     )
     monkeypatch.delenv("SUPERVISOR_HOME", raising=False)
     cfg = load_config(tmp_path)
 
-    assert cfg.policy.require_tests is False
+    # A workspace may tune how much work the harness does.
     assert cfg.policy.max_parallel_agents == 9
-    assert cfg.policy.require_security_review is True     # untouched default survives
+    assert cfg.policy.default_max_turns == 4
     assert cfg.binding_for("drift").ref() == "ollama:qwen3.5:9b"
+    assert cfg.policy.max_task_attempts == 3              # untouched default survives
+
+    # It may not tune how sceptical the harness is about work done on it. This
+    # used to be settable, and `require_tests` was this test's example of a merge
+    # working -- a repository that ships a config could switch off the bar its
+    # own changes are judged against.
+    assert cfg.policy.require_tests is True
+    assert cfg.policy.require_security_review is True
+    assert any(r.startswith("policy.require_tests") for r in cfg.rejected_settings), (
+        cfg.rejected_settings
+    )
 
 
 # --------------------------------------------------------------------------

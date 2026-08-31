@@ -784,3 +784,156 @@ def test_the_supervisor_reads_turns_from_state_not_by_rescanning_the_log() -> No
     )
     for method in (Supervisor._previous_turns, Supervisor._change_summary):
         assert "state.turns" in inspect.getsource(method), method.__name__
+
+
+# --------------------------------------------------------------------------
+# Sandbox and store containment
+# --------------------------------------------------------------------------
+
+
+def _can_symlink(tmp_path: Path) -> bool:
+    """Whether this host lets an unprivileged process create a symlink.
+
+    Windows needs SeCreateSymbolicLinkPrivilege and fails with WinError 1314
+    without it, which is why the two symlink findings sat open against code paths
+    rather than a demonstration for as long as the suite ran only there. On Linux
+    CI this is always true, so the tests below are proof rather than intent.
+    """
+    try:
+        (tmp_path / "_probe_target").write_text("x", encoding="utf-8")
+        (tmp_path / "_probe_link").symlink_to(tmp_path / "_probe_target")
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+def test_search_does_not_read_through_a_symlink(tmp_path: Path) -> None:
+    """A link committed to a repository must not leak the file it points at.
+
+    ``read_file`` refuses the same path through ``_resolve``; ``search`` and
+    ``list_files`` take no path from the model, so they were treated as needing
+    no containment check and their reach was whatever ``_walk`` yielded.
+    ``is_file()`` follows symlinks, so it yielded the file on the other side --
+    out of reach by name, in reach by pattern.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("SUPERSECRET-canary-value\n", encoding="utf-8")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "ordinary.txt").write_text("nothing to see\n", encoding="utf-8")
+    if not _can_symlink(tmp_path):
+        pytest.skip("this host cannot create symlinks")
+    (workspace / "link.txt").symlink_to(secret)
+
+    box = Toolbox(workspace, Policy())
+    agent = AgentSpec(id="a", kind=AgentKind.ANALYSIS, scope=Scope())
+
+    found = box.call("search", {"pattern": "SUPERSECRET"}, agent)
+    assert "SUPERSECRET" not in found.output, found.output
+    assert "link.txt" not in box.call("list_files", {}, agent).output
+    # The refusal by name was always right, and still is.
+    assert not box.call("read_file", {"path": "link.txt"}, agent).ok
+    # An ordinary file in the workspace is unaffected.
+    assert "ordinary.txt" in box.call("list_files", {}, agent).output
+
+
+def test_search_does_not_read_through_a_symlinked_directory(tmp_path: Path) -> None:
+    """A file under a linked directory has no link in its own path."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("SUPERSECRET-canary-value\n", encoding="utf-8")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    if not _can_symlink(tmp_path):
+        pytest.skip("this host cannot create symlinks")
+    try:
+        (workspace / "linked").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("this host cannot create directory symlinks")
+
+    box = Toolbox(workspace, Policy())
+    agent = AgentSpec(id="a", kind=AgentKind.ANALYSIS, scope=Scope())
+
+    assert "SUPERSECRET" not in box.call("search", {"pattern": "SUPERSECRET"}, agent).output
+
+
+def test_an_artifact_name_cannot_escape_the_run_directory(tmp_path: Path) -> None:
+    """Both call sites pass a literal; the next one may not.
+
+    Measured before the fix: ``write_artifact(run, "../../escaped.md", ...)``
+    wrote outside the run directory.
+    """
+    from supervisor_harness.store.runstore import RunStore
+
+    store = RunStore(tmp_path / ".supervisor")
+    artifacts = (store.runs_dir / "run_A" / "artifacts").resolve()
+
+    # A name carrying a path is reduced to its final component rather than
+    # refused: the caller meant a file, and inside the run is the only place it
+    # can mean. Before the fix the first of these wrote outside the run.
+    for name in ("../../escaped.md", r"..\..\escaped.md", "/etc/passwd",
+                 "reports/report.md"):
+        written = store.write_artifact("run_A", name, "contained")
+        assert written.parent == artifacts, name
+
+    # A name that reduces to nothing names no file, and says so rather than
+    # guessing one.
+    for name in ("", "   ", ".", "..", "../.."):
+        with pytest.raises(ValueError):
+            store.write_artifact("run_A", name, "outside")
+
+    assert not list(tmp_path.glob("escaped.md"))
+    assert not list(store.runs_dir.glob("escaped.md"))
+
+
+def test_the_store_excludes_itself_from_the_repository_it_sits_in(tmp_path: Path) -> None:
+    """The store holds prompts, absolute paths and full agent output.
+
+    Its default home is inside the workspace, and the workspace is usually a
+    repository. Nothing stopped it being committed: this project's own
+    ``.gitignore`` lists ``.supervisor/``, but that is this project, not shipped
+    behaviour.
+    """
+    from supervisor_harness.store.runstore import RunStore
+
+    store = RunStore(tmp_path / ".supervisor")
+    marker = tmp_path / ".supervisor" / ".gitignore"
+    assert marker.exists()
+    assert "*" in marker.read_text(encoding="utf-8")
+
+    # A user who edits it keeps their version.
+    marker.write_text("# mine\n", encoding="utf-8")
+    RunStore(tmp_path / ".supervisor")
+    assert marker.read_text(encoding="utf-8") == "# mine\n"
+    assert store.root.exists()
+
+
+def test_a_credential_in_a_turn_does_not_reach_the_log(tmp_path: Path) -> None:
+    """An agent reads files, and the log records what it says about them.
+
+    A workspace holding a `.env` or a checked-in token could put a live
+    credential into a turn, and from there into events.jsonl, state.json, the
+    index and the report -- none of which anyone thinks of as a place secrets
+    live. This is a backstop for unambiguous shapes, not containment.
+    """
+    from supervisor_harness.models import RunState
+    from supervisor_harness.store.runstore import RunStore
+
+    store = RunStore(tmp_path / ".supervisor")
+    session = store.create(RunState(id="run_A", prompt="audit the config"))
+    session.note(
+        "found sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345 in src/config.py, "
+        "and Authorization: Bearer eyJhbGciOiJIUzI1NiJ9deadbeef"
+    )
+
+    raw = (store.runs_dir / "run_A" / "events.jsonl").read_text(encoding="utf-8")
+    assert "sk-ant-api03-abcdefghij" not in raw
+    assert "eyJhbGciOiJIUzI1NiJ9deadbeef" not in raw
+    assert "[redacted]" in raw
+    # The sentence around it survives: the location is the finding, not the value.
+    assert "src/config.py" in raw
+    assert "Authorization: Bearer [redacted]" in raw
