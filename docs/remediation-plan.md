@@ -56,7 +56,7 @@ each, in the style the history already uses.
 |---|---|---|---|
 | 0 | CI on Linux and Windows | — | **done** — `ci/linux-and-windows-matrix` |
 | 1 | Give the execution fence a floor | 1 | **done** — `fix/execution-fence-floor`, uncommitted |
-| 2 | Make the log survive a torn write and a bad payload | 5 | not started |
+| 2 | Make the log survive a torn write and a bad payload | 5 | **done** — `fix/log-durability-and-fold-containment` |
 | 3 | Make the snapshot answerable to the log | 2 (+2 dup) | not started |
 | 4 | Stop the phase machine issuing the same work twice | 3 | not started |
 | 5a | Fix the tool-round loop | 2 | not started |
@@ -159,6 +159,32 @@ wrote `.git/hooks/pre-commit` and `.supervisor/runs/r/events.jsonl` with
 **Done:** the torn-record reproduction from the findings document reads back
 three events, not one; a garbage log raises rather than restarting at seq 1; a
 poisoned payload is skipped and counted, and the run still opens.
+
+**Landed on `fix/log-durability-and-fold-containment`.** `_terminate_last_line`
+closes an unterminated final record before anything is appended to it (`append`
+and `append_many` now write bytes through one `ab+` handle, so the newline
+handling is explicit rather than resting on `newline="\n"`). `_last_seq_unlocked`
+raises the new `CorruptLog` instead of returning 0, naming the path and line
+count, and leaves the file alone; a file of blank lines still starts from zero.
+`EventLog.skipped_lines` counts unreadable lines and `RunStore._fold_log` carries
+it to `RunState.damaged_lines`. `fold` and `RunSession.emit` share
+`_apply_contained`, which records into `RunState.rejected_events`. Absent targets
+go to `RunState.orphaned_events`. `_upsert` makes the five list branches
+idempotent by id, and `checkpoint_iteration` takes the maximum. All three new
+signals are reported by `supervisor status` alongside `unhandled_events`.
+
+Nine tests across `tests/test_eventlog.py` and `tests/test_fold.py`. The six fold
+tests fail against the previous commit; the three log tests could not be run
+there (the new exception type breaks collection), so both log defects were
+reproduced directly instead — the torn append read back `[1]` where `[1, 3]` was
+written, and a 300-line garbage log was assigned sequence 1. 177 tests pass, and
+6/6 under parallel load.
+
+**Reproductions worth keeping.** A torn record is made with
+`handle.write('{"seq": 2, …')` — no trailing newline — between two ordinary
+appends. A checkpoint regression needs a *later-seq* event carrying a *lower*
+iteration: `fold` sorts by seq, so simply shuffling the list proves nothing, and
+a first attempt at that test passed against the unfixed code.
 
 ### 3 · Make the snapshot answerable to the log
 

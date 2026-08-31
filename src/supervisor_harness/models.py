@@ -567,6 +567,19 @@ class RunState:
     # Event types the fold has no branch for. Kept so a type added later, or
     # misspelled, is visible in the state instead of vanishing.
     unhandled_events: list[str] = field(default_factory=list)
+    # Events whose branch exists but whose target does not: an AGENT_STATUS for
+    # an agent the log never spawned, a CRITERION_VERIFIED for a task that is
+    # not there. Each used to be a bare no-op, so a log that disagreed with
+    # itself folded to a state that looked complete.
+    orphaned_events: list[str] = field(default_factory=list)
+    # Events whose application raised. The fold contains the failure rather than
+    # abandoning the replay, so one malformed payload costs its own event
+    # instead of the whole run's resumability.
+    rejected_events: list[str] = field(default_factory=list)
+    # Lines the log reader could not parse at all. Not foldable -- a line that
+    # is not an event cannot describe itself -- so this is stamped by the store
+    # after reading rather than accumulated by a branch below.
+    damaged_lines: int = 0
     report: Report | None = None
     checkpoint_iteration: int = 0
     error: str = ""
