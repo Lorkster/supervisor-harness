@@ -634,3 +634,99 @@ the running totals in earlier summaries had drifted from the ids.
   findings were settled by running code rather than by reading it; keep that bar.
 - No `FIXED` claim without a file and line that carries the fix. That is the rule
   the first revision of the findings document broke.
+- Diff ruff findings against `main` rather than comparing totals. An unchanged
+  count once hid six new findings behind six fixed ones.
+- Reconcile finding ids against commit `Closes:` lines rather than trusting a
+  running total. That caught two miscounts in this document.
+
+---
+
+# After the findings: what comes next, and why
+
+The 37 findings are closed. This section records what the next piece of work is,
+and — more importantly — why it was chosen over the alternative, so that a
+session picking this up does not have to re-derive the choice or silently make a
+different one.
+
+## The framing
+
+The assessment below borrows a structure from an external article on a
+"reasoning control plane" (DZone, 2026) — an argument that multi-agent systems
+need a layer governing reasoning itself, described along four dimensions: a
+shared semantic context, agent-to-agent access controls that attenuate as
+authority is delegated, observability over non-deterministic decisions, and
+deterministic guardrails outside the model's reasoning context. Its summary of
+that last one, *"reasoning proposes, policy disposes"*, is the harness's own
+design stated in four words.
+
+It is borrowed as a way of seeing the harness from outside, not as a standard to
+conform to. What follows is our assessment against it, with the evidence.
+
+## Where the harness actually stands
+
+**Deterministic guardrails — strongest.** Batches 1 and 7 are this dimension.
+The execution fence floor (`VCS_DIRS`, `STORE_DIRS` in `core/tools.py`),
+`PROTECTED_SETTINGS` and `PROTECTED_PROVIDER_KEYS` in `config.py`, the mandatory
+quality bars in `core/dod.py`, `verify_command`'s executable allow-list. Batch
+7's rule — a workspace may tune how much work the harness does, not how sceptical
+it is about work done on it — is the same principle in the harness's own words.
+
+**Observability — the material is complete, the rendering is absent.** After 5b,
+`RunState` carries turns, notes, task notes, drift assessments, directives,
+inboxes, and the three damage signals (`orphaned_events`, `rejected_events`,
+`damaged_lines`). Every input to every decision is on the log. What is missing is
+a reader that assembles them: nothing answers "why was *this* directive issued to
+*this* agent" in one place. That is a view over complete data.
+
+**Shared semantic context — partial.** `RunState.shared_context` and
+`RunState.facts` are event-sourced (`CONTEXT_SET`), reach briefs through
+`render_context`, and since 9b the supervisor answers an agent's questions from
+them. But they are free text, unversioned, and nothing checks that two agents
+mean the same thing by a term. `detect_contradictions` compares findings, not
+vocabulary.
+
+**Agent-to-agent access controls — weakest.** `RunState` has no scope field. Every
+`Scope` is supplied independently by the synthesis model, per task
+(`phases.py:591`), and nothing anywhere compares one scope to a wider one. There
+is no run-level envelope, no attenuation on spawn, and no time bound on a scope.
+The batch-1 floor is the only universal bound. *This claim is from a reading of
+the code and a grep; verify it before designing against it.*
+
+## The choice: scope provenance, not the decision journal
+
+Both dimension 2 and dimension 3 are worth closing. Scope provenance goes first,
+for three reasons in ascending order of weight.
+
+**The cheap one is that costs are asymmetric.** The decision journal is a
+read-side addition over data that already exists; it will be exactly as easy in
+six months. The envelope changes how authority flows and touches spawn, approval
+and the fence — and doing it while the fence work of batches 1 and 7 is still
+fresh is cheaper than doing it cold.
+
+**The structural one is that the gaps are different in kind.** Dimension 3 is a
+missing *view* over complete data: nothing is lost while it is absent, and it can
+be added at any point. Dimension 2 is a missing *fact*. No envelope is ever
+established, so there is nothing to render, enforce or audit — and authority that
+was never recorded cannot be audited retroactively. A run completed today leaves
+no evidence of what it was entitled to touch.
+
+**The decisive one is that we have already settled this exact principle, and
+applied it to only half the problem.** Batch 7 established that the subject of a
+judgement may not set the terms of it: a repository shipping a config cannot
+lower the bar its own changes are judged against. Scope is the same class of
+problem and is still open — the synthesis model draws the fence that its own
+tasks then run inside, and the harness enforces that fence immaculately.
+Batches 1 and 7 hardened *enforcement* of a scope; neither asked where the scope
+came from or who was entitled to grant it.
+
+That the original review produced 88 findings and not one about scope provenance
+is itself evidence the gap is structural rather than incidental. Five analysis
+lenses each took the scope as given, exactly as the code does.
+
+## What the decision journal would be, when it is taken up
+
+`supervisor explain <run> [agent]`: for each directive, the brief the agent was
+given, the turns before it, the inbox it carried, the drift assessment and its
+signals, the directive chosen and its rationale, and — since 9b — any question
+answered from the run's record. All of it is already in `RunState`. No new
+events, no design risk, no model call.
