@@ -59,12 +59,12 @@ each, in the style the history already uses.
 | 2 | Make the log survive a torn write and a bad payload | 5 | **done** — `fix/log-durability-and-fold-containment` |
 | 3 | Make the snapshot answerable to the log | 2 (+2 dup) | **done** — `fix/snapshot-watermark-and-atomic-write` |
 | 4 | Stop the phase machine issuing the same work twice | 3 | **done** — `fix/phase-machine-double-dispatch` |
-| 5a | Fix the tool-round loop | 2 | not started |
+| 5a | Fix the tool-round loop | 2 | **done** — `fix/tool-round-loop` |
 | 5b | Project turns and notes into RunState | 2 (+1 dup) | **done** — `fix/project-turns-and-notes` |
 | 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | **done** — `fix/verification-turns-and-budget` |
 | 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | **done** — `fix/sandbox-and-config-trust` |
 | 8 | Retention and index convergence | 6 | **done** — `fix/retention-and-index-convergence` |
-| 9 | Collapse the backend split, then the module | 8 (+2 dup) | not started |
+| 9 | Collapse the backend split, then the module | 9 (+1 dup) | not started |
 
 Release-blocking, on the reading above: **1, 2, 3, 4**. Code execution past the
 fence, two proven silent data losses, permanent unresumability, and duplicated
@@ -298,6 +298,20 @@ accumulate evidence across rounds.
 answer and that answer is what gets recorded; results from round *n* are still
 visible at round *n+1*.
 
+**Landed on `fix/tool-round-loop`.** The last pass is the answering round: the
+nudge goes into the history before the call rather than after the loop has ended,
+and tools are not executed there. Results accumulate for the length of a turn and
+are replaced by the directive at the end of it, capped by `TOOL_ECHO_CHARS` and
+`TOOL_RESULT_CHARS`. Two tests in `tests/test_supervision.py`, both failing
+against the previous commit. 211 pass, 6/6 under parallel load.
+
+**A trap in testing it.** The obvious script — six tool-calling answers, then a
+real one — *passes against the unfixed code*, because the seventh call returns an
+answer whether or not the agent was ever asked for one. The test answers
+conditionally on seeing the nudge instead. Third time in this project a first
+draft of a test proved nothing; checking every new test against the previous
+commit is what catches it.
+
 ### 5b · Project turns and notes into RunState
 
 `fnd_01M13MPQCDSF0A`, `fnd_01M130M6QPGERP` (+ `fnd_01M130P3E5XB3J`), and the
@@ -530,6 +544,20 @@ Neither is a bug. Both change the shape of a batch, so decide before starting it
 2. **Should `lessons.jsonl` stay cross-workspace?** (batch 8). It is currently
    harness-home scoped and injected into later runs' prompts regardless of which
    workspace produced it.
+
+## Accounting
+
+Reconciled against the findings document on 2026-09-01 by diffing the ids in its
+`Open (44)` table against every id named in a commit's `Closes:` line, because
+the running totals in earlier summaries had drifted from the ids.
+
+- **11 distinct findings remained** at that point, not 10. Batch 9 holds **9
+  distinct + 1 duplicate** (`fnd_01M130M6QPAMQN` / `fnd_01M13MPPWMTK0S`), where
+  this table previously said 8 + 2.
+- `fnd_01M1309W6321FP` appears in batch 5b's `Closes:` line, but only its rescan
+  half was closed. The module-size half is batch 9's, and the id being named as
+  closed is why the count slipped. A `Closes:` line for a half-closed finding is
+  the mistake; say which half.
 
 ## Conventions
 
