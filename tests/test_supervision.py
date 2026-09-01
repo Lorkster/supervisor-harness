@@ -42,6 +42,8 @@ from supervisor_harness.models import (
     VerifyMethod,
 )
 
+from .conftest import FakeProvider
+
 PROMPT = "Add rate limiting to the public login endpoint so credential stuffing is blocked"
 
 
@@ -905,3 +907,102 @@ async def test_autonomous_run_fails_on_a_host_routed_stage(
     assert response.action == "failed"
     assert "cannot consume" in response.message
     assert "did not settle" not in response.message
+
+
+# --------------------------------------------------------------------------
+# The tool-round loop
+# --------------------------------------------------------------------------
+
+
+async def _drive_one_analysis_turn(
+    supervisor: Supervisor, fake: FakeProvider, workspace: Path
+) -> tuple[list[list[str]], object]:
+    """Run a single analysis agent through one supervised turn.
+
+    Returns the message lists the provider was handed, in order, and the run
+    session, so a test can assert both what the agent saw and what was recorded.
+    """
+    from supervisor_harness.core.supervisor import MAX_TOOL_ROUNDS
+    from supervisor_harness.models import AgentKind, AgentSpec, Budget, RunState, Scope
+
+    (workspace / "alpha.txt").write_text("ALPHA-MARKER\n", encoding="utf-8")
+    (workspace / "beta.txt").write_text("BETA-MARKER\n", encoding="utf-8")
+
+    seen: list[list[str]] = []
+    reads = ["alpha.txt", "beta.txt"]
+
+    def respond(request):
+        """Call tools until asked to answer, then answer.
+
+        Conditional on the nudge rather than on the call count, deliberately: a
+        script that answers on the seventh call answers whether or not the agent
+        was ever asked to, which is exactly the behaviour under test and would
+        pass against the unfixed code.
+        """
+        seen.append([m.content for m in request.messages])
+        asked = any(
+            "used all" in m.content and "tool rounds" in m.content for m in request.messages
+        )
+        if asked:
+            return {"output": "the real answer", "findings": [], "status": "done"}
+        path = reads[len(seen) - 1] if len(seen) <= len(reads) else reads[0]
+        return {
+            "output": "", "findings": [], "status": "running",
+            "tool_calls": [{"tool": "read_file", "args": {"path": path}}],
+        }
+
+    fake.script("analysis", *[respond] * (MAX_TOOL_ROUNDS + 4))
+
+    session = supervisor.store.create(
+        RunState(id="run_A", prompt="find the weakness", workspace=str(workspace))
+    )
+    agent = AgentSpec(
+        run_id="run_A", kind=AgentKind.ANALYSIS, role="security", title="Security",
+        objectives=["Find exploitable weaknesses"], scope=Scope(),
+        budget=Budget(max_turns=1), binding=supervisor.config.binding_for("analysis"),
+    )
+    supervisor._spawn(session, [agent])
+    await supervisor._drive_agent(session, session.state.agents[agent.id])
+    return seen, session
+
+
+async def test_the_final_round_nudge_is_actually_sent(
+    supervisor: Supervisor, fake: FakeProvider, workspace: Path
+) -> None:
+    """It was composed, appended to a list, and then never used.
+
+    On the final iteration of ``range(MAX_TOOL_ROUNDS + 1)`` the nudge was
+    appended and the loop `continue`d -- which ended it. So the agent was never
+    asked for an answer, and the tool-call payload it had just produced fell
+    through to ``_record_turn`` as the answer for the turn.
+    """
+    seen, session = await _drive_one_analysis_turn(supervisor, fake, workspace)
+
+    assert any("used all" in m and "tool rounds" in m for m in seen[-1]), (
+        "the last request carried no nudge, so the agent was never asked to answer"
+    )
+    turns = session.store.load_state("run_A").turns
+    assert [t.output for t in turns] == ["the real answer"], (
+        "the recorded turn is not the answer the agent gave after being asked"
+    )
+
+
+async def test_tool_results_accumulate_across_the_rounds_of_a_turn(
+    supervisor: Supervisor, fake: FakeProvider, workspace: Path
+) -> None:
+    """History was reassigned each round, so only the latest result survived.
+
+    An agent that read one file and then a second could not compare them, and
+    answering a question needing both meant reading the first again -- from a
+    tool budget the re-reading was spending.
+    """
+    seen, _ = await _drive_one_analysis_turn(supervisor, fake, workspace)
+
+    # Round 0 asked for alpha, round 1 for beta. By round 2 the agent must still
+    # be able to see both.
+    third_request = "\n".join(seen[2])
+    assert "ALPHA-MARKER" in third_request, "the first round's result was discarded"
+    assert "BETA-MARKER" in third_request
+
+    # And the history grows rather than being replaced.
+    assert len(seen[2]) > len(seen[1]) > len(seen[0])
