@@ -8,14 +8,21 @@ provider.
 
 Each reported turn goes through the same supervision either way: it is recorded,
 assessed for drift, answered with a directive, and its messages are routed. Two
-differences remain, and they are properties of the backend rather than accidents:
+differences remain, and it is worth being exact about what each turns on, since
+this paragraph used to call both "properties of the backend" and only one is:
 
-* Drift escalation to a model needs the harness to make a model call, so it is
-  skipped when the ``drift`` stage is itself routed to the host -- there is no
-  one to ask without another round trip through the caller.
-* Tool use, budget enforcement in wall-clock terms, and failure capture apply
-  only to agents the harness drives. A host-run agent uses the host's tools and
-  fails in the host's own way.
+* Drift escalation to a model is a property of the **stage's routing**, not of
+  the backend. It needs the harness to make a model call, so it is skipped when
+  the ``drift`` stage is itself routed to the host -- there is no one to ask
+  without another round trip through the caller. A host-backend run that routes
+  ``drift`` to a model provider does escalate, which is a supported and useful
+  configuration, and it is why :meth:`_delegated` asks about routing rather than
+  about ``state.backend``. The two cannot disagree in the other direction:
+  :meth:`run` refuses to create an autonomous run with any stage routed to the
+  host.
+* Tool use, budget enforcement in wall-clock terms, and failure capture are
+  properties of the **backend**. They apply only to agents the harness drives; a
+  host-run agent uses the host's tools and fails in the host's own way.
 
 Every phase transition and every turn is an event on the log first and an
 in-memory change second, which is what makes a run resumable from any point.
@@ -61,6 +68,7 @@ from ..host.detect import HostInfo, detect_host
 from ..ids import now_iso
 from ..models import (
     ACTIVE_AGENT_STATUSES,
+    SUPERVISOR,
     AgentKind,
     AgentSpec,
     AgentStatus,
@@ -90,7 +98,7 @@ from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import phases
 from .baseline import BASELINE_FACT, git_baseline
-from .blackboard import Blackboard, render_context
+from .blackboard import Blackboard, answer_from_record, render_context
 from .dod import verify_criterion
 from .drift import (
     TurnContext,
@@ -107,6 +115,11 @@ from .tools import Toolbox, render_results, render_tools_section
 # Tool calls are cheap relative to a supervised turn, but an agent that keeps
 # reading without answering is its own kind of drift, so rounds are capped.
 MAX_TOOL_ROUNDS = 6
+
+#: How many of an agent's questions the supervisor answers in one directive.
+#: A directive an agent cannot read is not an answer, and an agent asking more
+#: than this per turn has a briefing problem rather than a question.
+MAX_QUESTIONS_PER_TURN = 3
 
 #: Bounds on what one turn's tool history carries back into the next round.
 #: Results accumulate across a turn now, so each block is capped rather than the
@@ -1090,6 +1103,67 @@ class Supervisor:
             ))
         return out
 
+    def _answer_questions(
+        self, session: RunSession, agent: AgentSpec, directive: Directive
+    ) -> Directive:
+        """Answer this agent's questions to the supervisor, from the run's record.
+
+        ``Blackboard.route`` has always accepted a message addressed to the
+        supervisor, flagged it, and stored it -- and nothing ever read it. An
+        agent could ask, and the question went nowhere: `supervisor_inbox` had no
+        caller and `DirectiveKind.ANSWER` was constructed by no code path, while
+        sitting in ``CONTINUATION_DIRECTIVES`` waiting to be. The agent's only
+        other options were to guess or to escalate, and escalating ends it.
+
+        What the supervisor answers with is the run's own record --
+        :func:`answer_from_record` -- because that is the whole of what it knows.
+        A question the record does not cover is said to be uncovered rather than
+        guessed at; the agent keeps working and is told to record the uncertainty
+        where the checkpoint will see it.
+
+        The answer never displaces a correction. It changes the directive's
+        *kind* only when the assessment said CONTINUE, which is the case where a
+        pending question is the most useful thing to address; otherwise it rides
+        along in the corrections, so a drifting agent is still corrected and
+        still gets its answer.
+        """
+        questions = Blackboard.questions_for_supervisor(agent.id, session.state)
+        if not questions:
+            return directive
+
+        answered: list[str] = []
+        for question in questions[:MAX_QUESTIONS_PER_TURN]:
+            found = answer_from_record(question, agent, session.state)
+            asked = question.subject or question.content[:120]
+            if found:
+                answered.append(f"On your question ({asked}): " + " ".join(found))
+            else:
+                answered.append(
+                    f"On your question ({asked}): the run's record does not cover it. "
+                    "Proceed on your stated scope and put what you could not "
+                    "establish in self_assessment."
+                )
+                session.note(
+                    "an agent asked something the run's record could not answer",
+                    actor=agent.id,
+                    question=asked,
+                )
+
+        # Marked answered so the next turn does not answer them again.
+        session.emit(
+            EventType.MESSAGE_DELIVERED,
+            {"message_ids": [q.id for q in questions[:MAX_QUESTIONS_PER_TURN]],
+             "agent_id": SUPERVISOR},
+        )
+
+        directive.corrections = [*answered, *directive.corrections]
+        if directive.kind is DirectiveKind.CONTINUE:
+            directive.kind = DirectiveKind.ANSWER
+            directive.rationale = (
+                "Answered from the run's own record. " + (directive.rationale or "")
+            ).strip()
+        return directive
+
     def _assess_drift(
         self, session: RunSession, agent: AgentSpec, turn: AgentTurn
     ) -> DriftAssessment:
@@ -1142,6 +1216,7 @@ class Supervisor:
             # Without it only the turn ceiling was ever checked.
             usage=state.usage.get(agent.id),
         )
+        directive = self._answer_questions(session, agent, directive)
         session.emit(EventType.DIRECTIVE_ISSUED, {"directive": to_jsonable(directive)})
         if inbox:
             session.emit(
