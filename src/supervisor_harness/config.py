@@ -102,6 +102,12 @@ class Policy:
     learn_from_failures: bool = True
     apply_lessons: bool = True
     max_lessons_in_brief: int = 6
+    # Bounds on the shared lessons library. It is deliberately cross-workspace,
+    # so it needs an edge: a lesson older than this is not applied and is dropped
+    # the next time the file is rewritten, and one lesson cannot accumulate
+    # unbounded occurrences and dominate the ranking of every later brief.
+    lesson_max_age_days: int = 180
+    lesson_max_occurrences: int = 20
 
 
 # Only "default" is set. Every other stage resolves through the fallback chain

@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from ..ids import now_iso
 from ..models import Lesson, RunState
 from ..serde import from_jsonable, to_jsonable
-from .eventlog import EventLog
+from .eventlog import EventLog, FileLock
 from .events import Event, EventType, _apply_contained, fold
 from .index import RunIndex
 from .redaction import redact
@@ -34,6 +36,29 @@ DEFAULT_DIRNAME = ".supervisor"
 #: handle has open, and a reader's hold is measured in milliseconds.
 SNAPSHOT_REPLACE_RETRIES = 10
 SNAPSHOT_REPLACE_BACKOFF = 0.02
+
+#: Bounds on the shared lessons library, used when no policy is passed in. The
+#: library is deliberately cross-workspace, so it needs an edge somewhere.
+DEFAULT_LESSON_MAX_AGE_DAYS = 180
+DEFAULT_LESSON_MAX_OCCURRENCES = 20
+
+
+def _older_than(stamp: str, max_age_days: int) -> bool:
+    """Whether an ISO timestamp is further back than the cap allows.
+
+    An unparseable or absent stamp is treated as *not* expired: dropping a record
+    because its date could not be read would destroy data over a formatting
+    problem, and the cap exists to bound growth rather than to enforce deletion.
+    """
+    if max_age_days <= 0 or not stamp:
+        return False
+    try:
+        when = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - when) > timedelta(days=max_age_days)
 
 
 def _artifact_name(name: str) -> str:
@@ -322,21 +347,39 @@ class RunStore:
                 continue
         return out
 
-    def add_lesson(self, lesson: Lesson) -> Lesson:
-        """Append a lesson, merging into an identical earlier one when it repeats."""
-        existing = self.lessons()
-        for prior in existing:
-            if prior.statement.strip().lower() == lesson.statement.strip().lower() and prior.target == lesson.target:
-                prior.occurrences += 1
-                prior.confidence = min(1.0, max(prior.confidence, lesson.confidence) + 0.05)
-                prior.updated_at = now_iso()
-                self._rewrite_lessons(existing)
-                return prior
-        with self.lessons_path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(to_jsonable(lesson), ensure_ascii=False) + "\n")
+    def add_lesson(
+        self, lesson: Lesson, *, max_occurrences: int = DEFAULT_LESSON_MAX_OCCURRENCES
+    ) -> Lesson:
+        """Append a lesson, merging into an identical earlier one when it repeats.
+
+        Held under the same advisory lock the event log uses, and for the same
+        reason. This is a read-modify-rewrite of one file: two runs learning at
+        once both read the library, both append their own view of it, and the
+        second rename discards whatever the first added. Runs are routinely
+        concurrent -- that is what the harness is for -- and ``eventlog`` already
+        had the lock this needed.
+
+        ``occurrences`` is capped. It is the primary sort key for what reaches a
+        brief, so an unbounded counter lets one early lesson outrank everything
+        learned since, permanently.
+        """
+        with FileLock(self.lessons_path.with_suffix(".jsonl.lock")):
+            existing = self.lessons()
+            for prior in existing:
+                if (
+                    prior.statement.strip().lower() == lesson.statement.strip().lower()
+                    and prior.target == lesson.target
+                ):
+                    prior.occurrences = min(max_occurrences, prior.occurrences + 1)
+                    prior.confidence = min(1.0, max(prior.confidence, lesson.confidence) + 0.05)
+                    prior.updated_at = now_iso()
+                    self._rewrite_lessons(existing)
+                    return prior
+            self._rewrite_lessons([*existing, lesson])
         return lesson
 
     def _rewrite_lessons(self, lessons: list[Lesson]) -> None:
+        """Replace the library atomically. Caller holds the lock."""
         tmp = self.lessons_path.with_suffix(".jsonl.tmp")
         tmp.write_text(
             "".join(json.dumps(to_jsonable(le), ensure_ascii=False) + "\n" for le in lessons),
@@ -344,11 +387,52 @@ class RunStore:
         )
         tmp.replace(self.lessons_path)
 
-    def lessons_for(self, targets: list[str], limit: int = 8) -> list[Lesson]:
-        """Highest-signal lessons applicable to the given roles or stages."""
+    def prune_lessons(self, *, max_age_days: int = DEFAULT_LESSON_MAX_AGE_DAYS) -> int:
+        """Drop lessons past the age cap. Returns how many went.
+
+        The library is shared across every workspace and nothing ever removed a
+        row, so it grew without bound -- and every ``add_lesson`` reads the whole
+        file, which made the cost of learning quadratic in everything ever
+        learned. The age cap is what bounds it.
+        """
+        if max_age_days <= 0:
+            return 0
+        with FileLock(self.lessons_path.with_suffix(".jsonl.lock")):
+            existing = self.lessons()
+            kept = [le for le in existing if not _older_than(le.updated_at or le.created_at,
+                                                            max_age_days)]
+            if len(kept) != len(existing):
+                self._rewrite_lessons(kept)
+        return len(existing) - len(kept)
+
+    def lessons_for(
+        self,
+        targets: list[str],
+        limit: int = 8,
+        *,
+        workspace: str = "",
+        max_age_days: int = DEFAULT_LESSON_MAX_AGE_DAYS,
+    ) -> list[Lesson]:
+        """Highest-signal lessons applicable to the given roles or stages.
+
+        The library stays cross-workspace -- a lesson learned in one project is
+        worth having in the next, which is what it is for -- but it is no longer
+        unbounded or anonymous. Lessons past the age cap are not applied, and a
+        lesson learned *here* outranks one borrowed from another project at the
+        same strength, so local experience leads and borrowed experience fills in
+        behind it.
+        """
         wanted = {t.lower() for t in targets} | {"*", "supervisor"}
-        hits = [le for le in self.lessons() if le.target.lower() in wanted]
-        hits.sort(key=lambda le: (le.occurrences, le.confidence), reverse=True)
+        hits = [
+            le for le in self.lessons()
+            if le.target.lower() in wanted
+            and not _older_than(le.updated_at or le.created_at, max_age_days)
+        ]
+        here = str(workspace or "")
+        hits.sort(
+            key=lambda le: (bool(here) and le.workspace == here, le.occurrences, le.confidence),
+            reverse=True,
+        )
         return hits[:limit]
 
     # -- index -------------------------------------------------------------
@@ -359,16 +443,81 @@ class RunStore:
         return self._index
 
     def reindex(self, run_ids: list[str] | None = None) -> int:
-        """Rebuild the SQLite projection from the authoritative logs."""
+        """Rebuild the SQLite projection from the authoritative logs.
+
+        A full reindex also prunes: rows for runs whose directory is gone were
+        never removed by anything, so ``reindex`` did not converge -- running it
+        twice on a store with a deleted run left the same stale rows both times,
+        including that run's prompt and the user's absolute workspace path.
+        Pruning is skipped for a partial reindex, where the caller has named the
+        runs it means and the rest are not evidence of anything.
+        """
         idx = self.index()
-        count = 0
-        for run_id in run_ids or self.list_run_ids():
+        live = self.list_run_ids()
+        for run_id in run_ids or live:
             events = self.log(run_id).read_all()
             state = fold(events)
             state.id = run_id
             idx.sync_run(state, events)
-            count += 1
-        return count
+        if run_ids is None:
+            idx.prune(live)
+        return len(run_ids or live)
+
+    # -- retention ---------------------------------------------------------
+
+    def delete_run(self, run_id: str) -> bool:
+        """Remove one run entirely: its directory and its rows in the index.
+
+        There was no way to do this at all. The store held every prompt, every
+        absolute path and every agent's full output for the life of the machine,
+        and deleting the directory by hand left the run's prompt and workspace in
+        ``index.sqlite3`` with nothing that would ever clean them out.
+
+        The log goes first. If the process dies between the two, what remains is
+        a stale index row, which ``reindex`` now removes -- the other order would
+        leave a run the index has forgotten but the disk still holds, which is
+        the harder state to notice.
+        """
+        target = self.runs_dir / run_id
+        if not target.exists():
+            return False
+        shutil.rmtree(target, ignore_errors=False)
+        try:
+            self.index().delete_run(run_id)
+        except Exception as exc:  # noqa: BLE001 - the index is derived; reindex repairs it
+            self.snapshot_error = f"index rows for {run_id} were not removed: {exc}"
+        return True
+
+    def purge(self, *, older_than_days: int, keep_last: int = 0) -> list[str]:
+        """Delete runs older than a cutoff, newest first. Returns what went.
+
+        ``keep_last`` is a floor rather than a nicety: a retention policy that
+        can empty the store leaves nobody able to answer what the harness has
+        been doing, and the most recent runs are the ones a user is most likely
+        to still want.
+        """
+        if older_than_days <= 0:
+            return []
+        candidates = self.list_run_ids()[max(0, keep_last):]
+        gone: list[str] = []
+        for run_id in candidates:
+            snapshot = self.runs_dir / run_id / "state.json"
+            try:
+                stamp = json.loads(snapshot.read_text(encoding="utf-8")).get("updated_at", "")
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                stamp = ""
+            if not stamp:
+                # No readable snapshot: fall back to the log's own mtime rather
+                # than treating an unaged run as expired.
+                try:
+                    mtime = (self.runs_dir / run_id / "events.jsonl").stat().st_mtime
+                    stamp = datetime.fromtimestamp(mtime, UTC).isoformat()
+                except OSError:
+                    continue
+            if _older_than(stamp, older_than_days) and self.delete_run(run_id):
+                gone.append(run_id)
+        return gone
+
 
 
 class RunSession:

@@ -897,7 +897,7 @@ class Supervisor:
             session.note(f"improvement stage skipped: {exc}")
             return self._complete(session)
 
-        for lesson in parse_lessons(data, state.id):
+        for lesson in parse_lessons(data, state.id, state.workspace):
             self._record_lesson(session, lesson)
         return self._complete(session)
 
@@ -1338,7 +1338,7 @@ class Supervisor:
             self._apply_checkpoint(session, deterministic,
                                    parse_checkpoint(payload, state.id, iteration))
         elif agent.role == "improver":
-            for lesson in parse_lessons(payload, state.id):
+            for lesson in parse_lessons(payload, state.id, state.workspace):
                 self._record_lesson(session, lesson)
 
         return await self._advance(session)

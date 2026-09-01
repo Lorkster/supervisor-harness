@@ -47,7 +47,7 @@ def test_user_version_survives_reopening(tmp_path: Path) -> None:
     """Reopening an up-to-date index leaves its version and rows alone."""
     path = tmp_path / "index.sqlite3"
     index = RunIndex(path)
-    index.sync_run(_state("run_A"))
+    index.sync_run(_state("run_A"), [])
     index.close()
 
     reopened = RunIndex(path)
@@ -76,7 +76,7 @@ def test_older_schema_version_is_rebuilt_not_raised(tmp_path: Path) -> None:
         assert "tasks_verified" in columns, "the stale table should have been rebuilt"
         assert _user_version(path) == SCHEMA_VERSION
         assert index.list_runs() == [], "stale rows do not survive the rebuild"
-        index.sync_run(_state("run_A"))  # would raise OperationalError before the fix
+        index.sync_run(_state("run_A"), [])  # would raise OperationalError before the fix
         assert [r["id"] for r in index.list_runs()] == ["run_A"]
     finally:
         index.close()
@@ -103,7 +103,7 @@ def test_inserts_name_their_columns(tmp_path: Path) -> None:
     index = RunIndex(path)
     try:
         index._conn.execute("ALTER TABLE runs ADD COLUMN future_field TEXT")
-        index.sync_run(_state("run_A"))
+        index.sync_run(_state("run_A"), [])
         assert [r["id"] for r in index.list_runs()] == ["run_A"]
     finally:
         index.close()
@@ -116,19 +116,19 @@ def test_failed_sync_run_rolls_back_and_leaves_no_open_transaction(tmp_path: Pat
     """A sync that raises part-way cannot erase another run on the next commit."""
     index = RunIndex(tmp_path / "index.sqlite3")
     try:
-        index.sync_run(_state("run_A"))
+        index.sync_run(_state("run_A"), [])
         assert [r["id"] for r in index.list_runs()] == ["run_A"]
 
         broken = _state("run_A")
         broken.lessons = [Lesson(id="lsn_1", run_id="run_A"), object()]  # type: ignore[list-item]
         with pytest.raises(AttributeError):
-            index.sync_run(broken)
+            index.sync_run(broken, [])
 
         assert index._conn.in_transaction is False, "the write transaction must be closed"
         assert [r["id"] for r in index.list_runs()] == ["run_A"], "the DELETE must have rolled back"
 
         # The next caller's commit must not carry the failed sync's deletions.
-        index.sync_run(_state("run_B"))
+        index.sync_run(_state("run_B"), [])
         assert {r["id"] for r in index.list_runs()} == {"run_A", "run_B"}
     finally:
         index.close()
@@ -141,8 +141,8 @@ def test_failed_sync_run_does_not_wedge_later_writes(tmp_path: Path) -> None:
         broken = _state("run_A")
         broken.lessons = [object()]  # type: ignore[list-item]
         with pytest.raises(AttributeError):
-            index.sync_run(broken)
-        index.sync_run(_state("run_A"))
+            index.sync_run(broken, [])
+        index.sync_run(_state("run_A"), [])
         assert [r["id"] for r in index.list_runs()] == ["run_A"]
     finally:
         index.close()
@@ -188,3 +188,176 @@ def test_repeated_index_failure_notes_once(tmp_path: Path) -> None:
 
     notes = [e for e in session.events() if "index projection failed" in str(e.payload)]
     assert len(notes) == 1
+
+
+# -- retention and convergence ---------------------------------------------
+
+
+def test_sync_run_cannot_silently_wipe_projected_events(tmp_path: Path) -> None:
+    """The wipe is unexpressible now, rather than merely unexercised.
+
+    ``events`` defaulted to ``None`` while the deletion ran over every table
+    including ``events``, so ``sync_run(state)`` dropped the run's projected
+    event rows. Both callers passed events, so it never fired -- and a signature
+    that cannot express the mistake is worth more than a comment asking callers
+    not to make it.
+    """
+    import inspect
+
+    from supervisor_harness.store.events import Event, EventType
+
+    signature = inspect.signature(RunIndex.sync_run)
+    assert signature.parameters["events"].default is inspect.Parameter.empty
+
+    index = RunIndex(tmp_path / "index.sqlite3")
+    try:
+        events = [
+            Event(seq=1, run_id="run_A", type=EventType.NOTE),
+            Event(seq=2, run_id="run_A", type=EventType.NOTE),
+        ]
+        index.sync_run(_state("run_A"), events)
+        assert len(index.query("SELECT id FROM events WHERE run_id = 'run_A'")) == 2
+    finally:
+        index.close()
+
+
+def test_deleting_a_run_removes_it_from_disk_and_from_the_index(tmp_path: Path) -> None:
+    """There was no way to remove a run at all.
+
+    The store held every prompt, every absolute path and every agent's full
+    output for the life of the machine, and deleting the directory by hand left
+    the prompt and workspace in ``index.sqlite3`` with nothing to clean them out.
+    """
+    store = RunStore(tmp_path / ".supervisor")
+    store.create(_state("run_A"))
+    store.create(_state("run_B"))
+    store.reindex()
+    assert {r["id"] for r in store.index().list_runs()} == {"run_A", "run_B"}
+
+    assert store.delete_run("run_A") is True
+    assert store.delete_run("run_A") is False, "deleting twice is not an error"
+
+    assert not (store.runs_dir / "run_A").exists()
+    assert {r["id"] for r in store.index().list_runs()} == {"run_B"}
+    assert "prompt for run_A" not in str(store.index().query("SELECT prompt FROM runs"))
+
+
+def test_reindex_converges_after_a_run_is_removed_by_hand(tmp_path: Path) -> None:
+    """Running it twice used to leave the same stale rows both times."""
+    store = RunStore(tmp_path / ".supervisor")
+    store.create(_state("run_A"))
+    store.create(_state("run_B"))
+    store.reindex()
+
+    import shutil
+
+    shutil.rmtree(store.runs_dir / "run_A")
+
+    store.reindex()
+    first = {r["id"] for r in store.index().list_runs()}
+    store.reindex()
+    second = {r["id"] for r in store.index().list_runs()}
+
+    assert first == second == {"run_B"}
+
+
+def test_a_lesson_keeps_the_run_that_learned_it(tmp_path: Path) -> None:
+    """The row was stamped with whichever run happened to sync it last.
+
+    ``add_lesson`` returns the earlier object unchanged when a lesson repeats, so
+    the same lesson is carried by several runs' states -- and stamping the
+    projecting run's id made ``reindex`` produce a different answer depending on
+    the order it happened to run in.
+    """
+    index = RunIndex(tmp_path / "index.sqlite3")
+    try:
+        learned = Lesson(id="lsn_1", run_id="run_A", statement="fence the scope", target="*")
+        first = _state("run_A")
+        first.lessons = [learned]
+        index.sync_run(first, [])
+
+        later = _state("run_B")
+        later.lessons = [learned]          # the same lesson, carried into a later run
+        index.sync_run(later, [])
+
+        rows = index.query("SELECT run_id FROM lessons WHERE id = 'lsn_1'")
+        assert [r["run_id"] for r in rows] == ["run_A"]
+    finally:
+        index.close()
+
+
+# -- the shared lessons library --------------------------------------------
+
+
+def test_concurrent_lesson_writers_do_not_lose_each_others_work(tmp_path: Path) -> None:
+    """A read-modify-rewrite of one file, and runs are routinely concurrent.
+
+    Both writers read the library, both wrote their own view of it, and the
+    second rename discarded whatever the first had added. ``eventlog`` already
+    had the advisory lock this needed.
+    """
+    import threading
+
+    store = RunStore(tmp_path / ".supervisor")
+    errors: list[BaseException] = []
+    start = threading.Barrier(6)
+
+    def learn(n: int) -> None:
+        try:
+            start.wait(timeout=5.0)
+            for i in range(10):
+                store.add_lesson(
+                    Lesson(run_id=f"run_{n}", statement=f"lesson {n}-{i}", target="*")
+                )
+        except BaseException as exc:  # noqa: BLE001 - re-raised through the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=learn, args=(n,)) for n in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert len(store.lessons()) == 60, "a concurrent writer's lessons were lost"
+
+
+def test_a_repeating_lesson_cannot_dominate_every_later_brief(tmp_path: Path) -> None:
+    """``occurrences`` is the primary sort key, and it was unbounded."""
+    store = RunStore(tmp_path / ".supervisor")
+    for _ in range(50):
+        store.add_lesson(Lesson(run_id="run_A", statement="the same lesson", target="*"))
+
+    lessons = store.lessons()
+    assert len(lessons) == 1
+    assert lessons[0].occurrences <= 20
+
+
+def test_an_expired_lesson_is_neither_applied_nor_kept(tmp_path: Path) -> None:
+    """The library is cross-workspace and nothing ever removed a row from it."""
+    store = RunStore(tmp_path / ".supervisor")
+    store.add_lesson(Lesson(run_id="run_A", statement="recent", target="*"))
+    store.add_lesson(
+        Lesson(run_id="run_B", statement="ancient", target="*",
+               created_at="2020-01-01T00:00:00Z", updated_at="2020-01-01T00:00:00Z")
+    )
+
+    applied = [le.statement for le in store.lessons_for(["*"], max_age_days=180)]
+    assert applied == ["recent"]
+
+    assert store.prune_lessons(max_age_days=180) == 1
+    assert [le.statement for le in store.lessons()] == ["recent"]
+
+
+def test_a_lesson_learned_here_outranks_one_borrowed_from_elsewhere(tmp_path: Path) -> None:
+    """The library stays shared; local experience leads and borrowed fills in."""
+    store = RunStore(tmp_path / ".supervisor")
+    store.add_lesson(
+        Lesson(run_id="run_A", workspace="/other/project", statement="borrowed", target="*")
+    )
+    store.add_lesson(
+        Lesson(run_id="run_B", workspace="/this/project", statement="local", target="*")
+    )
+
+    ranked = [le.statement for le in store.lessons_for(["*"], workspace="/this/project")]
+    assert ranked == ["local", "borrowed"], "both apply; the local one leads"
