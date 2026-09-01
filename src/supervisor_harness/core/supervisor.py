@@ -110,6 +110,7 @@ from .drift import (
     status_after,
 )
 from .envelope import Ceiling, attenuate, effective, establish, render
+from .journal import RunJournal, build_journal
 from .tools import Toolbox, render_results, render_tools_section
 
 # Stage agents are ordinary agents so that planning, synthesis, the checkpoint
@@ -318,6 +319,18 @@ class Supervisor:
             session, agent, reason.strip() or "the host reported it as gone"
         )
         return await self._advance(session)
+
+    def explain(self, run_id: str, agent_id: str = "") -> RunJournal:
+        """Why each directive was issued to each agent, assembled from the log.
+
+        Deliberately not from the snapshot. ``RunState.drift`` is keyed by agent
+        id, so the fold keeps only each agent's newest assessment and overwrites
+        the rest -- and an assessment that has been overwritten cannot explain
+        the directive it produced. ``status`` answers where a run is now from
+        the snapshot; this answers how it got there, from the record.
+        """
+        state = self.store.load_state(run_id)
+        return build_journal(state, self.store.log(run_id).read_all(), agent_id)
 
     def status(self, run_id: str) -> dict[str, Any]:
         state = self.store.load_state(run_id)
@@ -1237,6 +1250,10 @@ class Supervisor:
             workspace=str(state.workspace),
         )
         assessment = assess_heuristically(ctx)
+        # Which turn was judged. `RunState.drift` is keyed by agent, so it keeps
+        # only this agent's newest assessment; the log keeps them all, and the
+        # journal needs to know which turn each one was about.
+        assessment.turn_id = turn.id
         session.emit(
             EventType.DRIFT_ASSESSED,
             {"agent_id": agent.id, "assessment": to_jsonable(assessment)},
@@ -1263,6 +1280,9 @@ class Supervisor:
             usage=state.usage.get(agent.id),
         )
         directive = self._answer_questions(session, agent, directive)
+        # The turn this answers, so "why was this directive issued" is a lookup
+        # rather than an inference from the order events were appended in.
+        directive.turn_id = turn.id
         session.emit(EventType.DIRECTIVE_ISSUED, {"directive": to_jsonable(directive)})
         if inbox:
             session.emit(
@@ -1321,6 +1341,8 @@ class Supervisor:
         data = await self._call("drift", system, user, DRIFT_SCHEMA)
         model_view = parse_drift(data, checked_by=self.router.binding("drift").ref())
         merged = merge_assessments(heuristic, model_view)
+        # A second opinion on the same turn, not on a new one.
+        merged.turn_id = heuristic.turn_id or last.id
         session.emit(
             EventType.DRIFT_ASSESSED,
             {"agent_id": agent_id, "assessment": to_jsonable(merged)},

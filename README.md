@@ -146,6 +146,7 @@ tools and permissions; the harness plans, watches and verifies.
 ```bash
 supervisor run "Review src/auth for security problems" --mode report
 supervisor status
+supervisor explain
 supervisor lessons
 ```
 
@@ -331,6 +332,19 @@ spawner's where there is one -- so a verifier cannot be handed a wider fence tha
 the work it is judging. A scope that exceeds its ceiling is narrowed to the
 intersection rather than refused, and the narrowing is recorded: on the log, in
 the notes the user reads at approval, and in `supervisor status`.
+
+**Reading the decisions back.** `supervisor status` says where a run is now.
+`supervisor explain` says how it got there: for each agent, in order, every turn
+it took, the drift assessment and signals that turn produced, any second opinion
+a model was asked for, the inbox it was handed, the directive it was issued and
+the rationale behind it -- and, before its first turn, whatever its scope was
+narrowed to and why. `-a <agent-id>` narrows it to one agent, `--json` gives the
+same thing structured, and the MCP tool `supervisor_explain` serves it to a host.
+
+It is assembled from the event log rather than the state snapshot, because the
+snapshot does not keep enough: `RunState.drift` is keyed by agent, so it holds
+only each agent's most recent assessment, and an assessment that has been
+overwritten cannot explain the directive it produced.
 
 Approving a task cannot widen the envelope. A `scope_paths` edit at approval is
 clamped like any other scope, because a bound that a per-task decision can move
