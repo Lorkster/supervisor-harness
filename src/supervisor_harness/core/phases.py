@@ -814,6 +814,7 @@ def mechanical_lessons(state: RunState) -> list[Lesson]:
             lessons.append(
                 Lesson(
                     run_id=state.id,
+                    workspace=state.workspace,
                     category=LessonCategory.SCOPE,
                     trigger=f"agent `{agent_id}` ({agent.role}) worked outside its scope: "
                             f"{assessment.summary}",
@@ -830,6 +831,7 @@ def mechanical_lessons(state: RunState) -> list[Lesson]:
             lessons.append(
                 Lesson(
                     run_id=state.id,
+                    workspace=state.workspace,
                     category=LessonCategory.BRIEFING,
                     trigger=f"agent `{agent_id}` ({agent.role}) restated its brief instead of "
                             f"answering it",
@@ -849,6 +851,7 @@ def mechanical_lessons(state: RunState) -> list[Lesson]:
                 lessons.append(
                     Lesson(
                         run_id=state.id,
+                    workspace=state.workspace,
                         category=LessonCategory.DOD,
                         trigger=f"criterion {crit.id!r} could not be checked: {crit.evidence[:160]}",
                         statement="A definition-of-done criterion was written in a form that "
@@ -867,6 +870,7 @@ def mechanical_lessons(state: RunState) -> list[Lesson]:
             lessons.append(
                 Lesson(
                     run_id=state.id,
+                    workspace=state.workspace,
                     category=LessonCategory.BRIEFING,
                     trigger=f"task `{task.id}` needed {task.attempts} attempts",
                     statement=f"Tasks of this shape ({task.suggested_role or 'implementation'}) "

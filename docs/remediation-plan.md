@@ -63,7 +63,7 @@ each, in the style the history already uses.
 | 5b | Project turns and notes into RunState | 2 (+1 dup) | **done** — `fix/project-turns-and-notes` |
 | 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | **done** — `fix/verification-turns-and-budget` |
 | 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | **done** — `fix/sandbox-and-config-trust` |
-| 8 | Retention and index convergence | 6 | not started |
+| 8 | Retention and index convergence | 6 | **done** — `fix/retention-and-index-convergence` |
 | 9 | Collapse the backend split, then the module | 8 (+2 dup) | not started |
 
 Release-blocking, on the reading above: **1, 2, 3, 4**. Code execution past the
@@ -469,6 +469,30 @@ signature that cannot express the mistake.
 **Done:** deleting a run removes it from the index; `reindex` converges on a
 second run; a lesson keeps its owning run; concurrent `add_lesson` calls do not
 lose each other's writes.
+
+**Landed on `fix/retention-and-index-convergence`.** `RunStore.delete_run` and
+`purge(older_than_days, keep_last)`; `RunIndex.delete_run` and `prune`, called by
+a full reindex; the lessons row stamped with the run that learned it;
+`sync_run(state, events)` with `events` required; `add_lesson` under the event
+log's `FileLock`, with capped `occurrences`; `prune_lessons` and an age cap in
+`lessons_for`; `Lesson.workspace` recorded and used to rank. `supervisor delete`
+and `supervisor prune-lessons` expose it — a retention feature nobody can invoke
+is a retention feature nobody has. Eight tests in `tests/test_store.py`. 209
+pass, 6/6 under parallel load.
+
+**The policy question is answered: keep the library global, bound it, attribute
+it.** A lesson learned in one project is worth having in the next — that is what
+the library is for — so it stays cross-workspace, and the openness is what got
+fixed: an age cap, an occurrence cap, and the originating workspace on every
+lesson so the cross-project influence path is auditable. `lessons_for` ranks
+local experience above borrowed at equal strength rather than choosing between
+them.
+
+**One test is probabilistic, and it is worth saying so.** The concurrent-writer
+test caught the unlocked read-modify-rewrite in 1 of 10 runs at four writers.
+Raised to six writers it catches it in 7 of 10, and still runs in under a second.
+It is a good guard, not a proof: a green run of it does not establish the lock is
+there.
 
 ### 9 · Collapse the backend split, then the module
 

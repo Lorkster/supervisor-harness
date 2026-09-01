@@ -621,6 +621,36 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_delete(args: argparse.Namespace) -> int:
+    """Remove one run, or every run past a cutoff."""
+    store = RunStore.discover(Path(args.workspace).resolve())
+
+    if args.older_than is not None:
+        gone = store.purge(older_than_days=args.older_than, keep_last=args.keep_last)
+        if not gone:
+            print(f"No runs older than {args.older_than} day(s).")
+            return 0
+        print(f"Deleted {len(gone)} run(s): {', '.join(gone)}")
+        return 0
+
+    if not args.run:
+        print("Name a run, or pass --older-than DAYS.", file=sys.stderr)
+        return 2
+    if not store.delete_run(args.run):
+        print(f"No such run: {args.run}", file=sys.stderr)
+        return 1
+    print(f"Deleted {args.run} and its rows in the index.")
+    return 0
+
+
+def cmd_prune_lessons(args: argparse.Namespace) -> int:
+    """Drop lessons past the age cap from the shared library."""
+    store = RunStore.discover(Path(args.workspace).resolve())
+    dropped = store.prune_lessons(max_age_days=args.older_than)
+    print(f"Dropped {dropped} lesson(s) older than {args.older_than} day(s).")
+    return 0
+
+
 def cmd_mcp(args: argparse.Namespace) -> int:
     from .mcp_server import main as serve
 
@@ -766,6 +796,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("reindex", parents=[common], help="rebuild the SQLite index from the event logs")
     p.set_defaults(func=cmd_reindex)
+
+    p = sub.add_parser(
+        "delete", parents=[common],
+        help="delete a run, or every run older than a cutoff, from disk and the index",
+    )
+    p.add_argument("run", nargs="?", help="the run to delete; omit when using --older-than")
+    p.add_argument("--older-than", type=int, metavar="DAYS",
+                   help="delete every run last updated more than DAYS ago")
+    p.add_argument("--keep-last", type=int, default=5, metavar="N",
+                   help="never delete the N most recent runs (default: 5)")
+    p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser(
+        "prune-lessons", parents=[common],
+        help="drop lessons older than a cutoff from the cross-run library",
+    )
+    p.add_argument("--older-than", type=int, default=180, metavar="DAYS",
+                   help="drop lessons not seen for more than DAYS (default: 180)")
+    p.set_defaults(func=cmd_prune_lessons)
 
     p = sub.add_parser("mcp", parents=[common], help="run the MCP server on stdio")
     p.set_defaults(func=cmd_mcp)

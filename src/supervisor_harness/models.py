@@ -527,6 +527,13 @@ class Lesson:
 
     id: str = field(default_factory=lambda: new_id("lsn"))
     run_id: str = ""
+    # Where the lesson was learned. The library is shared across every workspace
+    # the harness has run in, and a lesson drawn from one project is applied to
+    # the next -- which is the point of it, and also a path by which one
+    # repository's run shapes the prompts used on another. Recording the origin
+    # is what makes that auditable and lets the reader weight local experience
+    # above borrowed experience.
+    workspace: str = ""
     category: LessonCategory = LessonCategory.PROCESS
     trigger: str = ""        # what was observed
     statement: str = ""      # the lesson itself

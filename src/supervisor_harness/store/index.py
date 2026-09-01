@@ -120,12 +120,21 @@ class RunIndex:
 
     # -- projection --------------------------------------------------------
 
-    def sync_run(self, state: RunState, events: list[Event] | None = None) -> None:
+    def sync_run(self, state: RunState, events: list[Event]) -> None:
         """Rewrite every row belonging to this run. Idempotent by construction.
 
         The whole projection is one transaction: a failure part-way rolls the
         deletions back instead of leaving them pending for the next caller to
         commit.
+
+        ``events`` is required, and that is the fix rather than an aesthetic
+        preference. It used to default to ``None`` while the deletion below ran
+        unconditionally over every table including ``events`` -- so
+        ``sync_run(state)`` silently wiped the run's projected event rows.
+        Measured before this changed: two rows after ``sync_run(state, events)``,
+        zero after ``sync_run(state)``. Both callers passed events, so it never
+        fired; a signature that cannot express the mistake is worth more than a
+        comment asking callers not to make it.
         """
         with self._conn:
             cur = self._conn.cursor()
@@ -200,7 +209,14 @@ class RunIndex:
                     "INSERT OR REPLACE INTO lessons (id, run_id, category, trigger, statement, "
                     "why, how_to_apply, target, confidence, occurrences, created_at) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (lesson.id, state.id, str(lesson.category), lesson.trigger, lesson.statement,
+                    # The run that *learned* it, not the run being projected.
+                    # Stamping state.id made a lesson change owner every time
+                    # another run synced it -- `add_lesson` returns the earlier
+                    # object unchanged when a lesson repeats, so the same row was
+                    # rewritten under whichever run happened to sync last, and
+                    # `reindex` produced a different answer depending on order.
+                    (lesson.id, lesson.run_id or state.id, str(lesson.category),
+                     lesson.trigger, lesson.statement,
                      lesson.why, lesson.how_to_apply, lesson.target, lesson.confidence,
                      lesson.occurrences, lesson.created_at),
                 )
@@ -218,6 +234,31 @@ class RunIndex:
                     "VALUES (?,?,?,?,?,?)",
                     (event.id, state.id, event.seq, str(event.type), event.actor, event.ts),
                 )
+
+    # -- retention ---------------------------------------------------------
+
+    def delete_run(self, run_id: str) -> None:
+        """Remove every row belonging to one run."""
+        with self._conn:
+            cur = self._conn.cursor()
+            cur.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+            for table in _RUN_TABLES:
+                cur.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+
+    def prune(self, live_run_ids: list[str]) -> list[str]:
+        """Drop rows for runs that no longer exist. Returns the ids removed.
+
+        Without this ``reindex`` did not converge: it iterated the runs that are
+        still there and rewrote them, and nothing ever looked at the rows for
+        runs that are not. A deleted run's prompt and the user's absolute
+        workspace path stayed in the index for the life of the file.
+        """
+        keep = set(live_run_ids)
+        rows = self._conn.execute("SELECT id FROM runs").fetchall()
+        stale = [str(r["id"]) for r in rows if str(r["id"]) not in keep]
+        for run_id in stale:
+            self.delete_run(run_id)
+        return stale
 
     # -- queries -----------------------------------------------------------
 

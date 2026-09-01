@@ -573,7 +573,7 @@ def parse_checkpoint(data: dict[str, Any], run_id: str, iteration: int) -> Check
     )
 
 
-def parse_lessons(data: dict[str, Any], run_id: str) -> list[Lesson]:
+def parse_lessons(data: dict[str, Any], run_id: str, workspace: str = "") -> list[Lesson]:
     out: list[Lesson] = []
     for raw in data.get("lessons") or []:
         if not isinstance(raw, dict) or not str(raw.get("statement", "")).strip():
@@ -581,6 +581,7 @@ def parse_lessons(data: dict[str, Any], run_id: str) -> list[Lesson]:
         out.append(
             Lesson(
                 run_id=run_id,
+                workspace=workspace,
                 category=_enum(raw.get("category"), LessonCategory, LessonCategory.PROCESS),
                 trigger=str(raw.get("trigger", "")).strip(),
                 statement=str(raw["statement"]).strip(),
