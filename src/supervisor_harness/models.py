@@ -413,6 +413,11 @@ class Directive:
 
     id: str = field(default_factory=lambda: new_id("dir"))
     agent_id: str = ""
+    # The turn this directive answers. Empty on a log written before the
+    # journal existed, where the association is recoverable only from the order
+    # events were appended in -- which is why `core/journal.py` still has that
+    # fallback and says so.
+    turn_id: str = ""
     kind: DirectiveKind = DirectiveKind.CONTINUE
     rationale: str = ""
     corrections: list[str] = field(default_factory=list)
@@ -441,6 +446,10 @@ class DriftAssessment:
     signals: list[DriftSignal] = field(default_factory=list)
     summary: str = ""
     checked_by: str = "heuristics"
+    # The turn that was assessed. ``RunState.drift`` is keyed by agent and so
+    # keeps only the newest assessment per agent; every one of them is on the
+    # log, and this is what ties one back to the turn it judged.
+    turn_id: str = ""
     ts: str = field(default_factory=now_iso)
 
 

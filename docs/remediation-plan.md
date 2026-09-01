@@ -725,6 +725,11 @@ lenses each took the scope as given, exactly as the code does.
 
 ## What the decision journal would be, when it is taken up
 
+*Delivered; see "The decision journal -- done" at the end of this document. The
+paragraph below is the specification as written before the work, kept because
+one of its claims turned out to be wrong and the correction is the interesting
+part.*
+
 `supervisor explain <run> [agent]`: for each directive, the brief the agent was
 given, the turns before it, the inbox it carried, the drift assessment and its
 signals, the directive chosen and its rationale, and — since 9b — any question
@@ -880,3 +885,135 @@ and 58 after, with no new pair. Two were introduced and fixed on the way
   spread across the four agent builders, which is the right trade for a fence but
   does make the module larger.
 - **The open half of `fnd_01M130P3E5SCF8`** is untouched.
+
+---
+
+# The decision journal — done
+
+Landed on `feat/decision-journal`. The other half of the control-plane
+assessment, and the one deferred in favour of the scope envelope. `supervisor
+explain <run> [-a agent]`.
+
+## The claim this was scheduled on was wrong in one specific way
+
+The section above promised: *"All of it is already in `RunState`. No new events,
+no design risk, no model call."* Three of those four held. The fourth did not,
+and it was the one that mattered.
+
+`RunState.drift` is `dict[str, DriftAssessment]`, **keyed by agent id**. The fold
+branch for `DRIFT_ASSESSED` assigns into that dict, so each agent keeps only its
+*newest* assessment and every earlier one is overwritten. Measured on a run with
+one three-turn agent, before writing any of this:
+
+```
+DRIFT_ASSESSED on the log: 12    surviving in RunState.drift: 8
+agent agt_...NKDJ: log has scores [0.0, 0.8, 0.38, 0.85, 0.4]
+                   RunState keeps only 0.4
+```
+
+An assessment that has been overwritten cannot explain the directive it
+produced — and "why was *this* directive issued" is the entire question. The
+agent above peaked at 0.85 and reads as 0.4 in the snapshot.
+
+So the journal is built from the **event log**, not the snapshot. That turns out
+to be the better split regardless: `status` answers "where is this run now" from
+the snapshot, and `explain` answers "how did it get here" from the record that
+is authoritative and ordered. `RunState` is still used for what the fold keeps
+whole — the agents, their briefs, the run's own facts.
+
+`RunState.drift` was **not** changed to keep a history. It is read by `status`,
+`deterministic_checkpoint` and `supervise_with_model`, all of which want exactly
+what it holds now: the current verdict on an agent. Widening it to satisfy a
+read-side view would push the cost of the journal into three places that do not
+need it, when the log already has the data.
+
+## Two fields added, so the association is referential and not positional
+
+`Directive.turn_id` and `DriftAssessment.turn_id`, stamped in `_supervise` and
+`_assess_drift`. Neither is a new event; both are fields on an event payload
+that already existed.
+
+Without them the only evidence tying a directive to the turn it answers is the
+order the events were appended in. That order *is* reliable — a supervised turn
+appends `TURN_RECORDED -> DRIFT_ASSESSED -> DIRECTIVE_ISSUED -> [MESSAGE_DELIVERED]
+-> [NOTE] -> [AGENT_STATUS]` contiguously — but it is an inference, and an audit
+trail that infers its central link is weaker than one that records it.
+
+The positional fallback stays, because every log written before this commit has
+no `turn_id` at all and must still be explainable. Where a payload carries one
+and it disagrees with the log's order, the journal reports an **anomaly** rather
+than silently preferring either: a journal that quietly picks one of two answers
+is worse than one that says the record is ambiguous.
+
+## What an episode is
+
+One supervised turn, with everything that decided what followed it: the turn,
+its drift assessments (plural — a model escalation is a second opinion on the
+same turn, not a second turn), the directive and its rationale, corrections,
+focus and forbidden lists, the inbox it delivered, notes recorded against the
+agent, and status changes.
+
+Not every episode has every part, and the shape says so rather than hiding it:
+
+- A **verifier** is assessed but never issued a directive, because its own
+  verdict settles it. Rendered as `DIRECTIVE none -- this turn settled the agent
+  itself`, not as a gap.
+- Notes recorded against an agent **before its first turn** — the scope
+  narrowings the envelope work emits at spawn — belong to no turn. They get an
+  opening episode whose `turn` is `None`. The first draft let the first real turn
+  claim that episode, which silently dated a spawn-time narrowing to turn 0; a
+  non-empty opening episode now stays separate.
+
+## Where the envelope work made this worth doing
+
+`supervisor status` prints only the last `STATUS_NOTE_LIMIT` (20) notes. The
+envelope batch records every scope narrowing as a note, so on a long run the
+record of what authority was cut, and why, falls off the end of the only view
+that showed it. `explain` shows each narrowing against the agent it applied to,
+in the opening episode, alongside the envelope chain that caused it.
+
+## Test plan
+
+**267 pass** (249 + 18 new), 2 skipped. `ruff` diffed against `main` by rule and
+file: 58 before, 58 after, no new pair, and `core/journal.py` contributes none.
+
+Each mechanism was disabled in turn and the tests checked for noticing:
+
+| mechanism disabled | test that went red |
+|---|---|
+| journal reads `RunState.drift` instead of the log | five, incl. `…keeps_only_the_newest_assessment_per_agent` |
+| directive not stamped with its turn | `test_every_assessment_names_the_turn_it_judged` |
+| assessment not stamped with its turn | that, plus `…escalation_is_a_second_assessment_on_the_same_turn` |
+| `turn_id` disagreement not reported | `…turn_id_disagreeing_with_the_logs_order_is_reported` |
+| opening episode folded into turn 0 | `…notes_recorded_before_an_agents_first_turn_are_kept` |
+| episodes numbered by episode, not by turn | `test_turns_are_numbered_by_turn_not_by_episode` |
+| unattributed events silently dropped | `…events_naming_an_unspawned_agent_are_counted_not_dropped` |
+| filtering by agent also drops run facts | `test_filtering_by_agent_keeps_the_run_level_facts` |
+| renderer grows a typographic character | `test_the_renderer_contains_no_non_ascii_literal` |
+
+**Two of those rows started as `NOTHING FAILED`, and both times the sabotage was
+wrong rather than the test** — which is its own lesson about this exercise. One
+was a no-op edit. The other inserted `—` as the six ASCII characters of its
+escape, which no check could catch; with a real em-dash it is caught.
+
+That second one still found a weak test. The original ASCII guard rendered one
+run and encoded the result, so it only covered branches that run happened to
+take — and the sabotaged line (`before the first turn`) is not rendered unless
+an agent's scope was narrowed at spawn. It now reads the renderer's **source**
+for non-ASCII literals, which covers every branch, with the rendered-output
+check kept beside it for values interpolated from a model's answer.
+
+Two tests are marked in their docstrings as **guards rather than proofs**: the
+ASCII pair. They pin a portability convention, not correctness.
+
+One bug was found by reading output rather than by an assertion: an opening
+episode shifted the first real turn to `turn 1`. It has a test now
+(`test_turns_are_numbered_by_turn_not_by_episode`).
+
+## Not done, deliberately
+
+- **No `explain` for the run-level phases.** The journal is per agent, plus the
+  envelope chain and the run's own notes. Phase transitions, checkpoints and the
+  final report are already legible in `status` and the report artifact.
+- **`RunState.drift` keeps its shape**, for the reason above.
+- **`core/supervisor.py`** gained one method (`explain`, six lines). Still 9c.

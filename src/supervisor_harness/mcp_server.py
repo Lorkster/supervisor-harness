@@ -244,6 +244,26 @@ def build_server() -> Any:
             return {"runs": [], "message": "no runs recorded yet"}
         return sup.status(target)
 
+    @server.tool(
+        description="Why each directive was issued to each agent, with the "
+                    "evidence behind it: the turn, its drift assessment and "
+                    "signals, the inbox it carried, and the directive chosen."
+    )
+    async def supervisor_explain(run_id: str = "", agent_id: str = "") -> dict[str, Any]:
+        """The decision journal for a run, assembled from its event log.
+
+        Args:
+            run_id: The run. Omit it for the most recent run in this store.
+            agent_id: Only this agent's episodes. Omit for every agent.
+        """
+        from .core.journal import journal_to_dict
+
+        sup = supervisor()
+        target = run_id or (sup.store.latest_run_id() or "")
+        if not target:
+            return {"runs": [], "message": "no runs recorded yet"}
+        return journal_to_dict(sup.explain(target, agent_id))
+
     @server.tool(description="List recent runs with their phase and progress.")
     async def supervisor_runs(limit: int = 10) -> dict[str, Any]:
         """Recent runs, newest first.

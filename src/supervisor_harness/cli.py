@@ -457,6 +457,31 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_explain(args: argparse.Namespace) -> int:
+    """Print the decision journal: why each directive was issued, and on what."""
+    sup = _supervisor(args)
+    run_id = args.run_id or sup.store.latest_run_id()
+    if not run_id:
+        print("No runs recorded yet.", file=sys.stderr)
+        return 1
+    if run_id not in sup.store.list_run_ids():
+        print(f"error: no such run: {run_id}", file=sys.stderr)
+        return 2
+
+    from .core.journal import journal_to_dict, render_journal
+
+    if args.agent and args.agent not in sup.store.load_state(run_id).agents:
+        print(f"error: no such agent in {run_id}: {args.agent}", file=sys.stderr)
+        return 2
+
+    journal = sup.explain(run_id, args.agent)
+    if args.json:
+        _emit(journal_to_dict(journal), True)
+        return 0
+    print(render_journal(journal, width=args.width))
+    return 0
+
+
 def cmd_drift(args: argparse.Namespace) -> int:
     """Ask the drift model for a second opinion on one agent's last turn."""
     sup = _supervisor(args)
@@ -786,6 +811,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("run_id", nargs="?", default="",
                    help="which run (default: the most recent one in this store)")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("explain", parents=[common],
+                       help="why each directive was issued, and on what evidence")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
+    p.add_argument("-a", "--agent", default="", metavar="AGENT_ID",
+                   help="only this agent's episodes")
+    p.add_argument("--width", type=int, default=96, metavar="COLS",
+                   help="wrap long text at this width (default: 96)")
+    p.set_defaults(func=cmd_explain)
 
     p = sub.add_parser("drift", parents=[common],
                        help="ask the drift model about an agent that looks off-brief")
