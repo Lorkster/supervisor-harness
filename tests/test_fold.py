@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from supervisor_harness.models import AgentSpec, Phase, RunState
+from supervisor_harness.models import AgentSpec, Phase, RunState, TaskStatus
 from supervisor_harness.serde import to_jsonable
 from supervisor_harness.store.eventlog import EventLog
 from supervisor_harness.store.events import Event, EventType, fold
@@ -181,7 +181,7 @@ def test_replaying_the_log_does_not_duplicate_what_it_records() -> None:
     """The dict branches were idempotent and the list branches were not.
 
     That asymmetry was per-branch rather than by design. Replaying a log --
-    which ``reindex``, ``reload`` and every second reader do routinely --
+    which ``reindex``, ``RunStore.open`` and every second reader do routinely --
     duplicated every finding, directive, message, checkpoint and lesson in it,
     while leaving agents and tasks correct.
     """
@@ -511,3 +511,58 @@ def test_a_replayed_turn_does_not_inflate_the_count_or_the_usage() -> None:
     assert twice.usage["agt_1"].input_tokens == once.usage["agt_1"].input_tokens == 10
     assert len(twice.turns) == 1
     assert len(fold([_event(EventType.NOTE, {"text": "x"}, seq=1)] * 2).notes) == 1
+
+
+# -- the caller and the state hold the same object --------------------------
+
+
+def test_emitting_an_update_does_not_detach_the_caller_from_the_state() -> None:
+    """The fold replaced the object in the map, so the caller kept a copy.
+
+    Every caller in `core.supervisor` follows one shape -- mutate a task, then
+    emit an event describing it. Assigning a freshly deserialised object into
+    `state.tasks` meant that after the emit, the object the caller held was no
+    longer the object in `RunState`, and its next mutation went somewhere nothing
+    reads. One call site compensated with a re-fetch; the others did not.
+    """
+    state = fold([
+        _event(EventType.TASK_PROPOSED, {"task": {"id": "tsk_1", "title": "one"}}, seq=1),
+    ])
+    held = state.tasks["tsk_1"]
+
+    state = fold(
+        [_event(EventType.TASK_UPDATED, {"task": {"id": "tsk_1", "title": "one",
+                                                  "status": "in_progress"}}, seq=2)],
+        initial=state,
+    )
+
+    assert state.tasks["tsk_1"] is held, "the fold handed back a different object"
+    assert held.status is TaskStatus.IN_PROGRESS, "the caller's object did not see the update"
+
+
+def test_a_respawned_agent_is_the_same_object_the_state_already_held() -> None:
+    """Same rule for agents: a status change must reach what the caller drives."""
+    state = fold([
+        _event(EventType.AGENT_SPAWNED, {"agent": {"id": "agt_1", "role": "security"}}, seq=1),
+    ])
+    held = state.agents["agt_1"]
+
+    state = fold(
+        [_event(EventType.AGENT_SPAWNED, {"agent": {"id": "agt_1", "role": "security",
+                                                    "title": "Security"}}, seq=2)],
+        initial=state,
+    )
+
+    assert state.agents["agt_1"] is held
+    assert held.title == "Security"
+
+
+def test_a_replay_still_builds_the_state_from_nothing() -> None:
+    """Updating in place must not require the object to exist already."""
+    state = fold([
+        _event(EventType.TASK_UPDATED, {"task": {"id": "tsk_1", "title": "only an update"}}, seq=1),
+        _event(EventType.AGENT_STATUS, {"agent_id": "agt_1", "status": "done"}, seq=2),
+    ])
+
+    assert state.tasks["tsk_1"].title == "only an update"
+    assert "agent_status -> agt_1" in state.orphaned_events

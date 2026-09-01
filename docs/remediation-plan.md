@@ -64,7 +64,9 @@ each, in the style the history already uses.
 | 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | **done** — `fix/verification-turns-and-budget` |
 | 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | **done** — `fix/sandbox-and-config-trust` |
 | 8 | Retention and index convergence | 6 | **done** — `fix/retention-and-index-convergence` |
-| 9 | Collapse the backend split, then the module | 9 (+1 dup) | not started |
+| 9a | Event-sourcing and resume fidelity | 3 (+1 dup) | **done** — `fix/event-sourcing-and-resume-fidelity` |
+| 9b | Collapse the backend split, and the dead paths | 5 | **done** — same branch |
+| 9c | Split the module | 1 | **not scheduled** — see below |
 
 Release-blocking, on the reading above: **1, 2, 3, 4**. Code execution past the
 fence, two proven silent data losses, permanent unresumability, and duplicated
@@ -508,7 +510,73 @@ Raised to six writers it catches it in 7 of 10, and still runs in under a second
 It is a good guard, not a proof: a green run of it does not establish the lock is
 there.
 
-### 9 · Collapse the backend split, then the module
+### 9a · Event-sourcing and resume fidelity — done
+
+`fnd_01M130M6QPAMQN` (+ dup `fnd_01M13MPPWMTK0S`), `fnd_01M1309W63ZWYS`,
+`fnd_01M13MPPWMSR5X`; narrows `fnd_01M130P3E5SCF8`.
+
+`_merge_into` makes the fold update tasks and agents in place, so the object a
+caller holds *is* the object in `RunState` and the mutate-then-emit pattern the
+whole module uses stops detaching the two. `_spawn` returns the state's own
+specs. `_check_resume_fidelity` records, once per run, when the resuming process
+is not the one the run started under. `_record_turn` batches a turn into one
+`emit_many`: measured 9 lock acquisitions for a turn carrying eight findings,
+now 1. `RunSession.reload` (no caller) and `_stage_agent`'s unread `**extra` are
+removed. 216 tests pass, 6/6 under parallel load.
+
+**Half of `fnd_01M130P3E5SCF8` stays open, deliberately.** The lock is acquired
+with a spin-sleep from inside the async loop, so parallel autonomous agents
+serialise on it. Moving the emit to a thread does *not* fix that: the
+`RunSession` is shared across the agents `asyncio.gather` runs together, so
+offloading trades a latency problem for a data race on `RunState`. Closing it
+means giving the session its own lock — a design change, not a fix.
+
+### 9b · Collapse the backend split, and the dead paths — done
+
+`fnd_01M130M6QPAW1S`, `fnd_01M13MPPWMJRWX`, `fnd_01M13MPPWM98M1`,
+`fnd_01M130M6QP8NP2`, `fnd_01M13MPPWMT7T3`. Decisions rather than defects, and
+the decisions taken were:
+
+**`_delegated` keying on routing is correct; the docstring was wrong.** `run`
+refuses an autonomous run with any stage routed to the host, so routing and
+backend cannot disagree that way; in the other direction they legitimately do — a
+host-backend run routing `drift` to a model provider is supported, and there the
+right question is the one the code asks. Drift escalation is a property of the
+*stage's routing*; tool use, wall-clock budgets and failure capture are
+properties of the *backend*. The docstring called both the latter. Corrected;
+code untouched.
+
+**The six inline backend branches stay.** No defect, and no third backend to
+survive. If the module is ever split (9c) this is part of that — a symptom of the
+file's size, not a problem of its own.
+
+**An agent can now ask the supervisor.** `Blackboard.route` always accepted a
+message addressed to the supervisor and stored it, and nothing read it;
+`status_after` already mapped ANSWER to RUNNING, so the design anticipated this
+and only the connection was missing. `answer_from_record` answers from the run's
+own record — brief, scope, definition of done, established facts, peers'
+findings — and says plainly when the record does not cover a question rather than
+inventing one. No model call: the supervisor is authoritative about the run and
+ignorant about the world, and this keeps it judging rather than analysing. An
+answer never displaces a correction; it changes the directive's kind only when
+the assessment said CONTINUE.
+
+`Blackboard`'s unused instance state is removed. 219 tests pass, 6/6 under
+parallel load.
+
+**Worth knowing:** the first version of the wiring shipped a `NameError` — a
+`SUPERVISOR` constant used and never imported — and the full suite passed anyway,
+because nothing exercised the new path yet. Ruff's `F821` caught it. New code
+whose tests come after it is code with no tests.
+
+### 9c · Split the module — not scheduled
+
+The module-size half of `fnd_01M1309W6321FP`. `core/supervisor.py` is 2115 lines
+and there is no natural stopping point, so this is left as its own decision
+rather than carried as pending work. Every other batch has already taken what it
+needed from that file; splitting it is a refactor with no defect behind it.
+
+### 9 · Collapse the backend split, then the module (original scope)
 
 `fnd_01M130M6QPAW1S`, `fnd_01M13MPPWMJRWX`, `fnd_01M13MPPWM98M1`,
 `fnd_01M13MPPWMSR5X`, `fnd_01M130M6QP8NP2`, `fnd_01M13MPPWMT7T3`,

@@ -26,6 +26,7 @@ from ..models import (
     RunState,
     Severity,
 )
+from .drift import tokens
 
 # Messages the supervisor should look at rather than pass through untouched.
 _ESCALATING_KINDS = frozenset({MessageKind.CONTRADICTION, MessageKind.WARNING})
@@ -57,21 +58,6 @@ class Blackboard:
 
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
-        self.shared_context: str = ""
-        self.facts: dict[str, str] = {}
-
-    # -- shared context ----------------------------------------------------
-
-    def set_context(self, text: str) -> None:
-        self.shared_context = text.strip()
-
-    def record_fact(self, key: str, value: str) -> None:
-        """A fact every agent may rely on, established once."""
-        self.facts[key] = value.strip()
-
-    def context_for(self, agent: AgentSpec) -> str:
-        """The shared context as one agent should see it."""
-        return render_context(self.shared_context, self.facts)
 
     # -- routing -----------------------------------------------------------
 
@@ -123,11 +109,70 @@ class Blackboard:
 
     @staticmethod
     def supervisor_inbox(state: RunState) -> list[Message]:
+        """Messages the supervisor has not yet acted on."""
         return [
             m for m in state.messages
             if not m.delivered_for(SUPERVISOR)
             and (m.recipient == SUPERVISOR or m.kind in _ESCALATING_KINDS)
         ]
+
+    @staticmethod
+    def questions_for_supervisor(agent_id: str, state: RunState) -> list[Message]:
+        """This agent's unanswered questions to the supervisor."""
+        return [
+            m for m in Blackboard.supervisor_inbox(state)
+            if m.sender == agent_id and m.recipient == SUPERVISOR
+        ]
+
+
+def answer_from_record(question: Message, agent: AgentSpec, state: RunState) -> list[str]:
+    """What the run's own record says that bears on this question.
+
+    The supervisor is authoritative about the *run* and ignorant about the
+    world. It knows the brief it wrote, the scope it drew, the definition of
+    done it approved, the facts the run established and what every other agent
+    has found; it does not know the codebase, and it is not a second analyst.
+
+    So it answers by handing back the part of that record which bears on the
+    question, rather than by composing a reply. An answer it cannot source is
+    not invented -- the caller says plainly that the record does not cover it,
+    which is worth more to an agent than a confident guess and is the reason
+    this does not need a model call.
+
+    Returns the relevant excerpts, or an empty list when nothing matches.
+    """
+    asked = tokens(f"{question.subject} {question.content}")
+    if not asked:
+        return []
+
+    def relevant(text: str) -> bool:
+        return bool(asked & tokens(text))
+
+    out: list[str] = []
+
+    for objective in agent.objectives:
+        if relevant(objective):
+            out.append(f"Your brief already says: {objective}")
+    if agent.scope.paths and relevant(" ".join(agent.scope.paths)):
+        out.append(f"Your scope is: {', '.join(agent.scope.paths)}")
+    if agent.scope.out_of_scope and relevant(" ".join(agent.scope.out_of_scope)):
+        out.append(f"Explicitly out of scope: {', '.join(agent.scope.out_of_scope)}")
+
+    for key, value in state.facts.items():
+        if relevant(f"{key} {value}"):
+            out.append(f"Established for this run -- {key}: {value}")
+
+    task = state.tasks.get(agent.task_id or "")
+    if task is not None:
+        for crit in task.dod:
+            if relevant(crit.statement):
+                out.append(f"The definition of done requires: {crit.statement}")
+
+    for finding in state.findings:
+        if finding.agent_id != agent.id and relevant(f"{finding.title} {finding.detail}"):
+            out.append(f"Another agent already found: {finding.title}")
+
+    return out[:6]
 
 
 # --------------------------------------------------------------------------

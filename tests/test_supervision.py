@@ -1006,3 +1006,152 @@ async def test_tool_results_accumulate_across_the_rounds_of_a_turn(
 
     # And the history grows rather than being replaced.
     assert len(seen[2]) > len(seen[1]) > len(seen[0])
+
+
+# --------------------------------------------------------------------------
+# An agent can ask the supervisor
+# --------------------------------------------------------------------------
+
+
+def _question(agent_id: str, subject: str, content: str = "") -> Message:
+    return Message(
+        run_id="run_A", sender=agent_id, recipient="supervisor",
+        kind=MessageKind.QUESTION, subject=subject, content=content or subject,
+    )
+
+
+def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
+    workspace: Path, config, fake
+) -> None:
+    """`route` accepted these, stored them, and nothing ever read them.
+
+    `supervisor_inbox` had no caller and `DirectiveKind.ANSWER` was constructed
+    by no code path, while sitting in `CONTINUATION_DIRECTIVES` waiting to be. An
+    agent could ask; the question went nowhere, and its only other options were
+    to guess or to escalate -- and escalating ends it.
+    """
+    from supervisor_harness.host.detect import HostInfo
+    from supervisor_harness.providers.router import ModelRouter
+    from supervisor_harness.store.runstore import RunStore
+
+    router = ModelRouter(config, host_name="test-host")
+    router.register("fake", fake)
+    supervisor = Supervisor(
+        workspace=workspace, config=config, store=RunStore(workspace / ".supervisor"),
+        host=HostInfo(name="test-host", workspace=str(workspace), confidence=1.0),
+        router=router,
+    )
+    session = supervisor.store.create(
+        RunState(id="run_A", prompt=PROMPT, workspace=str(workspace))
+    )
+    agent = _agent(id="agt_1", objectives=["Check authentication failure modes"])
+    supervisor._spawn(session, [agent])
+    live = session.state.agents["agt_1"]
+
+    turn = AgentTurn(
+        agent_id="agt_1",
+        output="Traced the login handler and its authentication failure modes.",
+        files_touched=["src/auth/login.py"],
+        messages=[_question("agt_1", "should I cover authentication failure modes?")],
+    )
+    supervisor._record_turn(session, live, {
+        "output": turn.output, "status": "running",
+        "files_touched": turn.files_touched,
+        "messages": [{"recipient": "supervisor", "kind": "question",
+                      "subject": "should I cover authentication failure modes?",
+                      "content": "should I cover authentication failure modes?"}],
+    })
+    directive = supervisor._supervise(session, live, turn)
+
+    assert directive.kind is DirectiveKind.ANSWER
+    assert any("Your brief already says" in c for c in directive.corrections), (
+        directive.corrections
+    )
+
+    # Answered once: the next turn does not answer the same question again.
+    second = supervisor._supervise(session, live, turn)
+    assert second.kind is not DirectiveKind.ANSWER
+
+
+def test_a_question_the_record_cannot_answer_is_not_invented(
+    workspace: Path, config, fake
+) -> None:
+    """The supervisor knows the run, not the world, and says so.
+
+    An answer it cannot source is worth less than a plain statement that the
+    record does not cover it -- and the agent keeps working rather than being
+    ended, which is what escalating would do.
+    """
+    from supervisor_harness.host.detect import HostInfo
+    from supervisor_harness.providers.router import ModelRouter
+    from supervisor_harness.store.runstore import RunStore
+
+    router = ModelRouter(config, host_name="test-host")
+    router.register("fake", fake)
+    supervisor = Supervisor(
+        workspace=workspace, config=config, store=RunStore(workspace / ".supervisor"),
+        host=HostInfo(name="test-host", workspace=str(workspace), confidence=1.0),
+        router=router,
+    )
+    session = supervisor.store.create(
+        RunState(id="run_A", prompt=PROMPT, workspace=str(workspace))
+    )
+    agent = _agent(id="agt_1")
+    supervisor._spawn(session, [agent])
+    live = session.state.agents["agt_1"]
+
+    turn = AgentTurn(
+        agent_id="agt_1",
+        output="Traced the login handler and the rate limiter around it.",
+        files_touched=["src/auth/login.py"],
+    )
+    supervisor._record_turn(session, live, {
+        "output": turn.output, "status": "running",
+        "files_touched": turn.files_touched,
+        "messages": [{"recipient": "supervisor", "kind": "question",
+                      "subject": "which kubernetes namespace hosts staging?",
+                      "content": "which kubernetes namespace hosts staging?"}],
+    })
+    directive = supervisor._supervise(session, live, turn)
+
+    assert any("does not cover it" in c for c in directive.corrections), directive.corrections
+    assert not any("Your brief already says" in c for c in directive.corrections)
+    # The agent is still running, and the gap is on the log for the operator.
+    assert directive.kind is not DirectiveKind.ESCALATE
+    notes = [n.text for n in supervisor.store.load_state("run_A").notes]
+    assert any("could not answer" in n for n in notes), notes
+
+
+def test_an_answer_never_displaces_a_correction(workspace: Path, config, fake) -> None:
+    """A drifting agent is still corrected, and still gets its answer."""
+    from supervisor_harness.host.detect import HostInfo
+    from supervisor_harness.providers.router import ModelRouter
+    from supervisor_harness.store.runstore import RunStore
+
+    router = ModelRouter(config, host_name="test-host")
+    router.register("fake", fake)
+    supervisor = Supervisor(
+        workspace=workspace, config=config, store=RunStore(workspace / ".supervisor"),
+        host=HostInfo(name="test-host", workspace=str(workspace), confidence=1.0),
+        router=router,
+    )
+    session = supervisor.store.create(
+        RunState(id="run_A", prompt=PROMPT, workspace=str(workspace))
+    )
+    agent = _agent(id="agt_1")
+    supervisor._spawn(session, [agent])
+    live = session.state.agents["agt_1"]
+
+    # A write to a forbidden path is uncorrectable after the fact: STOP.
+    turn = AgentTurn(agent_id="agt_1", output="Rewrote the terraform module.",
+                     files_touched=["infra/waf.tf"])
+    supervisor._record_turn(session, live, {
+        "output": turn.output, "status": "running", "files_touched": ["infra/waf.tf"],
+        "messages": [{"recipient": "supervisor", "kind": "question",
+                      "subject": "is infra in my scope?",
+                      "content": "is infra in my scope?"}],
+    })
+    directive = supervisor._supervise(session, live, turn)
+
+    assert directive.kind is DirectiveKind.STOP, "the answer displaced the correction"
+    assert any("On your question" in c for c in directive.corrections), directive.corrections
