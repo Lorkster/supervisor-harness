@@ -243,6 +243,7 @@ class Supervisor:
     async def resume(self, run_id: str) -> SupervisorResponse:
         """Reopen a persisted run and continue from wherever it stopped."""
         session = self.store.open(run_id)
+        self._check_resume_fidelity(session)
         self._registry_for(session, None)
         session.note("run resumed", phase=str(session.state.phase))
         return await self._advance(session)
@@ -259,6 +260,7 @@ class Supervisor:
         on every ``advance``, for as long as anyone keeps asking.
         """
         session = self.store.open(run_id)
+        self._check_resume_fidelity(session)
         self._registry_for(session, None)
         state = session.state
 
@@ -668,8 +670,10 @@ class Supervisor:
                 task.updated_at = now_iso()
                 session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
             if fresh:
-                self._spawn(session, fresh)
-                active = fresh
+                # The state's own objects, not the ones just built: a status
+                # change reaches these, and this loop drives them for the rest
+                # of the phase.
+                active = self._spawn(session, fresh)
             else:
                 self._transition(session, Phase.VERIFYING)
                 return None
@@ -782,7 +786,7 @@ class Supervisor:
         stage = "verification"
 
         if self._delegated(stage):
-            agent = self._stage_agent(session, "checkpointer", stage, iteration=iteration)
+            agent = self._stage_agent(session, "checkpointer", stage)
             if agent is None:
                 # The judged half of the checkpoint is gone, but the mechanical
                 # half was computed here and stands on its own: the run is scored
@@ -921,6 +925,7 @@ class Supervisor:
     ) -> SupervisorResponse:
         """Record one agent turn, supervise it, and say what happens next."""
         session = self.store.open(run_id)
+        self._check_resume_fidelity(session)
         self._registry_for(session, None)
         state = session.state
 
@@ -1046,24 +1051,44 @@ class Supervisor:
             usage=self._usage_from(payload),
         )
 
-        session.emit(EventType.TURN_RECORDED, {"turn": to_jsonable(turn)}, actor=agent.id)
-        for finding in turn.findings:
-            session.emit(EventType.FINDING_ADDED, {"finding": to_jsonable(finding)}, actor=agent.id)
-        self._route_messages(session, turn)
+        # One batch, one lock acquisition, one fsync. This was an `emit` per
+        # event -- the turn, then every finding on it, then every message it
+        # routed -- and each of those takes the log's advisory lock and syncs to
+        # disk while the event loop waits. A turn carrying eight findings paid
+        # for nine of them, and parallel autonomous agents queue behind each
+        # other for every one.
+        events: list[tuple[EventType, dict[str, Any], str]] = [
+            (EventType.TURN_RECORDED, {"turn": to_jsonable(turn)}, agent.id)
+        ]
+        events += [
+            (EventType.FINDING_ADDED, {"finding": to_jsonable(finding)}, agent.id)
+            for finding in turn.findings
+        ]
+        events += self._message_events(session, turn)
+        session.emit_many(events)
         return turn
 
-    def _route_messages(self, session: RunSession, turn: AgentTurn) -> None:
-        # Routing is a pure decision over run state; the blackboard holds no
-        # per-run memory any more, so a fresh one is equivalent to a cached one.
+    def _message_events(
+        self, session: RunSession, turn: AgentTurn
+    ) -> list[tuple[EventType, dict[str, Any], str]]:
+        """The MESSAGE_SENT events this turn routes, ready to batch.
+
+        Routing is a pure decision over run state; the blackboard holds no
+        per-run memory any more, so a fresh one is equivalent to a cached one,
+        and deciding before emitting rather than while emitting is what lets the
+        whole turn go to disk under one lock.
+        """
         board = Blackboard(session.state.id)
+        out: list[tuple[EventType, dict[str, Any], str]] = []
         for message in turn.messages:
             routing = board.route(message, session.state)
-            session.emit(
+            out.append((
                 EventType.MESSAGE_SENT,
                 {"message": to_jsonable(routing.message), "deliver_to": routing.deliver_to,
                  "escalated": routing.escalate},
-                actor=turn.agent_id,
-            )
+                turn.agent_id,
+            ))
+        return out
 
     def _assess_drift(
         self, session: RunSession, agent: AgentSpec, turn: AgentTurn
@@ -1297,7 +1322,11 @@ class Supervisor:
             applied += 1
 
         self._set_status(session, agent, AgentStatus.DONE)
-        task = state.tasks[task.id]
+        # This used to re-fetch the task from state, because emitting replaced
+        # the object the caller held and the criterion verdicts above landed on
+        # the replacement. The fold updates in place now, so `task` is that
+        # object; the re-fetch was the only place that compensated, and the fix
+        # is in the fold rather than repeated at each call site.
         task.status = TaskStatus.VERIFIED if task.dod_satisfied() else TaskStatus.FAILED
         task.updated_at = now_iso()
         session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
@@ -1359,6 +1388,7 @@ class Supervisor:
     ) -> SupervisorResponse:
         """Apply the user's decisions on proposed tasks."""
         session = self.store.open(run_id)
+        self._check_resume_fidelity(session)
         self._registry_for(session, None)
         state = session.state
 
@@ -1664,9 +1694,54 @@ class Supervisor:
         declared = host_agents or session.state.host_agents
         return AgentRegistry(self.workspace, self.host, declared)
 
-    def _spawn(self, session: RunSession, specs: list[AgentSpec]) -> None:
-        for spec in specs:
-            session.emit(EventType.AGENT_SPAWNED, {"agent": to_jsonable(spec)})
+    def _check_resume_fidelity(self, session: RunSession) -> None:
+        """Note when this process is not the one the run was started under.
+
+        A run records the host it was created against and the workspace it was
+        rooted in, and neither was ever compared with what the resuming process
+        actually has. Everything that judges an agent -- the drift thresholds,
+        the quality bars, which model answers a stage -- comes from *this*
+        process's configuration, so a run resumed under a different setup is
+        supervised by rules its earlier turns were never held to, and nothing
+        anywhere said so.
+
+        This does not make a resume faithful; making it faithful means recording
+        the resolved configuration on the log and replaying against it, which is
+        a larger change than a note. What it removes is the silence: the
+        divergence is on the log and in ``status``, so a run whose second half
+        was judged differently from its first says which.
+
+        Recorded once per run. A resume that keeps being resumed should not fill
+        the log with the same sentence.
+        """
+        state = session.state
+        divergences: list[str] = []
+        if state.host and state.host != self.host.name:
+            divergences.append(f"host {state.host!r} -> {self.host.name!r}")
+        if state.workspace and str(self.workspace) != str(state.workspace):
+            divergences.append(f"workspace {state.workspace!r} -> {str(self.workspace)!r}")
+        if not divergences:
+            return
+
+        already = f"resumed under a different environment: {'; '.join(divergences)}"
+        if any(n.text == already for n in state.notes):
+            return
+        session.note(already)
+
+    def _spawn(self, session: RunSession, specs: list[AgentSpec]) -> list[AgentSpec]:
+        """Record each agent on the log, and hand back the state's own objects.
+
+        The specs passed in are built from a plan; the ones in ``RunState`` are
+        what the fold produced from the event. They used to be different objects,
+        so a caller that kept driving the list it had built was driving copies
+        that no status change would ever reach. Returning the state's own removes
+        the question.
+        """
+        session.emit_many([
+            (EventType.AGENT_SPAWNED, {"agent": to_jsonable(spec)}, "supervisor")
+            for spec in specs
+        ])
+        return [session.state.agents[spec.id] for spec in specs]
 
     def _set_status(self, session: RunSession, agent: AgentSpec, status: AgentStatus) -> None:
         if agent.status is status:
@@ -1729,7 +1804,7 @@ class Supervisor:
         return alive
 
     def _stage_agent(
-        self, session: RunSession, role: str, stage: str, **extra: Any
+        self, session: RunSession, role: str, stage: str
     ) -> AgentSpec | None:
         """Find or create the pseudo-agent that carries out a supervisory stage.
 

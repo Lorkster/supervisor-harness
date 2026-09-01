@@ -7,7 +7,7 @@ never as a side effect written straight into the state snapshot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import Any
 
@@ -143,7 +143,8 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
 
     elif t is EventType.AGENT_SPAWNED:
         spec = from_jsonable(p["agent"], AgentSpec)
-        state.agents[spec.id] = spec
+        seen = state.agents.get(spec.id)
+        state.agents[spec.id] = _merge_into(seen, spec) if seen is not None else spec
         state.turn_counts.setdefault(spec.id, 0)
 
     elif t is EventType.AGENT_DISPATCHED:
@@ -208,13 +209,15 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
 
     elif t is EventType.TASK_PROPOSED:
         task = from_jsonable(p["task"], ExecutionTask)
-        state.tasks[task.id] = task
+        seen_task = state.tasks.get(task.id)
+        state.tasks[task.id] = _merge_into(seen_task, task) if seen_task is not None else task
         if p.get("notes"):
             state.task_notes[task.id] = [str(n) for n in p["notes"]]
 
     elif t in (EventType.TASK_DECIDED, EventType.TASK_UPDATED):
         task = from_jsonable(p["task"], ExecutionTask)
-        state.tasks[task.id] = task
+        seen_task = state.tasks.get(task.id)
+        state.tasks[task.id] = _merge_into(seen_task, task) if seen_task is not None else task
 
     elif t is EventType.CRITERION_VERIFIED:
         task = state.tasks.get(p["task_id"])
@@ -302,13 +305,34 @@ def _remember(bucket: list[str], entry: str) -> None:
         bucket.append(entry)
 
 
+def _merge_into(existing: Any, incoming: Any) -> Any:
+    """Copy every field of ``incoming`` onto ``existing``, and return ``existing``.
+
+    The dict branches of this fold assigned a freshly deserialised object into
+    the map, which detached the caller from what it had just written. Every
+    caller in ``core.supervisor`` follows the same shape -- mutate a task or an
+    agent, then emit an event describing it -- so after the emit the object it
+    held was no longer the object in ``RunState``, and its next mutation went
+    somewhere nothing reads. One call site compensated with a re-fetch; the
+    others did not, and nothing marked which was which.
+
+    Updating in place makes the two the same object again, so the pattern the
+    module docstring describes is what actually happens. A replay is unaffected:
+    the first event carrying an id still creates the object, and later ones
+    update it, which is what a fold is meant to do.
+    """
+    for f in fields(type(existing)):
+        setattr(existing, f.name, getattr(incoming, f.name))
+    return existing
+
+
 def _upsert(items: list[Any], new: Any) -> bool:
     """Place an item in a list by id, replacing an earlier copy of the same id.
 
     The fold was idempotent per event in its dict branches, which assign by key,
     and not in its list branches, which appended unconditionally. That asymmetry
     was per-branch rather than by design: replaying a log -- which ``reindex``,
-    ``RunSession.reload`` and every second reader do routinely -- duplicated
+    ``RunStore.open`` and every second reader do routinely -- duplicated
     every finding, directive, message, checkpoint and lesson in it, while leaving
     agents and tasks correct. An event applied twice now says exactly what it
     said once.

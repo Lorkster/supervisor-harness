@@ -588,7 +588,3 @@ class RunSession:
         self._index_error = None
         self._pending_index = False
 
-    def reload(self) -> RunState:
-        """Re-fold from the log; use when another process may have written."""
-        self.state = self.store._fold_log(self.state.id)
-        return self.state

@@ -945,3 +945,94 @@ def test_a_credential_in_a_turn_does_not_reach_the_log(tmp_path: Path) -> None:
     # The sentence around it survives: the location is the finding, not the value.
     assert "src/config.py" in raw
     assert "Authorization: Bearer [redacted]" in raw
+
+
+def test_a_turn_reaches_the_log_under_one_lock(tmp_path: Path) -> None:
+    """It was an emit per event, and each takes the lock and fsyncs.
+
+    A turn carrying eight findings paid for nine acquisitions, and parallel
+    autonomous agents queue behind each other for every one -- the lock is held
+    with a spin-sleep, inside the async loop that is supposed to be running them
+    at the same time.
+    """
+    from supervisor_harness.config import default_config
+    from supervisor_harness.host.detect import HostInfo
+    from supervisor_harness.models import Backend, RunState
+    from supervisor_harness.store import eventlog
+    from supervisor_harness.store.runstore import RunStore
+
+    acquisitions = 0
+    real = eventlog.FileLock.acquire
+
+    def counted(self) -> None:  # type: ignore[no-untyped-def]
+        nonlocal acquisitions
+        acquisitions += 1
+        return real(self)
+
+    cfg = default_config()
+    cfg.backend = Backend.HOST
+    supervisor = Supervisor(
+        workspace=tmp_path, config=cfg, store=RunStore(tmp_path / ".supervisor"),
+        host=HostInfo(name="h", workspace=str(tmp_path), confidence=1.0),
+    )
+    session = supervisor.store.create(
+        RunState(id="run_A", prompt="p", workspace=str(tmp_path))
+    )
+    agent = AgentSpec(run_id="run_A", kind=AgentKind.ANALYSIS, role="security", scope=Scope())
+    supervisor._spawn(session, [agent])
+    payload = {
+        "output": "found several things",
+        "status": "running",
+        "findings": [
+            {"title": f"finding {i}", "detail": "d", "severity": "medium"} for i in range(8)
+        ],
+    }
+
+    eventlog.FileLock.acquire = counted
+    try:
+        turn = supervisor._record_turn(session, session.state.agents[agent.id], payload)
+    finally:
+        eventlog.FileLock.acquire = real
+
+    assert acquisitions == 1, f"one turn took {acquisitions} lock acquisitions"
+    assert len(turn.findings) == 8
+    assert len(session.store.load_state("run_A").findings) == 8, "the batch lost findings"
+
+
+def test_a_run_resumed_elsewhere_says_so(tmp_path: Path) -> None:
+    """A run records the host it started under, and nothing ever compared it.
+
+    Everything that judges an agent comes from the resuming process's own
+    configuration, so a run continued under a different setup is supervised by
+    rules its earlier turns were never held to. This does not make the resume
+    faithful -- it removes the silence.
+    """
+    from supervisor_harness.config import default_config
+    from supervisor_harness.host.detect import HostInfo
+    from supervisor_harness.models import Backend, RunState
+    from supervisor_harness.store.runstore import RunStore
+
+    cfg = default_config()
+    cfg.backend = Backend.HOST
+    store = RunStore(tmp_path / ".supervisor")
+    first = Supervisor(
+        workspace=tmp_path, config=cfg, store=store,
+        host=HostInfo(name="claude-code", workspace=str(tmp_path), confidence=1.0),
+    )
+    first.store.create(RunState(id="run_A", prompt="p", workspace=str(tmp_path),
+                                host="claude-code"))
+
+    elsewhere = Supervisor(
+        workspace=tmp_path, config=cfg, store=store,
+        host=HostInfo(name="cursor", workspace=str(tmp_path), confidence=1.0),
+    )
+    status = elsewhere.status("run_A")           # no divergence recorded yet
+    assert not [n for n in status["notes"] if "resumed under" in n["text"]]
+
+    session = elsewhere.store.open("run_A")
+    elsewhere._check_resume_fidelity(session)
+    elsewhere._check_resume_fidelity(session)    # recorded once, not per call
+
+    notes = [n for n in elsewhere.status("run_A")["notes"] if "resumed under" in n["text"]]
+    assert len(notes) == 1, notes
+    assert "claude-code" in notes[0]["text"] and "cursor" in notes[0]["text"]
