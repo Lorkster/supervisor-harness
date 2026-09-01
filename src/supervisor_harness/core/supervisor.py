@@ -108,6 +108,13 @@ from .tools import Toolbox, render_results, render_tools_section
 # reading without answering is its own kind of drift, so rounds are capped.
 MAX_TOOL_ROUNDS = 6
 
+#: Bounds on what one turn's tool history carries back into the next round.
+#: Results accumulate across a turn now, so each block is capped rather than the
+#: whole history being thrown away -- the rounds are already bounded by
+#: MAX_TOOL_ROUNDS, so the total is too.
+TOOL_ECHO_CHARS = 4000
+TOOL_RESULT_CHARS = 8000
+
 #: How many of a run's notes ``status`` returns. The whole list is in the state
 #: and all of it is in the log; this is what fits in an answer meant to be read.
 STATUS_NOTE_LIMIT = 20
@@ -1437,13 +1444,36 @@ class Supervisor:
         for _ in range(agent.budget.max_turns):
             payload: dict[str, Any] | None = None
             raw_text = ""
+            # Tool results accumulate across the rounds of one turn and are
+            # dropped at the end of it, where the directive replaces them. This
+            # used to be reassigned to three messages on every round, so the
+            # agent saw only the results of its most recent call: an agent that
+            # read one file, then a second, could not compare them, and answering
+            # a question that needed both meant reading the first one again --
+            # from a tool budget the re-reading was spending.
+            turn_history = list(history)
 
             for tool_round in range(MAX_TOOL_ROUNDS + 1):
+                # The last pass through is the answering round, not another
+                # tool-serving one. The nudge below used to be appended here and
+                # then `continue`d on the final iteration -- which ended the
+                # loop, so it was composed, never sent, and the tool-call payload
+                # it was meant to replace fell through to `_record_turn` as the
+                # agent's answer for the turn.
+                final_round = tool_round == MAX_TOOL_ROUNDS
+                if final_round:
+                    turn_history.append(ChatMessage(
+                        "user",
+                        f"You have used all {MAX_TOOL_ROUNDS} tool rounds for this turn. "
+                        "Answer now with what you have, and say plainly what you could "
+                        "not establish.",
+                    ))
+
                 try:
                     response = await self.router.complete(
                         self._stage_for(agent),
                         CompletionRequest(
-                            messages=history,
+                            messages=turn_history,
                             system="You are a supervised agent. Answer only with the JSON "
                                    "object your brief specifies.",
                             json_schema=packet.schema,
@@ -1465,14 +1495,18 @@ class Supervisor:
                 calls = parse_tool_calls(payload)
                 if not calls:
                     break
-                if tool_round >= MAX_TOOL_ROUNDS:
-                    history.append(ChatMessage(
-                        "user",
-                        f"You have used all {MAX_TOOL_ROUNDS} tool rounds for this turn. "
-                        "Answer now with what you have, and say plainly what you could "
-                        "not establish.",
-                    ))
-                    continue
+                if final_round:
+                    # It was asked plainly for an answer and asked for tools
+                    # instead. Whatever else the payload carries is the best
+                    # account of the turn there is going to be, so it is recorded
+                    # -- but not silently, which is how this looked before.
+                    session.note(
+                        "tool budget spent; the agent asked for tools again after "
+                        "being told to answer, and its answer is recorded as it stands",
+                        actor=agent.id,
+                        tools=[name for name, _ in calls],
+                    )
+                    break
 
                 results = [self.toolbox.call(name, args, agent) for name, args in calls]
                 session.note(
@@ -1481,11 +1515,10 @@ class Supervisor:
                     tools=[name for name, _ in calls],
                     failures=[r.tool for r in results if not r.ok],
                 )
-                history = [
-                    ChatMessage("user", packet.brief),
-                    ChatMessage("assistant", raw_text[:4000]),
-                    ChatMessage("user", render_results(results)),
-                ]
+                turn_history.append(ChatMessage("assistant", raw_text[:TOOL_ECHO_CHARS]))
+                turn_history.append(
+                    ChatMessage("user", render_results(results)[:TOOL_RESULT_CHARS])
+                )
 
             if payload is None:
                 self._set_status(session, agent, AgentStatus.FAILED)
