@@ -65,7 +65,7 @@ each, in the style the history already uses.
 | 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | **done** — `fix/sandbox-and-config-trust` |
 | 8 | Retention and index convergence | 6 | **done** — `fix/retention-and-index-convergence` |
 | 9a | Event-sourcing and resume fidelity | 3 (+1 dup) | **done** — `fix/event-sourcing-and-resume-fidelity` |
-| 9b | Collapse the backend split | 3 | not started |
+| 9b | Collapse the backend split, and the dead paths | 5 | not started |
 | 9c | Split the module | 1 | **not scheduled** — see below |
 
 Release-blocking, on the reading above: **1, 2, 3, 4**. Code execution past the
