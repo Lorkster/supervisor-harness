@@ -118,6 +118,10 @@ class FakeProvider(Provider):
             "restated_goal": "Add rate limiting to the public login endpoint",
             "mode": "execute",
             "shared_context": "Python service, pytest suite, auth code under src/auth.",
+            # Wide enough for the task this synthesis then proposes, so the
+            # happy path exercises establishment and attenuation without being
+            # a test of clamping. The clamping cases set their own.
+            "envelope_paths": ["src/**", "tests/**"],
             "lenses": [
                 {
                     "role": "security",

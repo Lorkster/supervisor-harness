@@ -381,6 +381,22 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def _render_globs(patterns: list[str]) -> str:
+    """A scope pattern list as the CLI should say it out loud.
+
+    ``[]`` and ``["<nothing>"]`` are opposites that both read as punctuation,
+    so both are spelled out; anything else is shown verbatim, because a fence
+    the user cannot read back is one they cannot check.
+    """
+    from .core.paths import NOTHING
+
+    if not patterns:
+        return "the whole workspace"
+    if list(patterns) == [NOTHING]:
+        return "no path at all"
+    return ", ".join(patterns)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     sup = _supervisor(args)
     run_id = args.run_id or sup.store.latest_run_id()
@@ -397,6 +413,15 @@ def cmd_status(args: argparse.Namespace) -> int:
           f"backend={status['backend']}")
     print(f"  {status['prompt']}")
     print(f"  updated {status['updated_at']}")
+
+    envelope = status.get("envelope")
+    if envelope is None:
+        print("  envelope: none established (bounded only by the unconditional floor)")
+    else:
+        print(f"  envelope [{envelope['source']}]: may modify "
+              f"{_render_globs(envelope['paths'])}")
+        if envelope["forbidden_paths"]:
+            print(f"            never: {_render_globs(envelope['forbidden_paths'])}")
 
     if status["agents"]:
         print("\n  agents")

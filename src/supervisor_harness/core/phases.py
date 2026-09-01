@@ -102,7 +102,13 @@ def planning_prompt(state: RunState, registry: AgentRegistry, lenses: list[Role]
         "for analysis ('report') or for work to be done ('execute').\n\n"
         "You may drop a lens that genuinely does not apply, and you may add one from the "
         "available list if the pre-selection missed something material. Do not add "
-        "lenses speculatively -- each one costs a parallel agent."
+        "lenses speculatively -- each one costs a parallel agent.\n\n"
+        "Finally, draw the run's envelope: every path this whole run may modify. "
+        "It bounds every agent and every task that follows, including work nobody "
+        "has proposed yet, so draw it around the change the task implies rather "
+        "than around any one lens -- and remember that a change usually has tests. "
+        "Nothing later in the run can widen it, and the harness narrows it further "
+        "to the workspace's own configured envelope if you exceed that."
     )
     available = ", ".join(sorted(ROLES_BY_ID))
     preselected = "\n".join(
@@ -617,7 +623,18 @@ def build_verification_agent(
         title=f"Verify: {task.title}",
         brief=role.charter,
         objectives=[f"Prove or disprove: {c.statement}" for c in task.mandatory_criteria],
-        scope=Scope(out_of_scope=list(role.out_of_scope)),
+        # The task's own paths, not an empty scope. An empty one reads as "the
+        # whole workspace" to the toolbox, which made the verifier the least
+        # fenced agent in the run -- free to write anywhere outside the floor,
+        # and free of the executable allow-list a scoped agent is held to, while
+        # judging an agent that was fenced. Attenuation at spawn would narrow
+        # this anyway; it is written here so the brief the verifier reads says
+        # the same thing the fence enforces.
+        scope=Scope(
+            paths=list(task.scope.paths),
+            forbidden_paths=list(task.scope.forbidden_paths),
+            out_of_scope=list(role.out_of_scope),
+        ),
         binding=config.binding_for("verification"),
         backend=state.backend,
         # One turn, because one is what the code allows: `_report_verification`

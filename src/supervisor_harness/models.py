@@ -240,6 +240,28 @@ class Scope:
 
 
 @dataclass
+class ScopeEnvelope:
+    """The ceiling on every scope in one run: what the run itself may touch.
+
+    A :class:`Scope` is a fence around one agent, and the harness enforces one
+    immaculately once it exists. Nothing used to constrain where one came from:
+    each was supplied independently by a model, per lens and per task, and no
+    two were ever compared. The envelope is the run's own grant, fixed before
+    any task is proposed, and no agent in the run can be given authority it
+    does not contain.
+
+    ``paths`` empty means the whole workspace, the meaning the toolbox already
+    gives an empty scope -- minus the unconditional floor, which no envelope
+    can widen either. ``source`` records how it came to say what it says, so a
+    finished run can be asked what it was entitled to touch and why.
+    """
+
+    paths: list[str] = field(default_factory=list)
+    forbidden_paths: list[str] = field(default_factory=list)
+    source: str = ""
+
+
+@dataclass
 class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
@@ -285,6 +307,11 @@ class AgentSpec:
     # needs a verifier of its own; without this the first attempt's verifier
     # matches forever and the second attempt is never independently checked.
     attempt: int = 0
+    # The agent whose authority this one is drawn from, where there is one. A
+    # verifier is the case that exists today: it judges an execution agent's
+    # work, and may not be handed a wider fence than the agent it is judging.
+    # Read only as a ceiling -- an agent is never dispatched because of it.
+    parent_agent_id: str = ""
     depends_on: list[str] = field(default_factory=list)
     status: AgentStatus = AgentStatus.PENDING
     created_at: str = field(default_factory=now_iso)
@@ -588,6 +615,13 @@ class RunState:
     # Subagent types the host said it can spawn, captured at start so later
     # phases can still match roles to them without the host re-declaring.
     host_agents: list[dict[str, Any]] = field(default_factory=list)
+
+    # What this run may touch at all. ``None`` means no envelope was ever
+    # established -- a run recorded before this existed -- which is not the
+    # same fact as an envelope that names the whole workspace, and is kept
+    # distinguishable so a resumed old run is not reported as having been
+    # granted something nobody granted it.
+    envelope: ScopeEnvelope | None = None
 
     agents: dict[str, AgentSpec] = field(default_factory=dict)
     # The brief each agent was actually given. Persisted because drift is

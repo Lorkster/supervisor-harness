@@ -730,3 +730,153 @@ given, the turns before it, the inbox it carried, the drift assessment and its
 signals, the directive chosen and its rationale, and — since 9b — any question
 answered from the run's record. All of it is already in `RunState`. No new
 events, no design risk, no model call.
+
+---
+
+# Scope provenance: the run envelope — done
+
+Landed on `feat/scope-envelope-and-attenuation`. The section above chose this
+over the decision journal; this records what it turned out to be.
+
+## What the reading got right, and the one thing it missed
+
+Every claim in the assessment above verified. `RunState` had no scope field
+(`models.py`), `_spawn` related no child scope to a spawner's, nothing anywhere
+compared one scope to a wider one — `core/paths.py` matched a *path* against a
+pattern and stopped there — and both scope sources were models: `phases.py:158`
+for a lens, `phases.py:591` for a task.
+
+One thing the assessment did not name, found while verifying it.
+`build_verification_agent` gave every verifier `Scope(out_of_scope=…)` with
+**empty `paths`**, and `core/tools.py` reads an empty `paths` as "the whole
+workspace". The verifier was therefore the *least* fenced agent in every run:
+free to write anywhere outside the batch-1 floor, and exempt from the executable
+allow-list a scoped agent is held to — while judging an agent that was fenced. It
+now carries the task's own paths.
+
+## The shape of it
+
+**The envelope is established twice, and narrows.** `Supervisor.start` emits
+`ENVELOPE_SET` from `policy.scope_envelope` before any model has been asked
+anything; `_apply_plan` emits a second one, beside the `RUN_MODE_SET` it already
+emitted, carrying the intersection with what the plan proposed. Two events rather
+than one so the log carries the provenance and not just the answer, and so an
+envelope exists on every path out of `start` — including the one where planning
+is abandoned and the derived lens plan runs instead.
+
+`policy.scope_envelope` is deliberately **not** in `PROTECTED_SETTINGS`. The
+default is already the widest an envelope can be, so a workspace file can only
+narrow it, and a workspace narrowing what the harness may touch inside it is the
+direction batch 7's rule permits.
+
+**Attenuation is in `_spawn`, not in the four builders.** Every agent in a run
+passes through that one method, so a builder that forgets is a builder that
+*proposes* too much rather than one that *grants* too much. The ceilings are the
+run envelope, the task's scope when the agent works on a task, and the spawning
+agent's scope where `AgentSpec.parent_agent_id` names one — which today is the
+verifier, pointed at the executor whose work it judges. A narrowing is never a
+refusal, and is always a note on the log naming which ceiling bit.
+
+A task's scope is *also* clamped where it is proposed, so the scope the user
+reads at approval is the scope that will be enforced, and the narrowing arrives
+in the `task_notes` the approval response already carries.
+
+**`RunState.envelope` is `ScopeEnvelope | None`.** `None` means no envelope was
+ever established — a run recorded before this existed — which is a different fact
+from an envelope naming the whole workspace, and is reported as one.
+`supervisor status` prints all three states.
+
+## The sentinel, which is the part most likely to be got wrong later
+
+An empty pattern list means "the whole workspace" everywhere downstream. So an
+intersection that comes out empty **cannot** be written `[]`: that would widen
+the scope it was computed to narrow, and a task proposed entirely outside the
+envelope would become the least fenced agent in the run. `narrow_globs` returns
+`[paths.NOTHING]` instead, and `path_matches` refuses that value explicitly
+rather than leaving it to `fnmatch` — so a file genuinely named `<nothing>` does
+not match the pattern that exists to match nothing.
+
+## The honest limits of `pattern_within`
+
+Sound, not complete. `True` is a proof; `False` means "not provably contained",
+which is the safe direction because every caller narrows on `False`. It decides
+three cases — a concrete path (exactly, via `path_matches`), identity, and a
+literal prefix lying under a directory pattern's base on a path boundary — and
+refuses two: containment needing wildcard compared against wildcard
+(`src/auth/*.py` inside `src/**/*.py` holds, and it says no), and containment in
+a *union* rather than in one member (`src/*` inside `{src/a*, src/b*}` depends on
+what is on disk, and a fence that changes meaning when a directory is created is
+not a fence).
+
+`*` and `**` are named as universal. Without that, an envelope written the
+natural way — `["**"]` — would have contained nothing at all, because neither
+pattern has a directory base to reason about.
+
+## Whether the user's approval may widen the envelope — no
+
+Both answers were defensible. The recorded one, with the argument, is in
+`core/envelope.py`'s module docstring; in short:
+
+A `scope_paths` modification at approval is clamped like any other scope and the
+clamp is recorded. A per-task approval is a decision about *that task*, and if it
+could move a run-level bound then the bound would only ever be as strong as the
+most permissive task anyone approved — which is not a bound. It would also be
+invisible: the envelope would have to be reconstructed afterwards from the union
+of every per-task edit, which is the "authority that was never recorded cannot be
+audited" problem the envelope exists to close.
+
+The cost is real and is not hidden. If the plan draws the envelope too narrowly,
+every task is clamped and the user cannot widen it from the approval prompt; what
+they can do is start the run with a wider envelope, which is visible from the
+beginning and applies to everything. The rejected alternative — a distinct
+`widen_envelope` act at approval — buys back a restart at the price of making the
+run's grant something that changes shape midway through the run.
+
+## Verification
+
+30 new tests in `tests/test_scope_envelope.py`; 249 pass in total.
+
+A module that did not previously exist makes "fails against the previous commit"
+cheap and nearly meaningless — the whole file fails to import, which says nothing
+about any individual test. So each mechanism was instead put back the way it was,
+one at a time, and the tests were checked for noticing:
+
+| mechanism disabled | test that went red |
+|---|---|
+| attenuation in `_spawn` | `…analysis_lens_scoped_outside_the_envelope_is_narrowed_at_spawn` |
+| verifier scope left empty | *(none alone — see below)* |
+| clamp when a task is proposed | `…task_proposed_outside_the_envelope_runs_against_the_intersection` |
+| clamp on an approval modification | `test_approval_cannot_widen_the_envelope` |
+| plan allowed to widen configuration | `…configuration_bounds_the_run_even_when_the_plan_asks_for_more` |
+| `ENVELOPE_SET` not folded | seven, including both resume tests |
+| envelope absent from `status` | `test_status_reports_the_envelope` |
+| `NOTHING` left to `fnmatch` | `…empty_intersection_is_written_as_nothing_not_as_empty` |
+| empty intersection spelled `[]` | the same |
+
+The verifier row is the interesting one. Two mechanisms hold that property now —
+the builder copies the task's paths, and attenuation would narrow an empty scope
+to the same ceiling — so the test goes red only when *both* are removed, which
+was confirmed. That is defence in depth working rather than a vacuous test, and
+the test's docstring says so.
+
+Three tests are marked in their docstrings as **guards rather than proofs**: the
+two that pin containment the predicate declines to decide, and the one that
+asserts which patterns survive a narrowing. Those pin today's decision procedure,
+not a necessary answer — a sharper `pattern_within` would correctly make them
+fail, and should.
+
+Ruff was diffed against `main` by rule and file, not by total: 58 findings before
+and 58 after, with no new pair. Two were introduced and fixed on the way
+(`UP037` in `core/envelope.py`, `I001` from the new import in
+`core/supervisor.py`).
+
+## Not done, deliberately
+
+- **No time bound on a scope.** The assessment above named it alongside the
+  envelope. It is a different mechanism — an envelope is about extent, a bound is
+  about duration — and nothing in the harness currently expires anything.
+- **`core/supervisor.py` is still one module** (9c), now a little over 2200
+  lines. Attenuation added one method and two helpers to it rather than being
+  spread across the four agent builders, which is the right trade for a fence but
+  does make the module larger.
+- **The open half of `fnd_01M130P3E5SCF8`** is untouched.
