@@ -65,7 +65,7 @@ each, in the style the history already uses.
 | 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | **done** — `fix/sandbox-and-config-trust` |
 | 8 | Retention and index convergence | 6 | **done** — `fix/retention-and-index-convergence` |
 | 9a | Event-sourcing and resume fidelity | 3 (+1 dup) | **done** — `fix/event-sourcing-and-resume-fidelity` |
-| 9b | Collapse the backend split, and the dead paths | 5 | not started |
+| 9b | Collapse the backend split, and the dead paths | 5 | **done** — same branch |
 | 9c | Split the module | 1 | **not scheduled** — see below |
 
 Release-blocking, on the reading above: **1, 2, 3, 4**. Code execution past the
@@ -531,13 +531,43 @@ serialise on it. Moving the emit to a thread does *not* fix that: the
 offloading trades a latency problem for a data race on `RunState`. Closing it
 means giving the session its own lock — a design change, not a fix.
 
-### 9b · Collapse the backend split
+### 9b · Collapse the backend split, and the dead paths — done
 
-`fnd_01M130M6QPAW1S`, `fnd_01M13MPPWMJRWX`, `fnd_01M13MPPWM98M1`, plus the dead
-paths `fnd_01M130M6QP8NP2` and `fnd_01M13MPPWMT7T3`. These are decisions rather
-than defects: whether `_delegated` should key on backend rather than routing, and
-whether `Blackboard.supervisor_inbox` / `DirectiveKind.ANSWER` should be wired or
-deleted. Take the decision first; the edit is small either way.
+`fnd_01M130M6QPAW1S`, `fnd_01M13MPPWMJRWX`, `fnd_01M13MPPWM98M1`,
+`fnd_01M130M6QP8NP2`, `fnd_01M13MPPWMT7T3`. Decisions rather than defects, and
+the decisions taken were:
+
+**`_delegated` keying on routing is correct; the docstring was wrong.** `run`
+refuses an autonomous run with any stage routed to the host, so routing and
+backend cannot disagree that way; in the other direction they legitimately do — a
+host-backend run routing `drift` to a model provider is supported, and there the
+right question is the one the code asks. Drift escalation is a property of the
+*stage's routing*; tool use, wall-clock budgets and failure capture are
+properties of the *backend*. The docstring called both the latter. Corrected;
+code untouched.
+
+**The six inline backend branches stay.** No defect, and no third backend to
+survive. If the module is ever split (9c) this is part of that — a symptom of the
+file's size, not a problem of its own.
+
+**An agent can now ask the supervisor.** `Blackboard.route` always accepted a
+message addressed to the supervisor and stored it, and nothing read it;
+`status_after` already mapped ANSWER to RUNNING, so the design anticipated this
+and only the connection was missing. `answer_from_record` answers from the run's
+own record — brief, scope, definition of done, established facts, peers'
+findings — and says plainly when the record does not cover a question rather than
+inventing one. No model call: the supervisor is authoritative about the run and
+ignorant about the world, and this keeps it judging rather than analysing. An
+answer never displaces a correction; it changes the directive's kind only when
+the assessment said CONTINUE.
+
+`Blackboard`'s unused instance state is removed. 219 tests pass, 6/6 under
+parallel load.
+
+**Worth knowing:** the first version of the wiring shipped a `NameError` — a
+`SUPERVISOR` constant used and never imported — and the full suite passed anyway,
+because nothing exercised the new path yet. Ruff's `F821` caught it. New code
+whose tests come after it is code with no tests.
 
 ### 9c · Split the module — not scheduled
 
