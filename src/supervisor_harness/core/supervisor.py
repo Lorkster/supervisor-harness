@@ -83,6 +83,7 @@ from ..models import (
     DoDCriterion,
     DriftAssessment,
     ExecutionTask,
+    Lesson,
     Phase,
     RunMode,
     RunState,
@@ -2083,8 +2084,7 @@ class Supervisor:
             brief = build_analysis_brief(
                 state, agent, ROLES_BY_ID.get(agent.role), peers, schema,
                 shared_context=render_context(state.shared_context, state.facts),
-                lessons=self.store.lessons_for([agent.role], self.config.policy.max_lessons_in_brief)
-                if self.config.policy.apply_lessons else [],
+                lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
                 tools=tools,
             )
         elif agent.kind is AgentKind.EXECUTION:
@@ -2099,8 +2099,7 @@ class Supervisor:
                 state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
                 ROLES_BY_ID.get(agent.role), peers, schema,
                 shared_context=render_context(state.shared_context, state.facts),
-                lessons=self.store.lessons_for([agent.role], self.config.policy.max_lessons_in_brief)
-                if self.config.policy.apply_lessons else [],
+                lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
                 supporting_findings=findings,
                 tools=tools,
             )
@@ -2173,6 +2172,25 @@ class Supervisor:
         )
         session.emit(EventType.AGENT_DISPATCHED, {"agent_id": agent.id, "kind": packet.kind})
         return packet
+
+    def _lessons_for(self, agent: AgentSpec) -> list[Lesson]:
+        """The lessons this agent's brief should carry.
+
+        Both keyword arguments were previously left at their defaults by every
+        caller, which meant two behaviours existed and never ran: `lessons_for`
+        ranks a lesson learned in this workspace above one borrowed from another
+        at equal strength, and it drops lessons past an age cap that
+        `policy.lesson_max_age_days` is supposed to set. A workspace configuring
+        that cap changed nothing, and borrowed experience sorted level with
+        local. Passing both here is the whole fix.
+        """
+        policy = self.config.policy
+        return self.store.lessons_for(
+            [agent.role],
+            policy.max_lessons_in_brief,
+            workspace=str(self.workspace),
+            max_age_days=policy.lesson_max_age_days,
+        )
 
     def _schema_for(self, agent: AgentSpec) -> dict[str, Any]:
         return {

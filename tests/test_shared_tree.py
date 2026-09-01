@@ -30,7 +30,7 @@ from supervisor_harness.agents.roles import ROLES_BY_ID
 from supervisor_harness.config import Policy
 from supervisor_harness.core.baseline import BASELINE_FACT, git_baseline
 from supervisor_harness.core.supervisor import Supervisor
-from supervisor_harness.core.tools import Toolbox
+from supervisor_harness.core.tools import Toolbox, tree_wide_git
 from supervisor_harness.models import (
     AgentKind,
     AgentSpec,
@@ -82,10 +82,16 @@ def _repo(path: Path) -> str:
 def test_no_agent_may_change_the_shared_trees_git_state(tmp_path: Path) -> None:
     """Refused for the fenced agent and the unfenced one alike.
 
-    Every other refusal in the toolbox is about a path, and so applies only to
-    an agent that has a scope to violate. This one is about the tree being
-    shared, which is equally true of an agent with no scope at all -- and it is
-    an unscoped agent that has nothing else standing in its way.
+    This rule is about the tree being shared, not about any agent's scope, so it
+    holds for an agent that declared none.
+
+    It used to be provable through ``run_command`` by using an unscoped agent,
+    which had nothing else standing in its way. Now that the executable
+    allow-list is universal, ``git`` is refused to *every* agent before this
+    rule is consulted, so the end-to-end call can only show the command was
+    refused -- not which rule refused it. The rule itself is therefore asserted
+    directly. That is the honest shape: it is a second lock now, kept so that
+    loosening the allow-list later cannot silently reopen the shared tree.
     """
     box = Toolbox(tmp_path, Policy(allow_command_execution=True))
     scoped = AgentSpec(
@@ -98,11 +104,10 @@ def test_no_agent_may_change_the_shared_trees_git_state(tmp_path: Path) -> None:
             result = box.call("run_command", {"command": command}, agent)
             assert not result.ok, command
             assert "exit=" not in result.output, command
-        # The scoped agent is also refused by the executable allow-list, so only
-        # the unscoped one proves this rule is what stopped it.
-        assert "working tree" in box.call(
-            "run_command", {"command": command}, unscoped
-        ).output, command
+        # The second lock, asserted where it can still be seen on its own.
+        refusal = tree_wide_git(command)
+        assert refusal is not None, command
+        assert "working tree" in refusal, command
 
 
 @needs_git
@@ -121,15 +126,31 @@ def test_a_refused_stash_leaves_a_peers_uncommitted_work_alone(tmp_path: Path) -
 
 @needs_git
 def test_reading_git_state_is_not_what_this_rule_refuses(tmp_path: Path) -> None:
-    """``git status`` and ``git diff`` inspect; they do not change the tree."""
+    """``git status`` and ``git diff`` inspect; they do not change the tree.
+
+    The distinction still holds where it is made -- ``tree_wide_git`` passes a
+    read straight through -- but no agent can reach one any more, because the
+    executable allow-list refuses ``git`` outright and is now universal. That is
+    a real cost of making the fence universal, and it is recorded here rather
+    than left for someone to discover: an agent cannot see its own diff.
+
+    It is the price of the allow-list rather than an oversight. ``git`` cannot
+    be narrowed to its read-only subcommands by name, because
+    ``git -c alias.s='!sh -c ...' s`` runs anything at all, so admitting
+    ``git status`` means fencing git's flags too. Nothing in the harness
+    consumes a diff: a turn's ``files_touched`` is the agent's own report.
+    """
     _repo(tmp_path)
     box = Toolbox(tmp_path, Policy(allow_command_execution=True))
     unscoped = AgentSpec(id="c", kind=AgentKind.EXECUTION, scope=Scope())
 
     for command in ("git status --porcelain", "git diff", "git log --oneline -1"):
+        # The shared-tree rule does not object to a read.
+        assert tree_wide_git(command) is None, command
+        # The allow-list does, for every agent, scoped or not.
         result = box.call("run_command", {"command": command}, unscoped)
-        assert "working tree" not in result.output, command
-        assert "exit=0" in result.output, command
+        assert not result.ok, command
+        assert "may not run 'git'" in result.output, command
 
 
 # --------------------------------------------------------------------------

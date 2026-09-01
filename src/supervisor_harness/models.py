@@ -570,6 +570,12 @@ class Lesson:
     # is what makes that auditable and lets the reader weight local experience
     # above borrowed experience.
     workspace: str = ""
+    # The other workspaces the same lesson was learned in. ``workspace`` records
+    # where it was learned *first*; without this, a lesson that recurs in three
+    # projects still reads as belonging to whichever one got there first, and a
+    # reader weighting local experience above borrowed experience weights it
+    # wrongly in the other two.
+    also_seen_in: list[str] = field(default_factory=list)
     category: LessonCategory = LessonCategory.PROCESS
     trigger: str = ""        # what was observed
     statement: str = ""      # the lesson itself
@@ -580,6 +586,26 @@ class Lesson:
     occurrences: int = 1
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
+
+    def learned_in(self, workspace: str) -> bool:
+        """Whether this lesson was learned in ``workspace``, first or since."""
+        if not workspace:
+            return False
+        return workspace == self.workspace or workspace in self.also_seen_in
+
+    def origin_label(self, workspace: str = "") -> str:
+        """Where this came from, in the words a brief should use.
+
+        Named by the workspace's own directory, not its full path: a brief is
+        model input, and the absolute layout of someone's disk is not something
+        to put there.
+        """
+        if self.learned_in(workspace):
+            return "here"
+        if not self.workspace:
+            return "an earlier run"
+        name = self.workspace.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        return name or "another project"
 
 
 @dataclass

@@ -373,6 +373,12 @@ class RunStore:
                     prior.occurrences = min(max_occurrences, prior.occurrences + 1)
                     prior.confidence = min(1.0, max(prior.confidence, lesson.confidence) + 0.05)
                     prior.updated_at = now_iso()
+                    # Keep the second origin. The merge used to drop it, so a
+                    # lesson learned independently in three projects was still
+                    # attributed to whichever one recorded it first -- and every
+                    # other project then read its own experience as borrowed.
+                    if lesson.workspace and not prior.learned_in(lesson.workspace):
+                        prior.also_seen_in.append(lesson.workspace)
                     self._rewrite_lessons(existing)
                     return prior
             self._rewrite_lessons([*existing, lesson])
@@ -421,6 +427,10 @@ class RunStore:
         lesson learned *here* outranks one borrowed from another project at the
         same strength, so local experience leads and borrowed experience fills in
         behind it.
+
+        "Here" means learned here at any point, not first: a lesson this
+        workspace re-learned is this workspace's experience, whoever recorded it
+        first. The brief says which of the two each one is.
         """
         wanted = {t.lower() for t in targets} | {"*", "supervisor"}
         hits = [
@@ -430,7 +440,7 @@ class RunStore:
         ]
         here = str(workspace or "")
         hits.sort(
-            key=lambda le: (bool(here) and le.workspace == here, le.occurrences, le.confidence),
+            key=lambda le: (le.learned_in(here), le.occurrences, le.confidence),
             reverse=True,
         )
         return hits[:limit]

@@ -120,13 +120,19 @@ sets your defaults, and each project's own `supervisor.config.json` still tunes
 policy and routing on top of it — within the trust boundary described under
 [Which config files are trusted](#which-config-files-are-trusted).
 
-Two limits worth knowing before you rely on it. **A run is anchored to one
+One limit worth knowing before you rely on it. **A run is anchored to one
 workspace root**: scope globs, the tool fence and the baseline commit every
 criterion is measured against are all relative to it, so work spanning several
-repositories is several runs, not one. And under a shared `SUPERVISOR_HOME`,
-`lessons.jsonl` is rewritten without a lock, so two runs in different projects
-finishing at the same moment can lose a lesson between them. Per-project stores
-never share that file.
+repositories is several runs, not one.
+
+Under a shared `SUPERVISOR_HOME` the lessons library is shared too, which is the
+point of it — a lesson learned in one project is worth having in the next. Each
+lesson records where it was learned, and where it has since been relearned;
+briefs say so (`learned here` / `learned in <project>`) and tell the agent that
+a borrowed lesson is evidence rather than a rule. Lessons learned here outrank
+borrowed ones of equal strength, and `policy.lesson_max_age_days` drops the
+stale. Writers take an advisory lock, so concurrent runs in different projects
+no longer lose a lesson between them.
 
 ---
 
@@ -307,16 +313,30 @@ are additionally confined to the agent's declared scope. Shell execution is
 mode that decision belongs to your host.
 
 Turning it on adds `run_command` for execution agents, and that one is a fence
-rather than a sandbox — worth reading before you enable it. A scoped agent may
+rather than a sandbox — worth reading before you enable it. **Every** agent may
 run only the project's own check runners (`pytest`, `npm`, `make`, …), may not
-use shell metacharacters or globs, may not name a path outside its scope, and
-may not hand a runner its program inline (`python -c`, `node -e`). But a check
-runner still runs whatever the project tells it to: `npm test` runs a line of
-`package.json` and `make` runs the Makefile, either of which can write anywhere.
-It is built to keep a drifting agent inside its scope, not to contain a hostile
-one -- if the workspace's own build scripts are untrusted, run the harness in a
-container. An agent left with no declared scope at all has no fence beyond the
-floor below, and the run envelope is what stops one arising by accident.
+use shell metacharacters or globs, and may not hand a runner its program inline
+(`python -c`, `node -e`). Paths named on the command line must fall inside the
+agent's scope; an agent that declared none is held to the workspace, which is
+what an empty scope already meant to `write_file`.
+
+That last part used to work the other way round. The fence applied only to an
+agent that *had* a scope, on the reasoning that there was nothing to check a
+path against — but three of those four rules are not about paths, and a scope is
+supplied by a model, so "no scope" is a state a model can cause by saying
+nothing. The least specified agent in a run held the widest shell in it.
+
+Making it universal costs `git status`: git is not a check runner, and it cannot
+be narrowed to its read-only subcommands by name, because
+`git -c alias.s='!sh -c …' s` runs anything at all. No agent can see its own diff
+through the harness's shell. Through your host's own tools, in delegated mode,
+it can.
+
+A check runner still runs whatever the project tells it to: `npm test` runs a
+line of `package.json` and `make` runs the Makefile, either of which can write
+anywhere. It is built to keep a drifting agent inside its scope, not to contain
+a hostile one — if the workspace's own build scripts are untrusted, run the
+harness in a container.
 
 **The run envelope.** A scope is enforced well; what used to be missing was any
 bound on where one came from. Every scope in a run was proposed independently by

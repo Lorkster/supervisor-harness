@@ -602,8 +602,12 @@ def cmd_runs(args: argparse.Namespace) -> int:
 
 
 def cmd_lessons(args: argparse.Namespace) -> int:
+    workspace = str(Path(args.workspace).resolve())
     store = RunStore.discover(Path(args.workspace).resolve())
-    lessons = store.lessons_for([args.target], args.limit) if args.target else store.lessons()
+    lessons = (
+        store.lessons_for([args.target], args.limit, workspace=workspace)
+        if args.target else store.lessons()
+    )
     if args.json:
         from .serde import to_jsonable
 
@@ -613,8 +617,10 @@ def cmd_lessons(args: argparse.Namespace) -> int:
         print("No lessons recorded yet. They accumulate as runs complete.")
         return 0
     for lesson in sorted(lessons, key=lambda le: (le.occurrences, le.confidence), reverse=True):
+        origin = lesson.origin_label(workspace)
         print(f"\n[{lesson.category}] -> {lesson.target}  "
-              f"(seen {lesson.occurrences}x, confidence {lesson.confidence:.2f})")
+              f"(seen {lesson.occurrences}x, confidence {lesson.confidence:.2f}, "
+              f"learned {'here' if origin == 'here' else 'in ' + origin})")
         print(f"  {lesson.statement}")
         if lesson.how_to_apply:
             print(f"  apply: {lesson.how_to_apply}")

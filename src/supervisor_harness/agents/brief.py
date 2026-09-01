@@ -79,17 +79,33 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
-def _lessons_block(lessons: list[Lesson]) -> str:
+def _lessons_block(lessons: list[Lesson], workspace: str = "") -> str:
+    """Lessons for the brief, each tagged with where it was learned.
+
+    The library is shared across every workspace the harness has run in, so a
+    lesson reaching this brief may have been drawn from a different project
+    entirely. Untagged, they all read as "this is how things go here", and an
+    agent has no way to tell a local convention from a borrowed one -- which is
+    exactly the judgement it needs to make when the two disagree.
+
+    Named by the origin workspace's own directory rather than its full path: a
+    brief is model input, and someone's disk layout does not belong in it.
+    """
     if not lessons:
         return ""
     lines = []
     for lesson in lessons:
-        lines.append(f"- **{lesson.statement}**")
+        origin = lesson.origin_label(workspace)
+        where = "learned here" if origin == "here" else f"learned in {origin}"
+        lines.append(f"- **{lesson.statement}**  _({where}, seen {lesson.occurrences}x)_")
         if lesson.how_to_apply:
             lines.append(f"  - Apply it by: {lesson.how_to_apply}")
     return (
         "Earlier runs went wrong in these specific ways. Do not repeat them.\n\n"
         + "\n".join(lines)
+        + "\n\nA lesson learned in another project is evidence, not a rule: where it "
+        "conflicts with what you can see in this workspace, this workspace wins, and "
+        "say so in your output."
     )
 
 
@@ -225,7 +241,7 @@ def build_analysis_brief(
         _section("Scope", _scope_block(agent, role)),
         _section("Tools", tools),
         _section("Other agents", _peers_block(peers, agent.id)),
-        _section("Lessons from previous runs", _lessons_block(lessons or [])),
+        _section("Lessons from previous runs", _lessons_block(lessons or [], run.workspace)),
         _section("Rules", _bullets(CORE_RULES)),
         _section("Budget", _budget_block(agent)),
         _section("Output contract", _contract_block(schema)),
@@ -285,7 +301,7 @@ def build_execution_brief(
         _section("Scope", _scope_block(agent, role)),
         _section("Tools", tools),
         _section("Other agents", _peers_block(peers, agent.id)),
-        _section("Lessons from previous runs", _lessons_block(lessons or [])),
+        _section("Lessons from previous runs", _lessons_block(lessons or [], run.workspace)),
         _section(
             "Rules",
             _bullets(
