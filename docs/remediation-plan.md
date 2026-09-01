@@ -62,7 +62,7 @@ each, in the style the history already uses.
 | 5a | Fix the tool-round loop | 2 | not started |
 | 5b | Project turns and notes into RunState | 2 (+1 dup) | **done** — `fix/project-turns-and-notes` |
 | 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | **done** — `fix/verification-turns-and-budget` |
-| 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | not started |
+| 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | **done** — `fix/sandbox-and-config-trust` |
 | 8 | Retention and index convergence | 6 | not started |
 | 9 | Collapse the backend split, then the module | 8 (+2 dup) | not started |
 
@@ -412,6 +412,43 @@ it builds.
 **Done:** the symlink escape is proven refused **on Linux CI** (needs batch 0); a
 workspace config cannot change `providers.*.params`; the artifact traversal
 reproduction fails.
+
+**Landed on `fix/sandbox-and-config-trust`.** `_walk` skips symlinked files and
+resolves the rest to check containment; `params` joins
+`PROTECTED_PROVIDER_KEYS`; the quality bars, checkpoint pass mark and drift
+thresholds join `PROTECTED_SETTINGS`; `_artifact_name` reduces a name to one
+component; the store writes its own `.gitignore` and narrows POSIX permissions;
+`store/redaction.py` filters credential shapes at both emit boundaries. 201 pass
+locally with 2 skipped, 203 on CI where symlinks can be made.
+
+**The symlink findings are now demonstrated, not argued.** They had been open
+against code paths since the original review because the host could not create a
+symlink. A throwaway branch reverted `_walk`'s containment, kept the tests, and
+ran on CI: `search` returned `link.txt:1: SUPERSECRET-canary-value` on **both**
+Linux and Windows runners — GitHub's Windows images have the symlink privilege
+the development machine lacks, so both platforms prove it.
+
+**One test is a guard, not a demonstration**, and the difference was only visible
+because of that experiment: `test_search_does_not_read_through_a_symlinked_
+directory` passes even with the containment reverted, because `rglob` on these
+Python versions does not descend through a directory link, so the file is never
+walked. The `resolve()` check is there because `**` and symlinks changed
+behaviour in 3.13 and the walk should be correct either way.
+
+**The line the config boundary now draws:** a workspace may tune how much work
+the harness does — budgets, parallelism, turn counts, routing — and may not tune
+how sceptical it is about work done on it. A repository shipping a config could
+previously set `require_security_review: false` or `checkpoint_threshold: 0.0`.
+
+**`routing` and `roles` stay settable**, though the finding names them. Both have
+a legitimate per-project use that protecting them would cost, and neither reaches
+credentials or the scrutiny bars. A judgement, recorded rather than implied.
+
+**Redaction is narrow on purpose.** Fixed credential prefixes and `Authorization`
+headers only — no entropy heuristics. This harness is routinely pointed at code
+*about* credential handling, where an aggressive redactor would rewrite the lines
+a finding is about. It is a backstop, not containment, and should not be widened
+into one.
 
 ### 8 · Retention and index convergence
 

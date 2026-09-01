@@ -24,6 +24,7 @@ from ..serde import from_jsonable, to_jsonable
 from .eventlog import EventLog
 from .events import Event, EventType, _apply_contained, fold
 from .index import RunIndex
+from .redaction import redact
 
 HOME_ENV = "SUPERVISOR_HOME"
 DEFAULT_DIRNAME = ".supervisor"
@@ -35,6 +36,22 @@ SNAPSHOT_REPLACE_RETRIES = 10
 SNAPSHOT_REPLACE_BACKOFF = 0.02
 
 
+def _artifact_name(name: str) -> str:
+    """One path component, safe to join onto the artifacts directory.
+
+    Everything but the final component is discarded rather than rejected: a
+    caller asking for ``reports/report.md`` means ``report.md``, and a caller
+    asking for ``../../escaped.md`` means nothing this method should honour.
+    Separators of both kinds are cut, because a Windows path arriving on POSIX
+    is one component to ``PurePosixPath`` and two to the filesystem underneath.
+    """
+    cleaned = str(name).replace("\\", "/").strip().rstrip("/")
+    component = cleaned.rsplit("/", 1)[-1].strip()
+    if not component or component in (".", ".."):
+        raise ValueError(f"not a usable artifact name: {name!r}")
+    return component
+
+
 class RunStore:
     """Filesystem-backed store for every run the harness has executed."""
 
@@ -42,12 +59,48 @@ class RunStore:
         self.root = Path(root)
         self.runs_dir = self.root / "runs"
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+        self._contain()
         self.lessons_path = self.root / "lessons.jsonl"
         self._index: RunIndex | None = None
         #: Why the last snapshot write did not land, or ``None``. Recorded
         #: rather than raised: the snapshot is derived, and the log answers
         #: every question it does.
         self.snapshot_error: str | None = None
+
+    def _contain(self) -> None:
+        """Keep the store out of the repository it is sitting inside.
+
+        The default root is ``.supervisor/`` *in the workspace*, and the
+        workspace is frequently a repository someone else wrote. The store holds
+        the run's prompt, the user's absolute paths and every agent's full
+        output, so committing it by accident publishes all three -- and nothing
+        stopped that: this repository's own ``.gitignore`` lists ``.supervisor/``,
+        but that is this repository, not shipped behaviour.
+
+        A ``.gitignore`` of ``*`` inside the store excludes it from whatever
+        repository contains it, without editing a file the user owns. Written
+        once and never overwritten, so a user who edits it keeps their version.
+
+        Permissions are narrowed on POSIX for the same reason. Windows has no
+        equivalent that ``os.chmod`` can express, so this is one of the places
+        the harness is less protective there; saying so is better than implying
+        otherwise.
+        """
+        marker = self.root / ".gitignore"
+        try:
+            if not marker.exists():
+                marker.write_text(
+                    "# Written by supervisor-harness. This directory holds run\n"
+                    "# prompts, absolute paths and full agent output.\n"
+                    "*\n",
+                    encoding="utf-8",
+                )
+            if os.name == "posix":
+                os.chmod(self.root, 0o700)
+        except OSError:
+            # A read-only or unusual store root is the caller's business; the
+            # run must not fail over the containment of its own scratch space.
+            pass
 
     @classmethod
     def discover(cls, workspace: Path | str | None = None) -> "RunStore":
@@ -232,9 +285,24 @@ class RunStore:
     # -- artifacts ---------------------------------------------------------
 
     def write_artifact(self, run_id: str, name: str, content: str) -> Path:
+        """Write one artifact into this run's directory, and only into it.
+
+        The name was joined straight onto the path. Both call sites pass a
+        literal today -- ``report.md`` and ``reconciliation.md`` -- so nothing
+        exploited it, but the name is the kind of thing a later caller derives
+        from a task title or a model's answer, and
+        ``write_artifact(run, "../../escaped.md", ...)`` wrote outside the run
+        directory. Verified before the fix, which is why this is a check rather
+        than a comment saying the callers are careful.
+        """
         artifacts = self.run_dir(run_id) / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
-        path = artifacts / name
+        path = (artifacts / _artifact_name(name)).resolve()
+        # Belt and braces against a name that survives the first check: on a
+        # case-insensitive or symlinked path, resolve() is the last word on where
+        # the write actually lands.
+        if artifacts.resolve() not in path.parents:
+            raise ValueError(f"artifact name escapes the run directory: {name!r}")
         path.write_text(content, encoding="utf-8")
         return path
 
@@ -322,7 +390,9 @@ class RunSession:
         actor: str = "supervisor",
     ) -> Event:
         """Append an event, apply it to in-memory state, and snapshot."""
-        event = Event(run_id=self.state.id, type=type, actor=actor, payload=payload or {})
+        event = Event(
+            run_id=self.state.id, type=type, actor=actor, payload=redact(payload or {})
+        )
         self._log.append(event)
         self.state = _apply_contained(self.state, event)
         self._pending_index = True
@@ -332,7 +402,7 @@ class RunSession:
     def emit_many(self, events: list[tuple[EventType, dict[str, Any], str]]) -> list[Event]:
         """Append a batch under a single lock acquisition."""
         built = [
-            Event(run_id=self.state.id, type=t, actor=actor, payload=payload or {})
+            Event(run_id=self.state.id, type=t, actor=actor, payload=redact(payload or {}))
             for t, payload, actor in events
         ]
         self._log.append_many(built)

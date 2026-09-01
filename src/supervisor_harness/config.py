@@ -229,14 +229,49 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
 # on and redirect a provider's base_url to an attacker's host, at which point the
 # provider still resolves the real API key from the environment and posts it there.
 
+# The line the second group draws: a workspace file may tune how much work the
+# harness does, and may not tune how sceptical it is. Budgets, parallelism and
+# turn counts are a project's own business. The bars a change is judged against,
+# and the thresholds at which an agent is corrected or stopped, are the
+# supervisor's -- and the workspace is the subject of that judgement. A
+# repository that can set `require_security_review: false`, or
+# `checkpoint_threshold: 0.0`, or `drift_threshold: 1.0`, is marking its own
+# homework: it lowers the bar for work done *on it*, in a file it ships.
 PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     ("home",),
     ("policy", "allow_command_execution"),
+    # Mandatory quality bars.
+    ("policy", "require_tests"),
+    ("policy", "require_security_review"),
+    ("policy", "require_code_quality"),
+    ("policy", "require_negative_test"),
+    ("policy", "require_liveness_review"),
+    ("policy", "min_dod_criteria"),
+    # The checkpoint's own pass mark.
+    ("policy", "checkpoint_threshold"),
+    # Drift control: how far an agent strays before it is corrected or stopped,
+    # and whether a model is asked for a second opinion at all.
+    ("policy", "drift_threshold"),
+    ("policy", "drift_hard_threshold"),
+    ("policy", "model_drift_check"),
 )
 
 # Per-provider keys an untrusted file may not touch, for the same reason.
+#
+# ``params`` is here because of where it ends up rather than what it looks like.
+# ``router._merge`` folds it into ``CompletionRequest.extra``, and the
+# OpenAI-compatible providers finish assembling the request body with
+# ``body.update(request.extra)`` -- *after* ``model`` and ``messages`` have been
+# assigned. A workspace file setting ``providers.x.params.messages`` therefore
+# replaces the conversation every call sends, and ``params.model`` replaces the
+# model answering it. Measured before this changed: ``base_url`` was correctly
+# stripped from a workspace config while ``params`` carrying an attacker's
+# ``model`` and ``messages`` survived intact.
+#
+# The trusted path is unaffected -- a user's own config under their home, or an
+# explicit SUPERVISOR_HOME, still sets sampling parameters through this key.
 PROTECTED_PROVIDER_KEYS: frozenset[str] = frozenset(
-    {"type", "base_url", "api_key", "api_key_env"}
+    {"type", "base_url", "api_key", "api_key_env", "params"}
 )
 
 
@@ -375,14 +410,21 @@ def write_example(path: Path, *, trusted: bool = False) -> Path:
         example["backend"] = "host"
     else:
         example["_note"] = (
-            "Workspace config. It may tune policy, routing and budgets. Provider "
-            "endpoints and credentials (providers.*.base_url / api_key / api_key_env / "
-            "type), policy.allow_command_execution and home are ignored here on "
-            "purpose -- a checked-out repository must not be able to grant shell "
-            "access or redirect where your API key is sent. Put those in "
-            "~/.supervisor/config.json instead."
+            "Workspace config. It may tune how much work the harness does -- "
+            "budgets, parallelism, turn counts, routing. It may not tune how "
+            "sceptical the harness is about work done on this repository, nor "
+            "where your credentials go, so the quality bars, the checkpoint pass "
+            "mark, the drift thresholds, providers.*.base_url / api_key / "
+            "api_key_env / type / params, policy.allow_command_execution and home "
+            "are all ignored here on purpose. Put those in "
+            "~/.supervisor/config.json instead, where you own the file."
         )
-        example["policy"].pop("allow_command_execution", None)
+        # Everything the loader would strip is left out rather than written and
+        # then ignored: a generated file that trips its own trust boundary
+        # teaches the reader that the boundary is noise.
+        for setting in PROTECTED_SETTINGS:
+            if len(setting) == 2 and setting[0] == "policy":
+                example["policy"].pop(setting[1], None)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")

@@ -365,13 +365,38 @@ class Toolbox:
         return candidate
 
     def _walk(self) -> list[Path]:
+        """Every readable file genuinely inside the workspace.
+
+        ``list_files`` and ``search`` take no path from the model, so they were
+        treated as needing no containment check -- their reach is whatever this
+        yields. It yielded more than the workspace. ``is_file()`` follows
+        symlinks, so a link committed to a repository was walked as the file it
+        points at, and ``search`` read that file's contents and printed matching
+        lines. ``read_file`` refuses the identical path through ``_resolve``,
+        which is what made the gap easy to miss: the same file was out of reach
+        by name and in reach by pattern.
+
+        Two checks, because one link is not the only shape. A symlinked *file* is
+        skipped outright -- a link is not the file it points at, and nothing here
+        wants to follow one. A file reached through a symlinked *directory* has
+        no link in its own path, so it is caught by resolving it and asking
+        whether it is still underneath the workspace.
+        """
+        root = self.workspace.resolve()
         out: list[Path] = []
         for path in self.workspace.rglob("*"):
+            if path.is_symlink():
+                continue
             if not path.is_file():
                 continue
             if any(part in SKIP_DIRS for part in path.parts):
                 continue
             if path.suffix.lower() in BINARY_SUFFIXES:
+                continue
+            try:
+                if root not in path.resolve().parents:
+                    continue
+            except OSError:
                 continue
             out.append(path)
         return out
