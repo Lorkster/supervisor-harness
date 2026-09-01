@@ -230,6 +230,21 @@ PLANNING_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "Facts every agent needs: stack, conventions, constraints",
         },
+        "envelope_paths": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Every path this whole run may modify, as workspace-relative globs. "
+                "No agent and no task will be allowed outside it, so draw it around "
+                "the work rather than around one lens. Omit it to leave the run "
+                "bounded by configuration alone."
+            ),
+        },
+        "envelope_forbidden_paths": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Paths no agent in this run may modify, whatever its own scope says",
+        },
         "risks": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["restated_goal", "mode", "lenses"],

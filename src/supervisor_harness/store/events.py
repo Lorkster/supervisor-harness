@@ -30,6 +30,7 @@ from ..models import (
     Report,
     RunMode,
     RunState,
+    ScopeEnvelope,
     Usage,
 )
 from ..serde import from_jsonable, to_jsonable
@@ -40,6 +41,7 @@ class EventType(StrEnum):
     PHASE_CHANGED = "phase_changed"
     HOST_AGENTS_DECLARED = "host_agents_declared"
     RUN_MODE_SET = "run_mode_set"
+    ENVELOPE_SET = "envelope_set"
     CONTEXT_SET = "context_set"
     BRIEF_RENDERED = "brief_rendered"
     AGENT_SPAWNED = "agent_spawned"
@@ -131,6 +133,13 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
 
     elif t is EventType.RUN_MODE_SET:
         state.mode = RunMode(p["mode"])
+
+    elif t is EventType.ENVELOPE_SET:
+        # Replaced rather than merged. The envelope is emitted twice in a
+        # normal run -- once from configuration at creation, once when the plan
+        # narrows it -- and each event carries the whole resulting envelope, so
+        # the fold is the last one and the log is the provenance.
+        state.envelope = from_jsonable(p["envelope"], ScopeEnvelope)
 
     elif t is EventType.CONTEXT_SET:
         if p.get("shared_context") is not None:

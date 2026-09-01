@@ -94,6 +94,16 @@ class Policy:
     allow_command_execution: bool = False
     command_timeout_seconds: int = 300
 
+    # The run's scope envelope: the ceiling on every agent scope in the run.
+    # Empty means the whole workspace, which is what an empty scope already
+    # means to the toolbox and to the floor beneath it. This is deliberately
+    # not in PROTECTED_SETTINGS: the default is already the widest an envelope
+    # can be, so a workspace file can only ever narrow it, and a workspace
+    # narrowing what the harness may touch in it is the direction batch 7's
+    # rule allows. A plan may narrow this further; nothing may widen it.
+    scope_envelope: list[str] = field(default_factory=list)
+    scope_envelope_forbidden: list[str] = field(default_factory=list)
+
     # Analysis
     min_analysis_lenses: int = 2
     max_analysis_lenses: int = 6

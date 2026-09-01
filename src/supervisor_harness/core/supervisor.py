@@ -87,6 +87,7 @@ from ..models import (
     RunMode,
     RunState,
     Scope,
+    ScopeEnvelope,
     TaskDecision,
     TaskStatus,
     Usage,
@@ -108,6 +109,7 @@ from .drift import (
     should_escalate,
     status_after,
 )
+from .envelope import Ceiling, attenuate, effective, establish, render
 from .tools import Toolbox, render_results, render_tools_section
 
 # Stage agents are ordinary agents so that planning, synthesis, the checkpoint
@@ -246,6 +248,13 @@ class Supervisor:
         if baseline:
             session.emit(EventType.CONTEXT_SET, {"facts": {BASELINE_FACT: baseline}})
 
+        # The run's grant, before any model has been asked anything. It is
+        # recorded here rather than only at planning so that it exists for
+        # every path out of this method -- including the ones where planning is
+        # abandoned and the derived lens plan runs instead. The plan narrows it
+        # afterwards; nothing widens it.
+        self._set_envelope(session, self._configured_envelope(), source="configuration")
+
         return await self._advance(session)
 
     async def advance(self, run_id: str, host_agents: list[dict[str, Any]] | None = None) -> SupervisorResponse:
@@ -337,6 +346,10 @@ class Supervisor:
                 }
                 for a in state.agents.values()
             ],
+            # What the run itself was entitled to touch. ``None`` where no
+            # envelope was ever established, which is a different fact from an
+            # envelope naming the whole workspace and is reported as one.
+            "envelope": to_jsonable(state.envelope) if state.envelope else None,
             "findings": len(state.findings),
             "tasks": [
                 {
@@ -503,6 +516,18 @@ class Supervisor:
         if state.mode is RunMode.AUTO and mode is not RunMode.AUTO:
             session.emit(EventType.RUN_MODE_SET, {"mode": str(mode)})
 
+        # The plan may narrow what the run may touch, and only narrow it. This
+        # sits beside the mode because it is the same kind of fact: the shape of
+        # the run, fixed once, before any task exists to argue about.
+        envelope, refusals = establish(
+            self._configured_envelope(),
+            [str(x) for x in (plan.get("envelope_paths") or [])],
+            [str(x) for x in (plan.get("envelope_forbidden_paths") or [])],
+        )
+        for text in refusals:
+            session.note(text)
+        self._set_envelope(session, envelope, source="run plan")
+
         # A fleet already running is the answer to this question, whoever asked
         # it. The plan can arrive after the derived fallback fleet has been
         # spawned -- planning abandoned, then reported late -- and adding the
@@ -629,7 +654,16 @@ class Supervisor:
         for extra in (dep_notes, ref_notes):
             for task_id, entries in extra.items():
                 notes.setdefault(task_id, []).extend(entries)
+        # Before the tasks are shown to anyone: a proposed scope wider than the
+        # run's envelope is narrowed to the intersection, not refused. A model
+        # proposing too much is ordinary; losing the task over it is not. The
+        # narrowing is recorded against the task, which is what puts it in front
+        # of the user at approval alongside the definition of done.
         for task in tasks:
+            task.scope, clamped = attenuate(
+                task.scope, [Ceiling.of("run envelope", effective(state.envelope))]
+            )
+            notes.setdefault(task.id, []).extend(clamped)
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
                                                    "notes": notes.get(task.id, [])})
         session.emit(EventType.NOTE, {"text": "tasks proposed", "notes": notes})
@@ -655,6 +689,7 @@ class Supervisor:
             ),
             tasks=[self._task_view(t) for t in proposed],
             task_notes=notes,
+            detail={"envelope": to_jsonable(effective(state.envelope))},
         )
 
     # -- execution -----------------------------------------------------
@@ -731,7 +766,18 @@ class Supervisor:
                        and a.attempt == task.attempts
                        for a in state.agents.values()):
                     continue
-                fresh.append(phases.build_verification_agent(state, task, self.config, registry))
+                verifier = phases.build_verification_agent(state, task, self.config, registry)
+                # The agent whose work this verifier judges, so attenuation can
+                # hold the verifier to no more than the executor was given.
+                executor = next(
+                    (a for a in state.agents.values()
+                     if a.task_id == task.id and a.kind is AgentKind.EXECUTION
+                     and a.attempt == task.attempts),
+                    None,
+                )
+                if executor is not None:
+                    verifier.parent_agent_id = executor.id
+                fresh.append(verifier)
             if fresh:
                 self._spawn(session, fresh)
                 active = fresh
@@ -1474,7 +1520,8 @@ class Supervisor:
             if task is None:
                 continue
             for text in _apply_modifications(
-                task, decision.modifications, self.config.policy, self.workspace
+                task, decision.modifications, self.config.policy, self.workspace,
+                envelope=effective(state.envelope),
             ):
                 session.note(text, task_id=task.id)
             task.decision = decision.decision
@@ -1803,6 +1850,47 @@ class Supervisor:
             return
         session.note(already)
 
+    def _configured_envelope(self) -> ScopeEnvelope:
+        """The envelope the user's configuration grants, before any model speaks."""
+        return ScopeEnvelope(
+            paths=list(self.config.policy.scope_envelope),
+            forbidden_paths=list(self.config.policy.scope_envelope_forbidden),
+            source="configuration",
+        )
+
+    def _set_envelope(
+        self, session: RunSession, envelope: ScopeEnvelope, *, source: str
+    ) -> None:
+        envelope = replace(envelope, source=source)
+        session.emit(EventType.ENVELOPE_SET, {"envelope": to_jsonable(envelope)})
+        session.note(
+            f"run envelope ({source}): may modify {render(envelope.paths)}"
+            + (
+                f"; never {render(envelope.forbidden_paths)}"
+                if envelope.forbidden_paths else ""
+            )
+        )
+
+    def _ceilings(self, state: RunState, spec: AgentSpec) -> list[Ceiling | None]:
+        """Every bound above one agent, outermost first.
+
+        The run's envelope always. The task's scope when the agent exists to
+        work on a task, which is what stops a verifier being fenced more loosely
+        than the work it judges. The spawning agent's scope where one is named,
+        so authority attenuates along the chain rather than being reissued at
+        full strength at each link.
+        """
+        task = state.tasks.get(spec.task_id or "")
+        parent = state.agents.get(spec.parent_agent_id or "")
+        return [
+            Ceiling.of("run envelope", effective(state.envelope)),
+            Ceiling.of("task scope", task.scope if task is not None else None),
+            Ceiling.of(
+                f"scope of `{parent.id}`" if parent is not None else "spawner scope",
+                parent.scope if parent is not None else None,
+            ),
+        ]
+
     def _spawn(self, session: RunSession, specs: list[AgentSpec]) -> list[AgentSpec]:
         """Record each agent on the log, and hand back the state's own objects.
 
@@ -1811,7 +1899,20 @@ class Supervisor:
         so a caller that kept driving the list it had built was driving copies
         that no status change would ever reach. Returning the state's own removes
         the question.
+
+        Attenuation happens here, at the one place every agent in the run passes
+        through, rather than in each of the four builders. A builder that forgets
+        is then a builder that proposes too much, not one that grants too much --
+        which is the difference between a fence with a hole in it and a fence.
         """
+        for spec in specs:
+            narrowed, notes = attenuate(spec.scope, self._ceilings(session.state, spec))
+            if not notes:
+                continue
+            spec.scope = narrowed
+            for text in notes:
+                session.note(text, actor=spec.id, role=spec.role, kind=str(spec.kind))
+
         session.emit_many([
             (EventType.AGENT_SPAWNED, {"agent": to_jsonable(spec)}, "supervisor")
             for spec in specs
@@ -2277,6 +2378,7 @@ def _apply_modifications(
     modifications: dict[str, Any],
     policy: Policy,
     workspace: Path | None = None,
+    envelope: ScopeEnvelope | None = None,
 ) -> list[str]:
     """Apply the user's edits to an approved task.
 
@@ -2286,6 +2388,12 @@ def _apply_modifications(
     replacement therefore passes the same gate a proposed definition of done
     does -- the mandatory bars policy requires are re-applied and weak criteria
     are reported -- and every criterion the edit removed is named.
+
+    A ``scope_paths`` edit is clamped to the run's envelope, and the clamp is
+    reported. Approving a task is a decision about that task; if it could move
+    a run-level bound, the bound would only ever be as strong as the most
+    permissive task anyone approved. The full argument, and the alternative it
+    was chosen over, is in :mod:`supervisor_harness.core.envelope`.
 
     Returns the notes the user should see, for the caller to record on the run.
     """
@@ -2308,7 +2416,11 @@ def _apply_modifications(
                 _, bars = phases.prepare_tasks([task], policy, workspace)
                 notes.extend(bars.get(task.id, []))
         elif key == "scope_paths" and isinstance(value, list):
-            task.scope.paths = [str(v) for v in value]
+            task.scope, clamped = attenuate(
+                replace(task.scope, paths=[str(v) for v in value]),
+                [Ceiling.of("run envelope", envelope)],
+            )
+            notes.extend(clamped)
     return notes
 
 

@@ -314,7 +314,28 @@ runner still runs whatever the project tells it to: `npm test` runs a line of
 `package.json` and `make` runs the Makefile, either of which can write anywhere.
 It is built to keep a drifting agent inside its scope, not to contain a hostile
 one -- if the workspace's own build scripts are untrusted, run the harness in a
-container. An agent with no declared scope has no fence at all.
+container. An agent left with no declared scope at all has no fence beyond the
+floor below, and the run envelope is what stops one arising by accident.
+
+**The run envelope.** A scope is enforced well; what used to be missing was any
+bound on where one came from. Every scope in a run was proposed independently by
+a model -- the planner's for an analysis lens, the synthesis model's for an
+execution task -- and no two were ever compared, so a model could scope a task to
+anywhere in the workspace and approval was per-task with nothing above it.
+
+Each run now has an envelope: the union of what that run may modify, fixed
+before any task exists. `policy.scope_envelope` sets it (empty means the whole
+workspace) and the plan may narrow it further; nothing widens it. Every agent's
+scope is attenuated at spawn to the envelope, to its task's scope, and to its
+spawner's where there is one -- so a verifier cannot be handed a wider fence than
+the work it is judging. A scope that exceeds its ceiling is narrowed to the
+intersection rather than refused, and the narrowing is recorded: on the log, in
+the notes the user reads at approval, and in `supervisor status`.
+
+Approving a task cannot widen the envelope. A `scope_paths` edit at approval is
+clamped like any other scope, because a bound that a per-task decision can move
+is only ever as strong as the most permissive task anyone approved. Widen it by
+starting the run with a wider envelope, which is visible from the beginning.
 
 One refusal applies to every agent, scoped or not, because it is not about a
 path: no command may change the working tree's git state. `git stash`,
