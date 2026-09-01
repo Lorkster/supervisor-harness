@@ -64,7 +64,9 @@ each, in the style the history already uses.
 | 6 | Supervise verification, enforce the whole budget | 2 (+2 dup) | **done** — `fix/verification-turns-and-budget` |
 | 7 | Harden the sandbox and the config trust boundary | 4 (+1 dup) | **done** — `fix/sandbox-and-config-trust` |
 | 8 | Retention and index convergence | 6 | **done** — `fix/retention-and-index-convergence` |
-| 9 | Collapse the backend split, then the module | 9 (+1 dup) | not started |
+| 9a | Event-sourcing and resume fidelity | 3 (+1 dup) | **done** — `fix/event-sourcing-and-resume-fidelity` |
+| 9b | Collapse the backend split | 3 | not started |
+| 9c | Split the module | 1 | **not scheduled** — see below |
 
 Release-blocking, on the reading above: **1, 2, 3, 4**. Code execution past the
 fence, two proven silent data losses, permanent unresumability, and duplicated
@@ -508,7 +510,43 @@ Raised to six writers it catches it in 7 of 10, and still runs in under a second
 It is a good guard, not a proof: a green run of it does not establish the lock is
 there.
 
-### 9 · Collapse the backend split, then the module
+### 9a · Event-sourcing and resume fidelity — done
+
+`fnd_01M130M6QPAMQN` (+ dup `fnd_01M13MPPWMTK0S`), `fnd_01M1309W63ZWYS`,
+`fnd_01M13MPPWMSR5X`; narrows `fnd_01M130P3E5SCF8`.
+
+`_merge_into` makes the fold update tasks and agents in place, so the object a
+caller holds *is* the object in `RunState` and the mutate-then-emit pattern the
+whole module uses stops detaching the two. `_spawn` returns the state's own
+specs. `_check_resume_fidelity` records, once per run, when the resuming process
+is not the one the run started under. `_record_turn` batches a turn into one
+`emit_many`: measured 9 lock acquisitions for a turn carrying eight findings,
+now 1. `RunSession.reload` (no caller) and `_stage_agent`'s unread `**extra` are
+removed. 216 tests pass, 6/6 under parallel load.
+
+**Half of `fnd_01M130P3E5SCF8` stays open, deliberately.** The lock is acquired
+with a spin-sleep from inside the async loop, so parallel autonomous agents
+serialise on it. Moving the emit to a thread does *not* fix that: the
+`RunSession` is shared across the agents `asyncio.gather` runs together, so
+offloading trades a latency problem for a data race on `RunState`. Closing it
+means giving the session its own lock — a design change, not a fix.
+
+### 9b · Collapse the backend split
+
+`fnd_01M130M6QPAW1S`, `fnd_01M13MPPWMJRWX`, `fnd_01M13MPPWM98M1`, plus the dead
+paths `fnd_01M130M6QP8NP2` and `fnd_01M13MPPWMT7T3`. These are decisions rather
+than defects: whether `_delegated` should key on backend rather than routing, and
+whether `Blackboard.supervisor_inbox` / `DirectiveKind.ANSWER` should be wired or
+deleted. Take the decision first; the edit is small either way.
+
+### 9c · Split the module — not scheduled
+
+The module-size half of `fnd_01M1309W6321FP`. `core/supervisor.py` is 2115 lines
+and there is no natural stopping point, so this is left as its own decision
+rather than carried as pending work. Every other batch has already taken what it
+needed from that file; splitting it is a refactor with no defect behind it.
+
+### 9 · Collapse the backend split, then the module (original scope)
 
 `fnd_01M130M6QPAW1S`, `fnd_01M13MPPWMJRWX`, `fnd_01M13MPPWM98M1`,
 `fnd_01M13MPPWMSR5X`, `fnd_01M130M6QP8NP2`, `fnd_01M13MPPWMT7T3`,
