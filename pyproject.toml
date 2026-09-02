@@ -23,7 +23,8 @@ mcp = ["mcp>=1.2"]
 # boto3 and botocore. Nothing imports it unless a provider of type "bedrock" is
 # actually configured -- see providers/bedrock.py.
 bedrock = ["anthropic[bedrock]>=0.40"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "mcp>=1.2", "ruff>=0.6"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "mcp>=1.2",
+       "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
 supervisor = "supervisor_harness.cli:main"
@@ -34,6 +35,39 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 supervisor_harness = ["integrations/*.json", "integrations/*/*.md", "integrations/*/*.mdc"]
+
+# Ruff, configured at last. Until now it ran against its defaults, which is why
+# `tools/ruff_diff.py` gates on *no new* (file, rule) pairs rather than on zero:
+# a gate at zero would have been red on arrival. See docs/quality-assessment.md
+# for how this set was chosen and what it costs to reach zero.
+[tool.ruff]
+line-length = 100          # the code is written to ~96; ruff's default 88 flagged 593 lines
+target-version = "py311"   # matches requires-python
+
+[tool.ruff.lint]
+# Chosen by measurement rather than taste -- the numbers are in the assessment.
+# `S` (bandit) earns its place in a project about constraining what agents may
+# run: it costs 8 findings across `src`, and it makes the `# noqa: S603` and
+# `# noqa: S608` directives already written in this codebase mean something.
+# Deliberately *not* selected:
+#   PLR2004 (magic values)      86 findings, almost all thresholds read from policy
+#   PLC0415 (import not at top) 86 findings, and lazy imports here are deliberate
+#                               -- `providers/bedrock.py` depends on being one
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# `assert` is what a test is made of, and a subprocess in a test is the test.
+"tests/**" = ["S101", "S603", "S607"]
+"tools/**" = ["S603", "S607"]
+
+# The codebase turned out to be almost fully annotated -- 3 errors across 40
+# files when this was first run, all fixed in the same batch -- so unlike ruff
+# this gates at **zero** from the start. `--strict` costs 14 more errors in 8
+# files and is recorded in docs/quality-assessment.md as finding Q-T2.
+[tool.mypy]
+python_version = "3.11"
+files = ["src/supervisor_harness"]
+ignore_missing_imports = true      # mcp, anthropic and boto3 ship partial stubs
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,13 +1,28 @@
 """Fail if this tree has ruff findings the base does not, by rule and by file.
 
-The project has never configured ruff, so 58 findings stand against its
-defaults on `main`. A gate at zero would be red on arrival and tell nobody
-anything, and a gate on the *total* is worse than none: an unchanged count once
-hid six new findings behind six fixed ones in this repository, which is why the
-convention has been to diff by rule and file rather than to compare totals.
+Ruff is configured in `pyproject.toml` (see `docs/quality-assessment.md` for how
+the rule set was chosen), and 88 findings stand against it. A gate at zero would
+be red on arrival and tell nobody anything, and a gate on the *total* is worse
+than none: an unchanged count once hid six new findings behind six fixed ones in
+this repository, which is why the convention has been to diff by rule and file
+rather than to compare totals.
 
 This is that convention, executed rather than remembered. It has been done by
 hand on every pull request since, and by hand it will eventually be skipped.
+
+## Both trees are measured with *this* tree's configuration
+
+Each checkout carries its own `[tool.ruff]`, so running ruff separately in each
+would compare two different rule sets the moment a pull request changed the
+configuration -- reporting every newly-enabled rule as a regression, and, worse,
+reporting nothing at all for a pull request that *disabled* a rule. The base is
+therefore measured with the configuration from the working tree.
+
+That is what the question deserves: "did this change introduce findings" is
+about the change, not about which rules the base happened to enable. A pull
+request that turns a rule on is expected to light up findings, and the right
+place to account for those is its own description -- not a gate that cannot tell
+them from a regression.
 
 Usage:
 
@@ -32,15 +47,20 @@ from pathlib import Path
 Key = tuple[str, str]
 
 
-def ruff_findings(tree: Path) -> collections.Counter[Key]:
+def ruff_findings(tree: Path, config: Path | None = None) -> collections.Counter[Key]:
     """Findings in ``tree``, counted by (path relative to the tree, rule code).
 
     Paths are normalised to forward slashes so a Windows run and a Linux run
     produce comparable keys -- the gate runs on both.
+
+    ``config`` forces a specific ``pyproject.toml``, so the base checkout can be
+    measured with the working tree's rule set rather than its own.
     """
+    command = [sys.executable, "-m", "ruff", "check", ".", "--output-format=json"]
+    if config is not None:
+        command += ["--config", str(config)]
     proc = subprocess.run(
-        [sys.executable, "-m", "ruff", "check", ".", "--output-format=json"],
-        cwd=tree, capture_output=True, text=True, check=False,
+        command, cwd=tree, capture_output=True, text=True, check=False,
     )
     # ruff exits 1 when it finds something, which is the normal case here.
     if proc.returncode not in (0, 1):
@@ -76,7 +96,8 @@ def main() -> int:
             print(f"could not check out {args.base}: {add.stderr.strip()}", file=sys.stderr)
             return 2
         try:
-            base = ruff_findings(worktree)
+            # This tree's configuration, deliberately -- see the module docstring.
+            base = ruff_findings(worktree, config=repo / "pyproject.toml")
         finally:
             subprocess.run(["git", "worktree", "remove", "--force", str(worktree)],
                            cwd=repo, capture_output=True, text=True, check=False)
@@ -89,7 +110,8 @@ def main() -> int:
     for (path, rule), (was, now) in sorted(new.items()):
         print(f"  NEW    {path}:{rule}  {was} -> {now}")
 
-    print(f"\n{sum(base.values())} findings on {args.base}, {sum(here.values())} here.")
+    print(f"\n{sum(base.values())} findings on {args.base}, {sum(here.values())} here "
+          f"(both measured with this tree's ruff configuration).")
     if new:
         print(f"{len(new)} (file, rule) pair(s) got worse. Fix them, or say in the "
               f"pull request why they stand.")

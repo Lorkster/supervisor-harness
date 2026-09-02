@@ -29,7 +29,7 @@ from .models import Backend, RunMode
 try:  # MCP SDK 2.x
     from mcp.server.mcpserver import MCPServer as _Server
 except ModuleNotFoundError:  # pragma: no cover - SDK 1.x fallback
-    from mcp.server.fastmcp import FastMCP as _Server  # type: ignore[no-redef]
+    from mcp.server.fastmcp import FastMCP as _Server  # type: ignore[no-redef,attr-defined]
 
 
 INSTRUCTIONS = """\
