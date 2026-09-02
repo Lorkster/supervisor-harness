@@ -48,6 +48,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from ..ids import age_days, older_than
 from ..models import Scope, ScopeEnvelope
 from .paths import NOTHING, globs_within, narrow_globs
 
@@ -156,6 +157,38 @@ def attenuate(scope: Scope, ceilings: list[Ceiling | None]) -> tuple[Scope, list
             )
 
     return replace(scope, paths=paths, forbidden_paths=forbidden), notes
+
+
+def stale_reason(
+    envelope: ScopeEnvelope | None, created_at: str, max_age_days: int
+) -> str | None:
+    """Why this run's grant is too old to execute against, or ``None``.
+
+    Extent and duration are different mechanisms, and almost everything about
+    duration was already handled: `Budget` bounds an agent's turns, tokens,
+    seconds and tool calls, the abandonment bounds catch a silent host agent,
+    and a phase transition ends the agents of the phase it leaves. What none of
+    them bounds is the *grant* -- a run resumed months later, on the same host
+    and in the same directory, produces no divergence at all today and executes
+    against an envelope the user approved in a context that has since moved on.
+
+    Measured from when the envelope was granted, falling back to the run's own
+    creation time for an envelope recorded before the field existed. An
+    unreadable timestamp is not stale: a bug in date parsing should not be able
+    to block a resume.
+    """
+    if max_age_days <= 0:
+        return None
+    stamp = (envelope.granted_at if envelope else "") or created_at
+    if not older_than(stamp, max_age_days):
+        return None
+    age = age_days(stamp)
+    days = f"{age:.0f}" if age is not None else "?"
+    return (
+        f"this run's scope envelope was granted {days} days ago, past the "
+        f"{max_age_days}-day limit. It still describes {render(envelope.paths if envelope else [])}, "
+        "but the workspace it was drawn against has had that long to change"
+    )
 
 
 def render(patterns: list[str]) -> str:

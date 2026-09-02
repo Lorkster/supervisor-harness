@@ -379,6 +379,20 @@ snapshot does not keep enough: `RunState.drift` is keyed by agent, so it holds
 only each agent's most recent assessment, and an assessment that has been
 overwritten cannot explain the directive it produced.
 
+**A grant has a shelf life.** The envelope records when it was granted, and a
+run resumed more than `policy.envelope_max_age_days` later (7 by default, 0 to
+disable) pauses before it spawns an execution agent and asks you to re-grant it:
+`supervisor approve --renew-envelope`. Analysis and reporting continue freely
+and nothing already established is lost — only writing waits. It is the same
+rule as "nothing touches your code before you approve it", applied to consent
+that has gone stale rather than to consent that was never given. Renewal renews
+the date, never the paths.
+
+Duration is bounded per agent by its budget — turns, tokens, seconds and tool
+calls — rather than by the scope. Putting a clock inside the write fence would
+make the fence behave differently on a slow machine, and `core/tools.py` refuses
+only on facts that do not change under load.
+
 Approving a task cannot widen the envelope. A `scope_paths` edit at approval is
 clamped like any other scope, because a bound that a per-task decision can move
 is only ever as strong as the most permissive task anyone approved. Widen it by

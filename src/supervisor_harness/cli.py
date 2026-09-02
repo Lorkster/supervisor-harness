@@ -335,11 +335,17 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
     state = sup.store.load_state(run_id)
     proposed = [t for t in state.tasks.values() if str(t.status) == "proposed"]
-    if not proposed:
-        print("No tasks awaiting a decision.", file=sys.stderr)
+    # Renewing the envelope is a decision in its own right, and the case it
+    # exists for -- a resume past the grant's age -- has no proposed tasks left
+    # to decide, because they were approved before the run was put down.
+    if not proposed and not args.renew_envelope:
+        print("No tasks awaiting a decision. Pass --renew-envelope to re-grant "
+              "this run's scope envelope.", file=sys.stderr)
         return 1
 
-    if args.all:
+    if not proposed:
+        decisions = []
+    elif args.all:
         decisions = [{"task_id": t.id, "decision": "approve"} for t in proposed]
     elif args.task:
         wanted = {}
@@ -356,7 +362,9 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
     async def go() -> SupervisorResponse:
         try:
-            return await sup.approve(run_id, decisions)
+            return await sup.approve(
+                run_id, decisions, renew_envelope=args.renew_envelope
+            )
         finally:
             await sup.aclose()
 
@@ -422,6 +430,9 @@ def cmd_status(args: argparse.Namespace) -> int:
               f"{_render_globs(envelope['paths'])}")
         if envelope["forbidden_paths"]:
             print(f"            never: {_render_globs(envelope['forbidden_paths'])}")
+        if status.get("envelope_stale"):
+            print(f"            STALE: {status['envelope_stale']}")
+            print("            re-grant with: supervisor approve --renew-envelope")
 
     if status["agents"]:
         print("\n  agents")
@@ -806,6 +817,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "reject or defer. Repeatable. Every proposed task you do not "
                         "name is rejected, so this says the whole decision, not part "
                         "of it")
+    p.add_argument("--renew-envelope", action="store_true",
+                   help="re-grant this run's scope envelope, which a resume past "
+                        "policy.envelope_max_age_days needs before it will execute. "
+                        "Renews the date, never the paths")
     p.set_defaults(func=cmd_approve)
 
     p = sub.add_parser("resume", parents=[common], help="resume a persisted run")

@@ -110,7 +110,7 @@ from .drift import (
     should_escalate,
     status_after,
 )
-from .envelope import Ceiling, attenuate, effective, establish, render
+from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
 from .journal import RunJournal, build_journal
 from .tools import Toolbox, render_results, render_tools_section
 
@@ -364,6 +364,13 @@ class Supervisor:
             # envelope was ever established, which is a different fact from an
             # envelope naming the whole workspace and is reported as one.
             "envelope": to_jsonable(state.envelope) if state.envelope else None,
+            # Why a resume will pause before execution, or None. Derived rather
+            # than stored: the grant carries its date and the cap is policy, so
+            # a run does not need an event to become stale.
+            "envelope_stale": stale_reason(
+                state.envelope, state.created_at,
+                self.config.policy.envelope_max_age_days,
+            ),
             "findings": len(state.findings),
             "tasks": [
                 {
@@ -706,6 +713,36 @@ class Supervisor:
             detail={"envelope": to_jsonable(effective(state.envelope))},
         )
 
+    def _await_envelope_renewal(
+        self, session: RunSession, reason: str
+    ) -> SupervisorResponse:
+        """Stop before execution and ask the user to re-grant the envelope.
+
+        Deliberately shaped like the task-approval pause rather than like a
+        failure. The run is not broken and nothing is wrong with it; the harness
+        is applying its own rule -- nothing touches your code until you approve
+        it -- to consent that has gone stale rather than to consent that was
+        never given. Analysis and reporting reached here freely; only writing is
+        held.
+        """
+        state = session.state
+        envelope = effective(state.envelope)
+        return SupervisorResponse(
+            run_id=state.id,
+            phase=str(state.phase),
+            action="await_approval",
+            message=(
+                f"{reason}. Show the user what this run may modify and ask whether "
+                "it still stands. Call supervisor_approve with renew_envelope=true "
+                "to re-grant it, or leave the run as it is."
+            ),
+            detail={
+                "envelope": to_jsonable(envelope),
+                "needs": "envelope_renewal",
+                "granted_at": envelope.granted_at,
+            },
+        )
+
     # -- execution -----------------------------------------------------
 
     async def _continue_execution(self, session: RunSession) -> SupervisorResponse | None:
@@ -714,6 +751,15 @@ class Supervisor:
             a for a in state.agents.values()
             if a.kind is AgentKind.EXECUTION and a.status in ACTIVE_AGENT_STATUSES
         ])
+
+        # Before any *new* execution agent, and only new ones: an agent already
+        # mid-flight was spawned under a grant that was current then, and ending
+        # it would throw away work to make a point about a clock.
+        stale = stale_reason(
+            state.envelope, state.created_at, self.config.policy.envelope_max_age_days
+        )
+        if not active and stale is not None:
+            return self._await_envelope_renewal(session, stale)
 
         if not active:
             registry = self._registry_for(session, None)
@@ -1528,13 +1574,32 @@ class Supervisor:
     # ------------------------------------------------------------------
 
     async def approve(
-        self, run_id: str, decisions: list[dict[str, Any]] | list[TaskDecision]
+        self,
+        run_id: str,
+        decisions: list[dict[str, Any]] | list[TaskDecision],
+        *,
+        renew_envelope: bool = False,
     ) -> SupervisorResponse:
-        """Apply the user's decisions on proposed tasks."""
+        """Apply the user's decisions on proposed tasks.
+
+        ``renew_envelope`` re-grants the run's scope envelope, which a resume
+        past ``policy.envelope_max_age_days`` requires before it will spawn an
+        execution agent. It renews the grant's *date*, never its extent: the
+        paths are carried over unchanged, and widening them is the thing this
+        method has never been allowed to do.
+        """
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
         self._registry_for(session, None)
         state = session.state
+
+        if renew_envelope:
+            # Synchronous emission: `approve` is a phase boundary with nothing
+            # in flight, which is exactly where the docstring on `RunSession`
+            # says the blocking form is the right one.
+            self._set_envelope(
+                session, effective(state.envelope), source="renewed on resume"
+            )
 
         applied = 0
         for raw in decisions:
@@ -1884,7 +1949,12 @@ class Supervisor:
     def _set_envelope(
         self, session: RunSession, envelope: ScopeEnvelope, *, source: str
     ) -> None:
-        envelope = replace(envelope, source=source)
+        # Stamped here, not by the caller: emitting ENVELOPE_SET *is* making the
+        # grant, so the date and the provenance are set in the same place. The
+        # first draft carried `granted_at` over from the envelope handed in,
+        # which meant renewing an aged grant renewed everything about it except
+        # its age.
+        envelope = replace(envelope, source=source, granted_at=now_iso())
         session.emit(EventType.ENVELOPE_SET, {"envelope": to_jsonable(envelope)})
         session.note(
             f"run envelope ({source}): may modify {render(envelope.paths)}"

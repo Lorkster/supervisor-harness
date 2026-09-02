@@ -259,6 +259,12 @@ class ScopeEnvelope:
     paths: list[str] = field(default_factory=list)
     forbidden_paths: list[str] = field(default_factory=list)
     source: str = ""
+    # When this grant was made. A run resumed long after it was planned is
+    # exercising authority the user gave in a context that may no longer hold --
+    # the working tree has moved on, and so may their intent. Empty on an
+    # envelope recorded before this field existed, where the run's own
+    # ``created_at`` stands in for it.
+    granted_at: str = field(default_factory=now_iso)
 
 
 @dataclass
