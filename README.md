@@ -280,6 +280,7 @@ fallbacks, tried in order when a provider fails.
 | `ollama` | A running Ollama; optionally `OLLAMA_HOST` |
 | `openrouter` | `OPENROUTER_API_KEY` |
 | `anthropic` | `ANTHROPIC_API_KEY` |
+| `bedrock` | `pip install 'supervisor-harness[bedrock]'` and an AWS region — see below |
 
 A model id may contain a colon — `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
 is one identifier, not a provider and a model. A route splits on its **first**
@@ -287,22 +288,58 @@ colon only, so the id arrives whole.
 
 ### Amazon Bedrock
 
-| Mode | Bedrock today | |
+| Mode | Bedrock | |
 | --- | --- | --- |
-| **Host-delegated** (default) | **Works, and there is nothing to configure here** | Claude Code reads `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION` and your AWS credentials, and runs every packet itself. The harness is not in the model path at all — no provider is constructed, no HTTP client is opened. |
-| **Autonomous**, against Bedrock directly | **Not supported** | Bedrock authenticates with AWS SigV4, which is not a `base_url` swap on an API-key client. `"type": "bedrock"` is refused by name rather than misrouted — `supervisor providers` reports it, and the stage fails the first time it is routed. |
-| **Autonomous**, via an Anthropic-compatible gateway in front of Bedrock | Should work; not covered by the suite | Point the `anthropic` provider's `base_url` at the gateway. Note that `base_url` is one of the settings a workspace config file may not set — put it in your trusted home config. |
+| **Host-delegated** (default) | **Works, with nothing to configure here** | Claude Code reads `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION` and your AWS credentials, and runs every packet itself. The harness is not in the model path at all — no provider is constructed, no HTTP client is opened. |
+| **Autonomous** | **Works, with the optional extra installed** | See below. |
+| **Autonomous**, via an Anthropic-compatible gateway in front of Bedrock | Should work; not covered by the suite | Point the `anthropic` provider's `base_url` at the gateway. `base_url` is one of the settings a workspace config file may not set — put it in your trusted home config. |
 
-So: if you drive the harness from Claude Code and Claude Code is on Bedrock,
-you are already running on Bedrock — which is the case
-[#31](https://github.com/Lorkster/supervisor-harness/issues/31) asks about, and
-it needs nothing from you.
+If you drive the harness from Claude Code and Claude Code is on Bedrock, **you
+are already running on Bedrock** and need none of what follows.
 
-Direct autonomous support is planned as an **optional extra**
-(`pip install supervisor-harness[bedrock]`) rather than an always-on
-dependency, so that the default install keeps its single runtime dependency —
-Bedrock needs botocore or `anthropic[bedrock]`, either of which would roughly
-triple the footprint for one provider.
+### Autonomous Bedrock
+
+```bash
+pip install 'supervisor-harness[bedrock]'
+```
+
+An optional extra rather than a runtime dependency: it pulls the Anthropic SDK,
+boto3 and botocore, and the package otherwise has exactly one dependency —
+which is worth keeping for everyone not using Bedrock. Nothing imports the SDK
+unless a `bedrock` provider is actually configured.
+
+```jsonc
+// ~/.supervisor/config.json  — see "Which config files are trusted"
+{
+  "providers": {
+    "bedrock": { "type": "bedrock", "region": "eu-west-1" }
+  },
+  "routing": {
+    "default": "bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  }
+}
+```
+
+Credentials are resolved by the normal AWS chain — environment, shared config,
+SSO, IMDS, assumed roles — so a machine already set up for Bedrock needs
+nothing but the region, and `AWS_REGION` supplies even that. Add
+`"profile": "..."` to pin a named profile.
+
+Two things worth knowing:
+
+- **`region` and `profile` are settings a workspace config file may not set**,
+  alongside `base_url` and the API keys. Both decide where a credentialed
+  request goes and which identity signs it, and the AWS chain resolves an
+  identity from the environment — so a repository able to set them could
+  redirect your traffic or assume a different profile without ever naming a
+  secret. Put them in your trusted home config.
+- **Model ids are inference profiles**, like
+  `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — usually what an account is
+  entitled to invoke, and the trailing `:0` is part of the id.
+
+`supervisor providers` reports whether the extra is installed and whether a
+region resolved, so a misconfiguration shows up before a run rather than
+during one.
 
 Check what resolves where:
 
@@ -329,6 +366,7 @@ budgets. It may not set:
 | `policy.allow_command_execution` | It would grant shell execution by being checked out |
 | `providers.*.base_url` | It would redirect where your API key is sent |
 | `providers.*.api_key`, `.api_key_env`, `.type` | Same |
+| `providers.*.region`, `.profile` | They decide where an AWS-credentialed request goes and which identity signs it |
 | `home` | It would redirect where run history is written |
 
 Anything rejected is reported by `supervisor providers` rather than silently

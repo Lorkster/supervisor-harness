@@ -60,6 +60,66 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+      # The mirror of the check in the `bedrock` job below, guarding the other
+      # direction. `tests/test_bedrock_provider.py` holds both the tests that
+      # need the extra and the ones guaranteeing a *default* install still
+      # works. A module-level `pytest.importorskip` skips a whole file, which
+      # took the default-install tests with it -- measured at 0 passed, 1
+      # skipped here, reported as success. If that ever returns, this fails.
+      - name: The default-install bedrock tests actually ran
+        shell: bash
+        run: |
+          out=$(python -m pytest tests/test_bedrock_provider.py -q --no-header)
+          echo "$out"
+          if ! echo "$out" | grep -qE "[1-9][0-9]* passed"; then
+            echo "::error::no bedrock test ran on a default install; the file is being skipped whole"
+            exit 1
+          fi
+
+  # The matrix above deliberately installs `.[dev]` *without* the bedrock extra,
+  # so it is the default-install shape: one runtime dependency, the Anthropic SDK
+  # absent, and the with-the-extra tests skipping. That is the shape almost every
+  # user has, and the shape in which `providers.router` must still import.
+  #
+  # This job is the other shape. Without it the request/response mapping in
+  # providers/bedrock.py would be tested nowhere -- `pytest.importorskip` would
+  # skip it in every job and report success while covering nothing.
+  bedrock:
+    name: Bedrock extra installed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install with the extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,bedrock]"
+
+      # No AWS credentials and no network call: the client is constructed, and
+      # every call goes to a stub. If this ever starts needing credentials, that
+      # is a test reaching for the real API and should fail here rather than
+      # quietly bill someone.
+      - name: Test
+        run: python -m pytest -q
+
+      # The with-the-extra tests skip themselves when the SDK is missing, which
+      # is correct in the matrix and would be a silent hole here. This job exists
+      # to run them, so it fails if they did not run.
+      - name: The bedrock tests actually ran
+        run: |
+          out=$(python -m pytest tests/test_bedrock_provider.py -q --no-header)
+          echo "$out"
+          if echo "$out" | grep -q skipped; then
+            echo "::error::bedrock tests skipped in the job whose purpose is to run them"
+            exit 1
+          fi
+
   # Separate from the matrix: this compares two checkouts, so it needs the full
   # history, and running it eight times would say the same thing eight times.
   lint:

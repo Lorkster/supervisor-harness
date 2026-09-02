@@ -31,12 +31,17 @@ PROJECT_CONFIG = "supervisor.config.json"
 class ProviderConfig:
     """One configured model source."""
 
-    type: str = "openrouter"      # openrouter | ollama | anthropic | host
+    type: str = "openrouter"      # openrouter | ollama | anthropic | bedrock | host
     enabled: bool = True
     base_url: str = ""
     api_key_env: str = ""
     api_key: str = ""             # discouraged; prefer api_key_env
     default_model: str = ""
+    # AWS region and profile, for `type: "bedrock"`. Both fall back to the
+    # standard environment variables when unset, so a machine already configured
+    # for Bedrock needs neither set here.
+    region: str = ""
+    profile: str = ""
     params: dict[str, Any] = field(default_factory=dict)
 
     def resolved_key(self) -> str:
@@ -297,8 +302,14 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
 #
 # The trusted path is unaffected -- a user's own config under their home, or an
 # explicit SUPERVISOR_HOME, still sets sampling parameters through this key.
+# ``region`` and ``profile`` are here for the reason ``base_url`` is: both
+# decide where a credentialed request goes and which identity signs it. A
+# workspace file able to set them could move a run's traffic to a region the
+# user does not audit, or make it assume a different profile -- without ever
+# naming a key, because the AWS credential chain resolves those from the
+# environment exactly as ``api_key_env`` does.
 PROTECTED_PROVIDER_KEYS: frozenset[str] = frozenset(
-    {"type", "base_url", "api_key", "api_key_env", "params"}
+    {"type", "base_url", "api_key", "api_key_env", "region", "profile", "params"}
 )
 
 

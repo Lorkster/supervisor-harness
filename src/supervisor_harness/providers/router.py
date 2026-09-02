@@ -21,6 +21,10 @@ from .base import (
     Provider,
     ProviderError,
 )
+
+# Safe to import unconditionally: `bedrock.py` imports the Anthropic SDK lazily,
+# so a default install without the `bedrock` extra can still import this module.
+from .bedrock import DEFAULT_BEDROCK_MODEL, BedrockProvider
 from .host import HostProvider
 from .ollama import OllamaProvider
 from .openrouter import OpenRouterProvider
@@ -45,6 +49,17 @@ def build_provider(name: str, cfg: ProviderConfig, host_name: str = "unknown") -
             api_key=cfg.resolved_key() or None,
             base_url=cfg.base_url or "https://api.anthropic.com",
             default_model=cfg.default_model or "claude-sonnet-4-5",
+        )
+    if kind == "bedrock":
+        # Constructed without the optional dependency present, deliberately: a
+        # misconfigured route then fails when it is *used*, with a message
+        # naming the extra to install, rather than at import time with an
+        # ImportError from the middle of the provider table.
+        return BedrockProvider(
+            region=cfg.region,
+            profile=cfg.profile,
+            default_model=cfg.default_model or DEFAULT_BEDROCK_MODEL,
+            base_url=cfg.base_url,
         )
     if kind == "host":
         return HostProvider(host_name=host_name)
@@ -193,6 +208,7 @@ def _with_model(
 
 
 __all__ = [
+    "BedrockProvider",
     "ChatMessage",
     "CompletionRequest",
     "CompletionResponse",

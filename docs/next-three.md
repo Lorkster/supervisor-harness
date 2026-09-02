@@ -127,6 +127,76 @@ ending in `raise ValueError(f"unknown provider type: {kind!r}")`, so
 - The routing docs gain the Bedrock model-id form, which is the colon case that
   item 1a pins.
 
+### Closed
+
+Landed on `feat/bedrock-provider`. Every point above holds, and three things
+were decided or found in the building that the plan did not anticipate.
+
+**The dependency, which the plan left open.** It said "botocore/boto3 or
+`anthropic[bedrock]`" without choosing. Costed both and put it to the user:
+signing here with botocore would have been the smaller install and would have
+kept one transport story, but **`anthropic[bedrock]` was chosen** so that the
+request/response mapping and the AWS credential chain are the vendor's to
+maintain rather than ours. `providers/bedrock.py` therefore wraps
+`AsyncAnthropicBedrock`.
+
+**`region` and `profile` are in `PROTECTED_PROVIDER_KEYS`.** Bedrock needs a
+region, and a region has to live somewhere. It belongs with `base_url` rather
+than with the tunable settings: both decide where a credentialed request goes,
+and `profile` decides which identity signs it. The AWS chain resolves an
+identity from the environment, so a workspace file able to set either could
+redirect a run's traffic or make it assume another profile **without ever naming
+a secret** — which is precisely the shape batch 7 protected `base_url` against.
+
+**The SDK's retry loop is turned off** (`max_retries=0`). `ModelRouter.complete`
+already retries with backoff and then falls back down the `|` chain; leaving the
+SDK's own loop on multiplies the two, so a stage configured for one retry would
+make up to eight attempts against a throttled endpoint. That is the worst
+available response to throttling, and it would have been invisible.
+
+**One trap found by a test failing.** This package has its own
+`providers/anthropic.py`, so a fixture blocking `import anthropic` by *name*
+also blocks `from .anthropic import AnthropicProvider` in `router.py` — the
+relative import arrives at `__import__` under the same name. The fixture now
+blocks only `level == 0`, and the shadowing has a test of its own, because the
+failure it would produce is bizarre rather than obvious.
+
+**One vacuous-coverage bug, found by running the default shape for real.**
+`tests/test_bedrock_provider.py` used a module-level `pytest.importorskip`,
+which skips the **whole file** from that point — taking the "without the extra"
+tests with it. So on a default install, the very tests guaranteeing that a
+default install works did not run: measured at **0 passed, 1 skipped**, and
+reported as success. It is now a per-test `skipif` marker, and the same install
+shape reports 8 passed, 13 skipped. CI gained the mirror of the `bedrock` job's
+check — the matrix now fails if no bedrock test *passes* — so the hole is
+guarded from both sides.
+
+Found only by building a throwaway venv with `.[dev]` and running the suite in
+it. Neither shape is the developer's, so both have to be run deliberately.
+
+**Verification.** 13 sabotages, 13 caught — the laziness of the SDK import, the
+install hint, the trust boundary on `region`/`profile`, the schema instruction,
+retryability by status, retryability of connection errors, `max_retries=0`, the
+usage mapping, the empty-conversation repair, the missing-region check, the
+region reaching the client, `aclose`, and the `build_provider` branch. CI gains
+a `bedrock` job that installs the extra, and that job **fails if the
+with-the-extra tests skip** — otherwise `importorskip` would report success
+while covering nothing. Both shapes were run before the pull request: 335 passed / 2 skipped with the extra, 322 passed / 15 skipped without it.
+
+One test from item 1a was changed on purpose:
+`test_bedrock_as_a_provider_type_is_refused_by_name` existed so that this batch
+would have to make `"type": "bedrock"` work deliberately rather than by
+accident. It is now
+`test_an_unknown_provider_type_is_refused_by_name`, keeping the guarantee with a
+type the harness genuinely does not implement, plus a test asserting the
+transition itself.
+
+**Not done, deliberately.** `default_config()` does not declare a `bedrock`
+provider. The other providers are declared unconfigured so that
+`supervisor providers` lists them, but a Bedrock row would report
+`dependency_installed: false` for everyone who never wanted it. It is added by
+hand, and the README says how.
+
 ---
 
 # 2 · Split `core/supervisor.py` (9c)
@@ -343,7 +413,7 @@ moves have a reason beyond preference.
 | | item | why here |
 | --- | --- | --- |
 | 1 | **3a** — the paradigm document | Cheap, independent, overdue, and it is what a new reader currently gets wrong. **Done** — see below. |
-| 2 | **1b** — the Bedrock optional extra | Small, independent, closes issue #31 — and it lands *before* the assessment so the assessment covers the module set being kept. |
+| 2 | **1b** — the Bedrock optional extra | Small, independent, closes issue #31 — and it lands *before* the assessment so the assessment covers the module set being kept. **Done** — see §1b. |
 | 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. |
 | 4 | **2 (9c)** — the split | Made against 4a's criteria and protected by 4a's coverage. |
 | 5 | **4b** — close the remaining findings in batches | Against the settled layout, so cleanup diffs are not written into `core/supervisor.py` and immediately moved again. |

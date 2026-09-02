@@ -18,6 +18,11 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
+# Autonomous Bedrock. Deliberately an extra rather than a runtime dependency:
+# the package otherwise has exactly one, and this pulls the Anthropic SDK plus
+# boto3 and botocore. Nothing imports it unless a provider of type "bedrock" is
+# actually configured -- see providers/bedrock.py.
+bedrock = ["anthropic[bedrock]>=0.40"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "mcp>=1.2", "ruff>=0.6"]
 
 [project.scripts]
