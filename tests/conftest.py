@@ -168,6 +168,12 @@ class FakeProvider(Provider):
                     }
                 ],
                 "files_examined": ["src/auth/login.py"],
+                "established": [
+                    {"key": "login entrypoint",
+                     "statement": "src/auth/login.py:34 handles every POST",
+                     "evidence": "src/auth/login.py:34"},
+                ],
+                "open_questions": ["Is there a WAF in front of this?"],
                 "messages": [
                     {
                         "recipient": "*",
@@ -200,6 +206,17 @@ class FakeProvider(Provider):
                 }
             ],
             "files_examined": ["src/app.py", "src/cache.py"],
+            # The same key as the security lens, said differently on purpose: a
+            # run where two lenses agree proves nothing about what happens when
+            # they do not, and that is the case worth exercising end to end.
+            "established": [
+                {"key": "counter-store",
+                 "statement": "the existing Redis client in src/cache.py:8",
+                 "evidence": "src/cache.py:8"},
+                {"key": "login entrypoint",
+                 "statement": "src/app.py:12 routes to the handler",
+                 "evidence": "src/app.py:12"},
+            ],
             "status": "done",
         }
 
@@ -256,6 +273,15 @@ class FakeProvider(Provider):
             "commands_run": ["pytest tests/test_rate_limit.py -q"],
             "criteria_progress": [{"criterion_id": "unknown", "claim": "met",
                                    "evidence": "suite passes locally"}],
+            # Offered, and expected to be ignored: only analysis agents may
+            # establish facts for the run. Without an execution agent that
+            # actually proposes one, a test asserting the rule cannot tell the
+            # rule from the absence of anything to apply it to.
+            "established": [
+                {"key": "limiter middleware",
+                 "statement": "installed in src/auth/login.py",
+                 "evidence": "src/auth/login.py:1"},
+            ],
             "status": "done",
         }
 

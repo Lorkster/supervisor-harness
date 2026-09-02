@@ -37,7 +37,12 @@ from ..models import (
     Scope,
     TaskStatus,
 )
-from .blackboard import critical_findings, detect_contradictions, rank_findings
+from .blackboard import (
+    contested_keys,
+    critical_findings,
+    detect_contradictions,
+    rank_findings,
+)
 from .dod import apply_quality_bars, summarise, validate_criteria
 
 # --------------------------------------------------------------------------
@@ -308,6 +313,17 @@ def build_report(state: RunState, data: dict) -> Report:
     conflicts = [str(c) for c in (data.get("conflicts") or [])]
     if not conflicts:
         conflicts = detect_contradictions(state.findings)
+    # A key two agents claimed differently is a disagreement of the same kind,
+    # reached from the other direction: `detect_contradictions` infers one from
+    # findings that clash, and this one the agents stated outright by keying
+    # their claims the same way. Appended rather than merged into that list, and
+    # never suppressed by the synthesis model having offered its own conflicts:
+    # a model that did not notice the disagreement is exactly when it matters.
+    for key, claims in contested_keys(state.established).items():
+        conflicts.append(
+            f"agents disagree about {key}: "
+            + "; ".join(f"{c.role or c.agent_id} says {c.statement}" for c in claims)
+        )
     return Report(
         run_id=state.id,
         title=state.prompt[:120],

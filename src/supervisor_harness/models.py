@@ -268,6 +268,30 @@ class ScopeEnvelope:
 
 
 @dataclass
+class Fact:
+    """Something an agent established for the run, and what backs it.
+
+    Distinct from ``RunState.facts``, which holds what the *harness* knows -- the
+    baseline commit, the planner's restatement. Those have no author, need no
+    evidence and cannot be contested. This has all three, because two lenses
+    looking at the same code can reach the same key from different directions
+    and say different things about it, and that disagreement is worth more than
+    either claim on its own.
+
+    ``key`` is normalised (see ``blackboard.normalise_fact_key``); it is what
+    makes two agents' claims comparable, which is the whole point of keying them
+    at all.
+    """
+
+    key: str = ""
+    statement: str = ""
+    evidence: str = ""
+    agent_id: str = ""
+    role: str = ""
+    ts: str = field(default_factory=now_iso)
+
+
+@dataclass
 class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
@@ -385,6 +409,11 @@ class AgentTurn:
     claimed_status: AgentStatus = AgentStatus.RUNNING
     self_assessment: str = ""
     blocked_on: str = ""
+    # What this turn could not settle. Every analysis brief has asked for these
+    # since the contract was written; nothing read them, `AgentTurn` had no
+    # field for them, and they were dropped on arrival. They are the companion
+    # to an established fact -- what the run knows, and what it does not.
+    open_questions: list[str] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     ts: str = field(default_factory=now_iso)
 
@@ -670,6 +699,11 @@ class RunState:
     briefs: dict[str, str] = field(default_factory=dict)
     shared_context: str = ""
     facts: dict[str, str] = field(default_factory=dict)
+    # What the run's agents established, in the order they established it.
+    # A list rather than a dict keyed by ``key``: two agents may claim the same
+    # key and disagree, and the fold that used to write ``facts[key] = value``
+    # would have resolved that by discarding one of them silently.
+    established: list[Fact] = field(default_factory=list)
     turn_counts: dict[str, int] = field(default_factory=dict)
     usage: dict[str, Usage] = field(default_factory=dict)
     # The turns themselves, not just how many there were. The fold used to keep

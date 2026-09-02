@@ -65,6 +65,14 @@ report shows the checklist.
 and the run ends with a reconciliation — finding by finding, fixed here,
 attempted, still pending, or still open — written as its own artifact.
 
+**5c. Agents build a shared record.** An analysis lens that establishes
+something the others need — which store the counters live in, which entrypoint
+is actually reachable — records it as a keyed fact with its evidence, and later
+agents inherit it. Where two lenses key the same claim and say different things,
+the disagreement is kept and surfaced rather than resolved by whoever wrote
+last: it shows in the brief as open, in the report's conflicts, and in
+`supervisor status`. A claim with no evidence is dropped.
+
 **6. It learns.** Failures that better briefing would have prevented become
 lessons, stored across runs and injected into future briefs for that role.
 

@@ -20,6 +20,7 @@ from ..models import (
     BROADCAST,
     SUPERVISOR,
     AgentSpec,
+    Fact,
     Finding,
     Message,
     MessageKind,
@@ -42,13 +43,87 @@ class Routing:
     note: str = ""
 
 
-def render_context(shared_context: str, facts: dict[str, str]) -> str:
-    """Format the run's shared context for inclusion in a brief."""
+_SEPARATORS = re.compile(r"[\s_\-/]+")
+
+
+def normalise_fact_key(raw: str) -> str:
+    """A fact key in the one form two agents' claims are compared on.
+
+    Case and separators only. ``Redis``/``redis`` and ``counter store``/
+    ``counter-store`` are the same key; ``counter store`` and ``counters`` are
+    not, and are deliberately left apart.
+
+    The tempting next step is a similarity merge -- ``jaccard`` is right there
+    in `drift.py`. It is not taken, because merging two facts that were never
+    the same is much worse than leaving two spellings of one fact apart: the
+    first silently destroys a distinction the run may depend on, and a run
+    cannot tell from the inside that it has done it. Fragmentation is visible;
+    a bad merge is not.
+    """
+    return _SEPARATORS.sub(" ", str(raw).strip().lower()).strip()
+
+
+def contested_keys(established: list[Fact]) -> dict[str, list[Fact]]:
+    """Keys carrying more than one distinct claim, and the claims.
+
+    Two statements count as one claim only when they are identical once
+    whitespace and case are set aside. A rephrasing therefore reads as a
+    disagreement, which is the safe direction: a contested key costs a line in a
+    brief and asks the supervisor to look, while a missed contest silently picks
+    a winner -- and picking silently is what this replaced.
+    """
+    by_key: dict[str, list[Fact]] = {}
+    for fact in established:
+        by_key.setdefault(fact.key, []).append(fact)
+    return {
+        key: facts for key, facts in by_key.items()
+        if len({" ".join(f.statement.lower().split()) for f in facts}) > 1
+    }
+
+
+def render_context(
+    shared_context: str,
+    facts: dict[str, str],
+    established: list[Fact] | None = None,
+) -> str:
+    """Format the run's shared context for inclusion in a brief.
+
+    ``facts`` is what the harness knows and ``established`` is what the run's
+    agents have found, and the two are rendered apart on purpose. The first
+    needs no evidence and cannot be wrong about itself; the second is one
+    agent's reading, and an agent inheriting it should be able to see whose, on
+    what, and whether anyone disagreed.
+    """
     parts = [shared_context] if shared_context else []
     if facts:
         parts.append(
             "Established facts:\n"
             + "\n".join(f"- {k}: {v}" for k, v in sorted(facts.items()))
+        )
+
+    established = established or []
+    if established:
+        contested = contested_keys(established)
+        lines: list[str] = []
+        for key in sorted({f.key for f in established}):
+            claims = [f for f in established if f.key == key]
+            if key in contested:
+                lines.append(f"- **{key}** -- agents disagree, treat as open:")
+                lines.extend(
+                    f"    - {c.statement} ({c.role or c.agent_id}"
+                    + (f", evidence: {c.evidence}" if c.evidence else "") + ")"
+                    for c in claims
+                )
+            else:
+                first = claims[0]
+                lines.append(
+                    f"- {key}: {first.statement} ({first.role or first.agent_id}"
+                    + (f", evidence: {first.evidence}" if first.evidence else "") + ")"
+                )
+        parts.append(
+            "Established by other agents in this run. Each is one agent's "
+            "reading, not a rule: check it against what you can see, and say so "
+            "if you find otherwise.\n" + "\n".join(lines)
         )
     return "\n\n".join(parts)
 
@@ -161,6 +236,26 @@ def answer_from_record(question: Message, agent: AgentSpec, state: RunState) -> 
     for key, value in state.facts.items():
         if relevant(f"{key} {value}"):
             out.append(f"Established for this run -- {key}: {value}")
+
+    # What other agents established. This is most of what the record can
+    # usefully answer with: before agents could establish anything, `facts` held
+    # the baseline commit and the planner's restatement, and a question that
+    # matched neither fell through to the findings or to nothing.
+    contested = contested_keys(state.established)
+    for key in sorted({f.key for f in state.established}):
+        claims = [f for f in state.established if f.key == key]
+        if not relevant(key + " " + " ".join(c.statement for c in claims)):
+            continue
+        if key in contested:
+            out.append(
+                f"Agents disagree about {key} -- "
+                + "; ".join(f"{c.role or c.agent_id} says {c.statement}" for c in claims)
+            )
+        else:
+            first = claims[0]
+            out.append(
+                f"{first.role or first.agent_id} established -- {key}: {first.statement}"
+            )
 
     task = state.tasks.get(agent.task_id or "")
     if task is not None:

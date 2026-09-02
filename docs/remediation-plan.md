@@ -1369,3 +1369,81 @@ problem. The test says so.
 
 9c, and B3 (shared semantic context) — the last open control-plane dimension,
 and the one that wants a written spec before any code.
+
+---
+
+# B3 — shared semantic context
+
+Landed on `feat/shared-context`. The last open dimension of the control-plane
+assessment. **The design was specified before any code**, per the note that
+scheduled it; the spec, the three choices it left open, what was decided and
+where the implementation departed from it are all in
+`docs/shared-context-spec.md`.
+
+## The assessment described a consistency problem in an empty store
+
+> "...they are free text, unversioned, and nothing checks that two agents mean
+> the same thing by a term."
+
+Every clause true, and the conclusion wrong. `state.facts` was written in
+exactly two places — the git baseline and the planner's restatement, both the
+harness's own keys — and **no schema anywhere let an agent contribute one**. Two
+agents could not disagree about a term because neither could state one. Checking
+vocabulary consistency is downstream of having a vocabulary.
+
+Two more things fell out of looking:
+
+- `answer_from_record`, added in 9b so the supervisor could answer an agent's
+  question from the run's record, had almost nothing to answer *from*. Two of
+  its four sources were those two harness facts.
+- `open_questions` was requested from every analysis agent (`contracts.py:159`),
+  had no field on `AgentTurn`, was never mentioned in `supervisor.py`, and was
+  read only from the *synthesis* payload. Every analysis turn spent tokens on it
+  and the harness dropped it on arrival — the same shape as the dead paths 9b
+  removed.
+
+## What landed
+
+An analysis agent may establish keyed facts with evidence; the harness records
+them as `FACT_ESTABLISHED`, and they reach later agents through `render_context`
+and answer questions through `answer_from_record`. A claim with no evidence is
+dropped, on the rule the briefs already state. Two agents keying one claim
+differently produces a recorded disagreement rather than a silent overwrite,
+visible in the brief ("agents disagree, treat as open"), in the report's
+conflicts, and in `supervisor status`. `open_questions` is wired rather than
+removed.
+
+`RunState.facts` was deliberately **not** widened to hold these. It is what the
+harness knows — no author, no evidence, nothing to contest — and giving it a
+conflict story it can never have would be worse than keeping two stores rendered
+apart. That matches the house pattern: a lesson says `learned here` or `learned
+in <project>`; an envelope says `configuration` or `run plan`.
+
+## Verification
+
+306 pass (292 + 14 new). Ruff 58 → 58 by rule and file.
+
+Eleven mechanisms disabled in turn, all caught. Two needed a fix first, and only
+one was the script's fault: *"every agent kind may establish facts"* passed with
+the analysis-only guard removed, because the fake execution agent never proposed
+a fact — the test could not tell the rule from the absence of anything to apply
+it to. The fixture now has an execution agent offer one, expected to be ignored.
+
+**The B1 lint gate earned its keep here**, catching an import-ordering
+regression in `core/supervisor.py` on a change it was not written for.
+
+## What it still does not do
+
+A fact established at turn 4 does not reach an agent briefed at turn 1. Analysis
+lenses are briefed together and a brief is a fixed anchor for drift scoring, so
+the agent that inherits is the one spawned afterwards — in practice the
+execution agent. Two lenses in parallel still reach each other only through
+messages. Closing that means either re-rendering briefs mid-run, which drift
+scoring depends on not happening, or delivering facts through the directive that
+starts each turn. That is a larger change and a separate decision.
+
+---
+
+With this, every dimension of the control-plane assessment is closed and the
+only item the plan still carries is **9c**, which remains a refactor with no
+defect behind it.

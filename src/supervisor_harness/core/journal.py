@@ -55,6 +55,7 @@ from ..models import (
     AgentTurn,
     Directive,
     DriftAssessment,
+    Fact,
     Message,
     Note,
     RunState,
@@ -77,6 +78,7 @@ class Episode:
     directive: Directive | None = None
     inbox: list[Message] = field(default_factory=list)
     notes: list[Note] = field(default_factory=list)
+    established: list[Fact] = field(default_factory=list)
     status_changes: list[str] = field(default_factory=list)
     # Where the log's order and its ``turn_id`` fields disagree, or where a part
     # is missing that the shape would normally have. Reported, not resolved:
@@ -237,6 +239,13 @@ def build_journal(
                 if mid not in known and mid in messages:
                     current.inbox.append(messages[mid])
 
+        elif kind is EventType.FACT_ESTABLISHED:
+            current = episode_for(event.actor)
+            if current is None:
+                journal.unattributed += 1
+                continue
+            current.established.append(from_jsonable(payload["fact"], Fact))
+
         elif kind is EventType.AGENT_STATUS:
             aid = payload.get("agent_id", "")
             current = episode_for(aid)
@@ -381,6 +390,13 @@ def _render_episode(episode: Episode, index: int, width: int) -> list[str]:
             out.append(f"      blocked   {_wrap(turn.blocked_on, width, 16)}")
         if turn.self_assessment:
             out.append(f"      admits    {_wrap(turn.self_assessment, width, 16)}")
+        for question in turn.open_questions:
+            out.append(f"      asks      {_wrap(question, width, 16)}")
+        for fact in episode.established:
+            out.append(
+                f"      says      {fact.key}: {_wrap(fact.statement, width, 16)}"
+                + (f"  [{fact.evidence}]" if fact.evidence else "")
+            )
 
     for assessment in episode.assessments:
         out.append(
@@ -474,6 +490,7 @@ def journal_to_dict(journal: RunJournal) -> dict[str, Any]:
                         "directive": to_jsonable(ep.directive) if ep.directive else None,
                         "inbox": [to_jsonable(m) for m in ep.inbox],
                         "notes": [to_jsonable(n) for n in ep.notes],
+                        "established": [to_jsonable(f) for f in ep.established],
                         "status_changes": list(ep.status_changes),
                         "anomalies": list(ep.anomalies),
                     }

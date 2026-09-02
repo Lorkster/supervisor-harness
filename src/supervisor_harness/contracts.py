@@ -24,6 +24,7 @@ from .models import (
     DriftAssessment,
     DriftSignal,
     ExecutionTask,
+    Fact,
     Finding,
     Lesson,
     LessonCategory,
@@ -157,6 +158,27 @@ ANALYSIS_TURN_SCHEMA: dict[str, Any] = {
         "tool_calls": _TOOL_CALLS,
         "messages": {"type": "array", "items": _MESSAGE},
         "open_questions": {"type": "array", "items": {"type": "string"}},
+        "established": {
+            "type": "array",
+            "description": (
+                "Facts you have established that the other agents in this run "
+                "need. Only things you checked yourself and can cite: an "
+                "assertion with no evidence is a finding you have not made yet, "
+                "and one with no evidence is dropped. Key them by the thing they "
+                "are about ('counter store', 'login entrypoint'), not by a "
+                "sentence, so another agent's claim about the same thing can be "
+                "compared with yours."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "What it is about"},
+                    "statement": {"type": "string", "description": "What you established"},
+                    "evidence": {"type": "string", "description": "file:line, or real output"},
+                },
+                "required": ["key", "statement", "evidence"],
+            },
+        },
         "status": {
             "type": "string",
             "enum": ["running", "blocked", "done"],
@@ -605,6 +627,38 @@ def parse_lessons(data: dict[str, Any], run_id: str, workspace: str = "") -> lis
                 target=str(raw.get("target", "*")).strip() or "*",
                 confidence=min(1.0, max(0.0, _num(raw.get("confidence"), 0.5))),
                 created_at=now_iso(),
+            )
+        )
+    return out
+
+
+def parse_established(data: dict[str, Any], agent: Any) -> list[Fact]:
+    """The facts this turn claims to have established, normalised and evidenced.
+
+    A claim with no evidence is dropped rather than recorded weakly. That is the
+    rule the briefs already state and the one `_report_verification` already
+    applies to a criterion marked passed with nothing behind it: this harness
+    does not carry unevidenced assertions forward, because everything downstream
+    then has to guess which ones it can trust.
+    """
+    from .core.blackboard import normalise_fact_key
+
+    out: list[Fact] = []
+    for raw in data.get("established") or []:
+        if not isinstance(raw, dict):
+            continue
+        key = normalise_fact_key(raw.get("key", ""))
+        statement = str(raw.get("statement", "")).strip()
+        evidence = str(raw.get("evidence", "")).strip()
+        if not (key and statement and evidence):
+            continue
+        out.append(
+            Fact(
+                key=key,
+                statement=statement,
+                evidence=evidence,
+                agent_id=getattr(agent, "id", ""),
+                role=getattr(agent, "role", ""),
             )
         )
     return out
