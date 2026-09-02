@@ -1447,3 +1447,16 @@ starts each turn. That is a larger change and a separate decision.
 With this, every dimension of the control-plane assessment is closed and the
 only item the plan still carries is **9c**, which remains a refactor with no
 defect behind it.
+
+---
+
+# What comes after this document
+
+`docs/next-three.md` carries the next three pieces of work -- Bedrock support
+(issue #31), 9c, and documentation (issue #30) -- with what has been verified
+about each, what is still only a reading, and the two decisions that must be
+made before any code is written.
+
+This document keeps the *history*: what was found, what was fixed, and why each
+call was made. It is not the place to look for what the harness is, or for what
+happens next.
