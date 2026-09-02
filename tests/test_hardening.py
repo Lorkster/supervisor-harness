@@ -1033,13 +1033,13 @@ def test_a_credential_in_a_turn_does_not_reach_the_log(tmp_path: Path) -> None:
     assert "Authorization: Bearer [redacted]" in raw
 
 
-def test_a_turn_reaches_the_log_under_one_lock(tmp_path: Path) -> None:
+async def test_a_turn_reaches_the_log_under_one_lock(tmp_path: Path) -> None:
     """It was an emit per event, and each takes the lock and fsyncs.
 
-    A turn carrying eight findings paid for nine acquisitions, and parallel
-    autonomous agents queue behind each other for every one -- the lock is held
-    with a spin-sleep, inside the async loop that is supposed to be running them
-    at the same time.
+    A turn carrying eight findings paid for nine acquisitions. The second half
+    of that sentence -- that agents queue behind each other for every one --
+    was the open half of the finding, and is closed separately: the acquisition
+    now happens in a worker thread, so it no longer holds the event loop.
     """
     from supervisor_harness.config import default_config
     from supervisor_harness.host.detect import HostInfo
@@ -1076,7 +1076,9 @@ def test_a_turn_reaches_the_log_under_one_lock(tmp_path: Path) -> None:
 
     eventlog.FileLock.acquire = counted
     try:
-        turn = supervisor._record_turn(session, session.state.agents[agent.id], payload)
+        turn = await supervisor._record_turn(
+            session, session.state.agents[agent.id], payload
+        )
     finally:
         eventlog.FileLock.acquire = real
 

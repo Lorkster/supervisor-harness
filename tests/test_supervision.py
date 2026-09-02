@@ -1020,7 +1020,7 @@ def _question(agent_id: str, subject: str, content: str = "") -> Message:
     )
 
 
-def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
+async def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
     workspace: Path, config, fake
 ) -> None:
     """`route` accepted these, stored them, and nothing ever read them.
@@ -1054,14 +1054,14 @@ def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
         files_touched=["src/auth/login.py"],
         messages=[_question("agt_1", "should I cover authentication failure modes?")],
     )
-    supervisor._record_turn(session, live, {
+    await supervisor._record_turn(session, live, {
         "output": turn.output, "status": "running",
         "files_touched": turn.files_touched,
         "messages": [{"recipient": "supervisor", "kind": "question",
                       "subject": "should I cover authentication failure modes?",
                       "content": "should I cover authentication failure modes?"}],
     })
-    directive = supervisor._supervise(session, live, turn)
+    directive = await supervisor._supervise(session, live, turn)
 
     assert directive.kind is DirectiveKind.ANSWER
     assert any("Your brief already says" in c for c in directive.corrections), (
@@ -1069,11 +1069,11 @@ def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
     )
 
     # Answered once: the next turn does not answer the same question again.
-    second = supervisor._supervise(session, live, turn)
+    second = await supervisor._supervise(session, live, turn)
     assert second.kind is not DirectiveKind.ANSWER
 
 
-def test_a_question_the_record_cannot_answer_is_not_invented(
+async def test_a_question_the_record_cannot_answer_is_not_invented(
     workspace: Path, config, fake
 ) -> None:
     """The supervisor knows the run, not the world, and says so.
@@ -1105,14 +1105,14 @@ def test_a_question_the_record_cannot_answer_is_not_invented(
         output="Traced the login handler and the rate limiter around it.",
         files_touched=["src/auth/login.py"],
     )
-    supervisor._record_turn(session, live, {
+    await supervisor._record_turn(session, live, {
         "output": turn.output, "status": "running",
         "files_touched": turn.files_touched,
         "messages": [{"recipient": "supervisor", "kind": "question",
                       "subject": "which kubernetes namespace hosts staging?",
                       "content": "which kubernetes namespace hosts staging?"}],
     })
-    directive = supervisor._supervise(session, live, turn)
+    directive = await supervisor._supervise(session, live, turn)
 
     assert any("does not cover it" in c for c in directive.corrections), directive.corrections
     assert not any("Your brief already says" in c for c in directive.corrections)
@@ -1122,7 +1122,7 @@ def test_a_question_the_record_cannot_answer_is_not_invented(
     assert any("could not answer" in n for n in notes), notes
 
 
-def test_an_answer_never_displaces_a_correction(workspace: Path, config, fake) -> None:
+async def test_an_answer_never_displaces_a_correction(workspace: Path, config, fake) -> None:
     """A drifting agent is still corrected, and still gets its answer."""
     from supervisor_harness.host.detect import HostInfo
     from supervisor_harness.providers.router import ModelRouter
@@ -1145,13 +1145,13 @@ def test_an_answer_never_displaces_a_correction(workspace: Path, config, fake) -
     # A write to a forbidden path is uncorrectable after the fact: STOP.
     turn = AgentTurn(agent_id="agt_1", output="Rewrote the terraform module.",
                      files_touched=["infra/waf.tf"])
-    supervisor._record_turn(session, live, {
+    await supervisor._record_turn(session, live, {
         "output": turn.output, "status": "running", "files_touched": ["infra/waf.tf"],
         "messages": [{"recipient": "supervisor", "kind": "question",
                       "subject": "is infra in my scope?",
                       "content": "is infra in my scope?"}],
     })
-    directive = supervisor._supervise(session, live, turn)
+    directive = await supervisor._supervise(session, live, turn)
 
     assert directive.kind is DirectiveKind.STOP, "the answer displaced the correction"
     assert any("On your question" in c for c in directive.corrections), directive.corrections

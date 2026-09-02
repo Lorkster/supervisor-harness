@@ -180,6 +180,19 @@ supervisor approve <run> --all
 supervisor resume                      # picks up where it stopped
 ```
 
+### Contributing checks
+
+```bash
+python -m pytest -q
+python tools/ruff_diff.py
+```
+
+The second one is the lint gate CI runs. It is not a gate at zero: ruff has
+never been configured for this project and reports 58 findings against its
+defaults, so it fails only when a **(file, rule)** pair gets worse than the base
+branch. Comparing totals instead would be worse than nothing — an unchanged
+count once hid six new findings behind six fixed ones here.
+
 ### Every command
 
 `--help` on any of them says the same as this table; nothing below is a
