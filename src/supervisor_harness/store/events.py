@@ -22,6 +22,7 @@ from ..models import (
     Directive,
     DriftAssessment,
     ExecutionTask,
+    Fact,
     Finding,
     Lesson,
     Message,
@@ -43,6 +44,7 @@ class EventType(StrEnum):
     RUN_MODE_SET = "run_mode_set"
     ENVELOPE_SET = "envelope_set"
     CONTEXT_SET = "context_set"
+    FACT_ESTABLISHED = "fact_established"
     BRIEF_RENDERED = "brief_rendered"
     AGENT_SPAWNED = "agent_spawned"
     AGENT_DISPATCHED = "agent_dispatched"
@@ -146,6 +148,20 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
             state.shared_context = str(p["shared_context"])
         for key, value in (p.get("facts") or {}).items():
             state.facts[str(key)] = str(value)
+
+    elif t is EventType.FACT_ESTABLISHED:
+        # Appended, never keyed. `CONTEXT_SET` writes `facts[key] = value` and
+        # the last writer wins, which is correct for the two keys the harness
+        # sets itself and would be a silent overwrite of one agent's work by
+        # another's here. Deduplicated on the pair, so a replay does not turn
+        # one claim into two.
+        fact = from_jsonable(p["fact"], Fact)
+        if not any(
+            f.key == fact.key and f.statement == fact.statement
+            and f.agent_id == fact.agent_id
+            for f in state.established
+        ):
+            state.established.append(fact)
 
     elif t is EventType.BRIEF_RENDERED:
         state.briefs[p["agent_id"]] = str(p.get("brief", ""))

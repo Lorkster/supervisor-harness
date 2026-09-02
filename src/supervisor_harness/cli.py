@@ -459,6 +459,18 @@ def cmd_status(args: argparse.Namespace) -> int:
         for artifact in status["artifacts"]:
             print(f"    {artifact['kind']:<14} {artifact['path']}")
 
+    if status.get("established"):
+        print("\n  established by this run's agents")
+        contested = set(status.get("contested_facts") or [])
+        for fact in status["established"]:
+            mark = "CONTESTED " if fact["key"] in contested else ""
+            print(f"    {mark}{fact['key']}: {fact['statement']}  "
+                  f"({fact['by']}, {fact['evidence']})")
+    if status.get("open_questions"):
+        print("\n  open questions")
+        for question in status["open_questions"]:
+            print(f"    {question}")
+
     print(f"\n  findings {status['findings']}  lessons {status['lessons']}")
     if status["unhandled_events"]:
         print(f"  unhandled event types: {', '.join(status['unhandled_events'])}"

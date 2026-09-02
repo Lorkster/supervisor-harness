@@ -57,6 +57,7 @@ from ..contracts import (
     VERIFICATION_SCHEMA,
     parse_checkpoint,
     parse_drift,
+    parse_established,
     parse_findings,
     parse_lessons,
     parse_messages,
@@ -100,7 +101,12 @@ from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import phases
 from .baseline import BASELINE_FACT, git_baseline
-from .blackboard import Blackboard, answer_from_record, render_context
+from .blackboard import (
+    Blackboard,
+    answer_from_record,
+    contested_keys,
+    render_context,
+)
 from .dod import verify_criterion
 from .drift import (
     TurnContext,
@@ -371,6 +377,17 @@ class Supervisor:
                 state.envelope, state.created_at,
                 self.config.policy.envelope_max_age_days,
             ),
+            # What the run's agents established for each other, and where two of
+            # them keyed a claim the same way and said different things.
+            "established": [
+                {"key": f.key, "statement": f.statement, "evidence": f.evidence,
+                 "by": f.role or f.agent_id}
+                for f in state.established
+            ],
+            "contested_facts": sorted(contested_keys(state.established)),
+            "open_questions": sorted({
+                q for turn in state.turns for q in turn.open_questions
+            }),
             "findings": len(state.findings),
             "tasks": [
                 {
@@ -1167,7 +1184,19 @@ class Supervisor:
             claimed_status=parse_status(payload.get("status")),
             self_assessment=str(payload.get("self_assessment", "")),
             blocked_on=str(payload.get("blocked_on", "")),
+            open_questions=[
+                str(q).strip() for q in (payload.get("open_questions") or []) if str(q).strip()
+            ],
             usage=self._usage_from(payload),
+        )
+
+        # Only analysis agents establish facts for the run. An execution agent
+        # reports what it changed, which its turn and its findings already
+        # carry; a verifier writing into the record it is judging against is the
+        # conflict of interest batch 7 was about, in a different costume.
+        established = (
+            parse_established(payload, agent)
+            if agent.kind is AgentKind.ANALYSIS else []
         )
 
         # One batch, one lock acquisition, one fsync. This was an `emit` per
@@ -1182,6 +1211,10 @@ class Supervisor:
         events += [
             (EventType.FINDING_ADDED, {"finding": to_jsonable(finding)}, agent.id)
             for finding in turn.findings
+        ]
+        events += [
+            (EventType.FACT_ESTABLISHED, {"fact": to_jsonable(fact)}, agent.id)
+            for fact in established
         ]
         events += self._message_events(session, turn)
         await session.aemit_many(events)
@@ -2153,7 +2186,9 @@ class Supervisor:
             schema = ANALYSIS_TURN_SCHEMA
             brief = build_analysis_brief(
                 state, agent, ROLES_BY_ID.get(agent.role), peers, schema,
-                shared_context=render_context(state.shared_context, state.facts),
+                shared_context=render_context(
+                    state.shared_context, state.facts, state.established
+                ),
                 lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
                 tools=tools,
             )
@@ -2168,7 +2203,9 @@ class Supervisor:
             brief = build_execution_brief(
                 state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
                 ROLES_BY_ID.get(agent.role), peers, schema,
-                shared_context=render_context(state.shared_context, state.facts),
+                shared_context=render_context(
+                    state.shared_context, state.facts, state.established
+                ),
                 lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
                 supporting_findings=findings,
                 tools=tools,
