@@ -9,6 +9,11 @@ than announced.
 The harness never claims something is done. It reports which criteria were
 verified, with what evidence, and which were not.
 
+The one idea underneath all of it: **the subject of a judgement may not set the
+terms of it.** An agent proposes; policy disposes. What that means in practice —
+and where each part of it lives in the code — is
+[`docs/reasoning-control-plane.md`](docs/reasoning-control-plane.md).
+
 ```
                  ┌──────────── supervisor ────────────┐
    your task ──▶ │ plan → analyse → synthesise → you   │
@@ -556,6 +561,22 @@ design invites — a verification check that ignored exit codes, an event log th
 handed out duplicate sequence numbers while it was small, scope matching that
 read absolute paths as out-of-scope, and state that lived only in one process's
 memory.
+
+---
+
+## Documentation
+
+| | |
+| --- | --- |
+| [`docs/reasoning-control-plane.md`](docs/reasoning-control-plane.md) | **What the harness is.** The four dimensions of the design, each pointing at the code that implements it, and what each one deliberately does not do. |
+| [`docs/protocol.md`](docs/protocol.md) | The wire protocol between the harness and the host. |
+| [`docs/shared-context-spec.md`](docs/shared-context-spec.md) | Shared semantic context in full: the design, its decided choices, and its open ones. |
+| [`docs/remediation-plan.md`](docs/remediation-plan.md) | The history — what a review of this codebase found, what was fixed, and why each call was made. |
+| [`docs/next-three.md`](docs/next-three.md) | What is scheduled next, and what has already been decided. |
+
+Documents that cite code by line number are checked in CI
+(`tools/check_doc_refs.py`), so a reference that stops pointing at what it
+claims fails the build rather than quietly misleading a reader.
 
 ---
 

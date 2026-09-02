@@ -224,9 +224,50 @@ naming:
 with each dimension pointing at the code that implements it, and
 `docs/remediation-plan.md` keeps the history rather than the definition.
 
-**This can be done at any time, including before items 1 and 2.**
+### Closed
+
+Landed on `docs/control-plane-paradigm`.
+
+`docs/reasoning-control-plane.md` is the definition: the one rule the design
+reduces to, where the framing was borrowed from and what is *not* being claimed
+by borrowing it, then each of the four dimensions — what it means, how the
+harness does it, the code that implements it, and what it deliberately does not
+do. It ends with one worked path through a run touching all four, and an
+explicit "what this is not" (it is not a sandbox, not a permission system, and
+assumes an agent that is wrong rather than hostile).
+
+`docs/remediation-plan.md`'s framing section is **kept, not rewritten**. It is
+the assessment as it stood when two dimensions were open and two of its claims
+were wrong, and that is worth having; it now opens with a pointer saying the
+definition lives elsewhere and that this is the historical record. Rewriting it
+to match the code would have destroyed the record of how the framing was
+arrived at.
+
+`README.md` states the one rule in its opening and links to the document, and
+gains a documentation index — the `docs/` directory was previously reachable
+only by knowing it was there.
+
+**One thing was built that item 3a did not ask for.** The document explains the
+design by pointing at code *by file and line*, which is the useful form and also
+the one that rots silently. Every other place in this repository that names code
+is a test that would fail; prose had no guard at all. `tools/check_doc_refs.py`
+is that guard — for every `path:line` citation it checks the file exists, the
+line exists, and the symbol the prose names in backticks is still within two
+lines of it. An unanchored line number is reported rather than passed, because
+that is the case the tool exists to prevent. It runs in the `lint` job and gates
+at **zero**: unlike the ruff baseline there is nothing pre-existing to
+grandfather in.
+
+Three sabotages confirmed it discriminates: a cited line drifting by five, a
+cited symbol renamed in the code, and a link to a document that does not exist.
+All three were caught; the first two would both have shipped silently without
+it.
 
 ## 3b · Flow and architecture diagrams — after the split lands
+
+**Note after 3a:** `reasoning-control-plane.md` now carries a prose walk of one
+run touching all four dimensions. That is the *narrative*; it is not a
+substitute for the diagrams below, and the two should agree when 3b is done.
 
 **Why last:** diagrams that name modules go stale the moment the modules move,
 and item 2 is now going to move them. Draw these after the split — or draw them
@@ -296,22 +337,51 @@ invalidate architecture findings written against the current layout.
 
 ## Recommended order, and why
 
-Updated for the decisions above. Both blocking questions are answered, so
-nothing in this list is waiting on anything but the work in front of it.
+Revised 2026-09-02, after the decisions above. Two things moved, and both
+moves have a reason beyond preference.
 
-1. **1a** — cheap, independent of everything, and its answer is an *input* to
-   3a, which has to state what is supported. **Done** — see below.
-2. **3a** — independent of the code layout, and overdue.
-3. **2 (9c)** — accepted. The one thing still to settle is *how* to split, and
-   that is a design call to make against the code.
-4. **3b** — once the layout has settled.
-5. **1b** — the optional extra. Independent; it blocks nothing and nothing
-   blocks it.
-6. **4** — the best-practices assessment, after the split, so that its
-   architecture findings are written against the layout that will survive.
+| | item | why here |
+| --- | --- | --- |
+| 1 | **3a** — the paradigm document | Cheap, independent, overdue, and it is what a new reader currently gets wrong. **Done** — see below. |
+| 2 | **1b** — the Bedrock optional extra | Small, independent, closes issue #31 — and it lands *before* the assessment so the assessment covers the module set being kept. |
+| 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. |
+| 4 | **2 (9c)** — the split | Made against 4a's criteria and protected by 4a's coverage. |
+| 5 | **4b** — close the remaining findings in batches | Against the settled layout, so cleanup diffs are not written into `core/supervisor.py` and immediately moved again. |
+| 6 | **3b** — the diagrams | Last, unchanged: diagrams that name modules go stale the moment the modules move. |
 
-`1b` can move anywhere in this list. Everything else is ordered by what would
-otherwise have to be redone.
+### What moved, and why
+
+**1b moved early.** It was "anywhere in the list". It should be before the
+assessment: adding a provider module *after* assessing the codebase means that
+module is the one part never assessed.
+
+**Item 4 split in two, and 4a moved ahead of the split.** This contradicts what
+this document said when item 4 was written — that all of item 4 comes after the
+split, because a split invalidates architecture findings. That reasoning is
+right about the *architecture* findings and wrong about the rest, and it misses
+that **the split needs part of item 4 as its instrument**:
+
+- 9c's definition of done is "no behaviour change at all, and the PR should say
+  how that was established, not merely assert it." Today the only available
+  evidence is *313 tests pass*. **There is no coverage measurement**, so nobody
+  knows what fraction of a 2,584-line module those tests exercise — and the
+  uncovered parts are exactly where a silent break from a mechanical move would
+  hide. Measure coverage before anything moves, or the split's central claim
+  cannot be evidenced.
+- *How* to split — free functions, mixins, or by layer — is itself an
+  architecture question. This document says elsewhere that guessing at best
+  practices without written criteria is how a refactor becomes taste. The
+  criteria should exist before the call is made, not after it.
+
+So **4a** delivers: coverage measured and reported in CI, the ruff rule set
+actually decided and configured, a type-checking decision, the testing audit,
+and the written architecture criteria the split has to satisfy. **4b** is the
+work those findings turn into.
+
+**One caveat on staging ruff.** CI gates on *no new* `(file, rule)` pairs. Turn
+on a stricter rule set in 4a and every pre-existing violation becomes a gate
+failure on arrival. Decide and configure the rule set in 4a; enable gating
+per rule as each is driven to zero in 4b.
 
 ---
 

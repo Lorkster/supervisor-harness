@@ -91,3 +91,13 @@ jobs:
       # skipped once someone is in a hurry.
       - name: No new ruff findings
         run: python tools/ruff_diff.py --base origin/${{ github.base_ref || 'main' }}
+
+      # docs/reasoning-control-plane.md explains the design by pointing at the
+      # code that implements it, by file and line. That is the useful form and
+      # also the one that rots silently -- the code moves, the line number does
+      # not, and the document goes on asserting something it no longer shows.
+      # Every other place that names code is a test that would fail; this is the
+      # guard for the ones that are prose. It gates at zero: unlike the ruff
+      # baseline there is nothing pre-existing to grandfather in.
+      - name: Documentation still points at the code
+        run: python tools/check_doc_refs.py
