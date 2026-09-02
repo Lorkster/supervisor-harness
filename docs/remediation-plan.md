@@ -660,6 +660,16 @@ different one.
 
 ## The framing
 
+> **The definition of the paradigm now lives in
+> [`reasoning-control-plane.md`](reasoning-control-plane.md).** Read that for
+> what the harness *is*, and where each of the four dimensions lands in the
+> code today — all four are closed.
+>
+> This section is kept as the **historical record**: the assessment as it stood
+> when it was written, with two dimensions open and two claims that later turned
+> out to be wrong. It is how the framing was arrived at, not what it now says.
+> Do not update it to match the code; that is the other document's job.
+
 The assessment below borrows a structure from an external article on a
 "reasoning control plane" (DZone, 2026) — an argument that multi-agent systems
 need a layer governing reasoning itself, described along four dimensions: a
