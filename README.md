@@ -276,6 +276,29 @@ fallbacks, tried in order when a provider fails.
 | `openrouter` | `OPENROUTER_API_KEY` |
 | `anthropic` | `ANTHROPIC_API_KEY` |
 
+A model id may contain a colon — `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
+is one identifier, not a provider and a model. A route splits on its **first**
+colon only, so the id arrives whole.
+
+### Amazon Bedrock
+
+| Mode | Bedrock today | |
+| --- | --- | --- |
+| **Host-delegated** (default) | **Works, and there is nothing to configure here** | Claude Code reads `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION` and your AWS credentials, and runs every packet itself. The harness is not in the model path at all — no provider is constructed, no HTTP client is opened. |
+| **Autonomous**, against Bedrock directly | **Not supported** | Bedrock authenticates with AWS SigV4, which is not a `base_url` swap on an API-key client. `"type": "bedrock"` is refused by name rather than misrouted — `supervisor providers` reports it, and the stage fails the first time it is routed. |
+| **Autonomous**, via an Anthropic-compatible gateway in front of Bedrock | Should work; not covered by the suite | Point the `anthropic` provider's `base_url` at the gateway. Note that `base_url` is one of the settings a workspace config file may not set — put it in your trusted home config. |
+
+So: if you drive the harness from Claude Code and Claude Code is on Bedrock,
+you are already running on Bedrock — which is the case
+[#31](https://github.com/Lorkster/supervisor-harness/issues/31) asks about, and
+it needs nothing from you.
+
+Direct autonomous support is planned as an **optional extra**
+(`pip install supervisor-harness[bedrock]`) rather than an always-on
+dependency, so that the default install keeps its single runtime dependency —
+Bedrock needs botocore or `anthropic[bedrock]`, either of which would roughly
+triple the footprint for one provider.
+
 Check what resolves where:
 
 ```bash

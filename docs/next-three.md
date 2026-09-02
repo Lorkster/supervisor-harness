@@ -1,9 +1,12 @@
-# The next three, in order
+# What comes next, in order
 
 A working document for a session that was not present when it was written, in
-the same shape as `docs/remediation-plan.md`. It says what the next three pieces
-of work are, what has been *verified* about each, what is still only a reading,
-and what must be decided before the work starts.
+the same shape as `docs/remediation-plan.md`. It says what the next pieces of
+work are, what has been *verified* about each, what is still only a reading, and
+what has been decided.
+
+It was written as *the next three*. Item 4 arrived with the 9c decision, and the
+title moved rather than the item being squeezed into one of the others.
 
 **State as of `9bb1bf7`.** 306 tests pass, 2 skipped. Ruff reports 58 findings
 against defaults the project has never configured, and CI gates on *no new*
@@ -12,7 +15,26 @@ against defaults the project has never configured, and CI gates on *no new*
 
 Every finding from the original 88-finding self-review is closed, both
 outstanding policy calls are decided, and all four dimensions of the
-control-plane assessment are done. What remains is these three.
+control-plane assessment are done. What remains is the items below.
+
+## Decisions taken, 2026-09-02
+
+Both questions this document said had to be answered before any code have been,
+by the user. They are recorded here rather than in the sections below so that a
+reader meets the answer before the argument:
+
+| question | decision |
+| --- | --- |
+| **1b** — how much dependency Bedrock is worth | **Optional extra.** `pip install supervisor-harness[bedrock]`; the default install keeps its single runtime dependency and the Bedrock code path loads only when configured. |
+| **9c** — split `core/supervisor.py`, or decline it | **Accepted, and widened.** The reason given is maintainability rather than a defect: any class that size is impractical to maintain regardless of whether a bug has yet been traced to it. The scope now extends past the split — see item 4. |
+
+The 9c decision overrides this document's own recommendation to close it as
+declined, and the reasoning is worth keeping rather than quietly overwriting:
+this document argued that with no defect behind it, the churn was not yet
+bought. The counter-argument accepted is that a 2,584-line class is a
+maintainability cost paid continuously and not visible as any single defect -
+which is a judgement about the codebase rather than a claim about the code, and
+is the user's to make.
 
 ## Before starting anything
 
@@ -91,31 +113,45 @@ ending in `raise ValueError(f"unknown provider type: {kind!r}")`, so
 | Always-on dependency | Simplest code and testing. | Triples the footprint of a package whose lightness is currently a feature. |
 | Do not support it; document the workaround | Zero cost. A Bedrock-backed *gateway* exposing an Anthropic-compatible endpoint already works through `base_url`. | Leaves the issue open, and the workaround needs infrastructure the user may not want. |
 
-**Do not start 1b until this is answered.** The options differ in what gets
-built, not just in how much.
+### Decided: the optional extra
+
+`pip install supervisor-harness[bedrock]`. What that commits to:
+
+- `[project.optional-dependencies]` gains a `bedrock` group; the default install
+  still has exactly one runtime dependency.
+- `providers/bedrock.py` imports its dependency lazily, so importing
+  `providers.router` on a default install cannot fail.
+- `build_provider` gains a `bedrock` branch whose missing-dependency error names
+  the extra to install, rather than surfacing a bare `ImportError`.
+- CI installs the extra in at least one job, or the branch is untested code.
+- The routing docs gain the Bedrock model-id form, which is the colon case that
+  item 1a pins.
 
 ---
 
 # 2 · Split `core/supervisor.py` (9c)
 
-## Say the honest thing first
+## Decided: do it — and say the honest thing anyway
 
-**There is still no defect behind this.** It has been recorded as *not
+**Accepted on maintainability grounds, not on a defect.** That distinction
+should survive into the PR description, because it changes what "done" means:
+there is no failing behaviour to point at afterwards, so the only available
+evidence that the split was safe is that nothing changed — which has to be
+*shown*, not asserted.
+
+**There is still no defect behind this.** It had been recorded as *not
 scheduled* since batch 9 for that reason, and the trigger written down for
 revisiting it — "a defect that is hard to fix *because* of the file's size, or a
-second person working in it" — has not happened.
+second person working in it" — has not fired. It is being done anyway, because a
+class of that size is a cost paid on every future change rather than one that
+shows up as a bug.
 
 What has changed is smaller than a trigger and worth stating rather than
 inflating: item 3 wants architecture diagrams, and diagrams drawn against a
 2,584-line module are diagrams that have to be redrawn if it is ever split. That
 is a reason to decide the order, not a reason the split has become necessary.
 
-**It is entirely reasonable to skip this and go straight to item 3**, drawing
-the diagrams at the level of phases and data flow rather than modules — which is
-arguably the more useful picture anyway. If that is the choice, record it here
-and close 9c as declined rather than leaving it open forever.
-
-## If it is done
+## The work
 
 **[verified]** The module already carries phase-shaped seams, marked by its own
 section comments: planning (488), analysis (587), synthesis (621), execution
@@ -150,6 +186,10 @@ Methods on one class cannot be moved to another file without choosing how:
 
 **Cost:** high churn, no new tests to write, and the risk is entirely in what a
 mechanical change does silently.
+
+**The design decision above is still open.** It is a design call rather than a
+policy one, and it should be made against the code with the three options
+costed — not settled by whoever starts typing first.
 
 ---
 
@@ -186,12 +226,12 @@ with each dimension pointing at the code that implements it, and
 
 **This can be done at any time, including before items 1 and 2.**
 
-## 3b · Flow and architecture diagrams — after 9c is decided
+## 3b · Flow and architecture diagrams — after the split lands
 
-**Why last:** diagrams that name modules go stale the moment the modules move.
-If 9c is declined (a legitimate outcome), this unblocks immediately — draw them
-at the level of phases and data flow instead, which does not depend on the file
-layout.
+**Why last:** diagrams that name modules go stale the moment the modules move,
+and item 2 is now going to move them. Draw these after the split — or draw them
+at the level of phases and data flow, which does not depend on the file layout
+and is arguably the more useful picture regardless.
 
 Worth covering, and currently not drawn anywhere:
 
@@ -214,15 +254,87 @@ from the documentation without reading the source.
 
 ---
 
+# 4 · A best-practices pass over the whole package
+
+**Added with the 9c decision:** *"after all changes we need to make sure the
+entire application adheres to best practices for architecture, code quality and
+testing."*
+
+This is a bigger and less defined piece of work than the three above, and it
+should not be started as one undifferentiated sweep. What it needs first is an
+**assessment** — the same shape as the control-plane assessment that produced
+items 1-3 — against explicit written criteria, producing findings that are then
+closed in batches. Guessing at "best practices" without criteria written down
+first is how a refactor becomes taste.
+
+**Nothing in this section is verified.** These are the axes an assessment would
+cover, not findings:
+
+- **Architecture** — module boundaries and their direction; whether `core/`
+  depends on `store/` and `providers/` only through interfaces it owns; whether
+  `RunState` is a data structure or a god object; where the phase machine ends
+  and phase content begins (item 2 answers part of this).
+- **Code quality** — the 58 ruff findings CI currently only gates on *not
+  getting worse*: decide which rules the project actually wants, configure them
+  in `pyproject.toml` rather than running against unconfigured defaults, and
+  drive the chosen set to zero. Type coverage is unmeasured; there is no
+  `mypy` or `pyright` in CI at all.
+- **Testing** — 306 tests with no coverage measurement, so what is untested is
+  unknown. Two questions worth asking of the suite itself: how many of its tests
+  would survive the sabotage check that has caught five vacuous tests across two
+  batches, and whether the fixtures in `conftest.py` have grown into a second
+  implementation of the thing under test.
+
+**Definition of done for the assessment** — not for the work it finds: written
+criteria, findings with ids, and a batch plan, in the shape
+`docs/remediation-plan.md` already uses so that the two read the same way.
+
+**Order:** after item 2, because a split that moves half the package would
+invalidate architecture findings written against the current layout.
+
+---
+
 ## Recommended order, and why
 
-1. **1a** — cheap, independent of everything, and its answer is an *input* to
-   3a, which has to state what is supported.
-2. **3a** — independent of the code layout, and overdue.
-3. **Decide 9c** — do it, or close it as declined and record that.
-4. **3b** — once the layout is settled either way.
-5. **1b** — whenever the dependency question is answered; it does not block
-   anything else.
+Updated for the decisions above. Both blocking questions are answered, so
+nothing in this list is waiting on anything but the work in front of it.
 
-`1b` and `2` are the two that need a decision before any code. Neither should be
-started by asking the code what to do.
+1. **1a** — cheap, independent of everything, and its answer is an *input* to
+   3a, which has to state what is supported. **Done** — see below.
+2. **3a** — independent of the code layout, and overdue.
+3. **2 (9c)** — accepted. The one thing still to settle is *how* to split, and
+   that is a design call to make against the code.
+4. **3b** — once the layout has settled.
+5. **1b** — the optional extra. Independent; it blocks nothing and nothing
+   blocks it.
+6. **4** — the best-practices assessment, after the split, so that its
+   architecture findings are written against the layout that will survive.
+
+`1b` can move anywhere in this list. Everything else is ordered by what would
+otherwise have to be redone.
+
+---
+
+## Item 1a, closed
+
+Landed on `feat/bedrock-host-delegated`. The reading this document recorded held
+up, and is now a test rather than a reading:
+
+- **Verified, by test.** `us.anthropic.claude-sonnet-4-5-20250929-v1:0` resolves
+  whole through `_parse_ref`, through the `|` fallback chain in
+  `ModelRouter.complete` — which parses refs *itself*, in a second place a fix
+  to the first would not have covered — through `SUPERVISOR_ROUTE_*`, and back
+  through `ModelBinding.ref()`.
+- **Verified, by test.** A complete host-delegated run, planning through report,
+  passes with `build_provider`, `ModelRouter.complete` and
+  `httpx.AsyncClient.__init__` all rigged to raise. The harness is genuinely not
+  in the model path, so `CLAUDE_CODE_USE_BEDROCK` and the AWS credentials are
+  the host's business entirely.
+- **Verified, by test.** `"type": "bedrock"` still fails by name, so item 1b
+  changes that deliberately rather than by accident.
+- `README.md` now states which modes support Bedrock and which do not.
+
+Each mechanism was disabled in turn to confirm the tests were not vacuous. All
+seven go red under at least one sabotage, and the two colon-parsing sites redden
+disjoint sets, which is what shows they are covered independently rather than
+one standing in for the other.
