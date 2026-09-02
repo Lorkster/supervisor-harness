@@ -68,6 +68,9 @@ each, in the style the history already uses.
 | 9b | Collapse the backend split, and the dead paths | 5 | **done** — same branch |
 | 9c | Split the module | 1 | **not scheduled** — see below |
 
+Every finding from the original review is now closed: `fnd_01M130P3E5SCF8`'s
+open half went on 2026-09-02, and 9c is a decision rather than a defect.
+
 Release-blocking, on the reading above: **1, 2, 3, 4**. Code execution past the
 fence, two proven silent data losses, permanent unresumability, and duplicated
 dispatch. **0** should go first regardless, because 1 and 7 cannot be proven
@@ -524,7 +527,10 @@ is not the one the run started under. `_record_turn` batches a turn into one
 now 1. `RunSession.reload` (no caller) and `_stage_agent`'s unread `**extra` are
 removed. 216 tests pass, 6/6 under parallel load.
 
-**Half of `fnd_01M130P3E5SCF8` stays open, deliberately.** The lock is acquired
+**Half of `fnd_01M130P3E5SCF8` stayed open, deliberately.** *(Closed on
+2026-09-02; see "D1 and B1" at the end of this document. The paragraph below is
+the reasoning that deferred it, and it was right about why the obvious fix was
+wrong.)* The lock is acquired
 with a spin-sleep from inside the async loop, so parallel autonomous agents
 serialise on it. Moving the emit to a thread does *not* fix that: the
 `RunSession` is shared across the agents `asyncio.gather` runs together, so
@@ -1135,3 +1141,117 @@ only "this project has seen it too" can lift the shared one above it.
 The "Policy calls still outstanding" section above is now empty. What remains is
 `fnd_01M130P3E5SCF8`'s open half (the log lock on the async loop), 9c, and the
 two enhancements recorded as deliberately-not-done in their own batches.
+
+---
+
+# D1 and B1 — the log lock off the loop, and a lint gate
+
+Landed on `fix/log-lock-off-the-async-loop`, stacked on the policy-call branch.
+**Closes the open half of `fnd_01M130P3E5SCF8`**, which was the last finding
+from the original review still outstanding.
+
+## D1 · Emission no longer holds the event loop
+
+The design decision 9a deferred, taken: **give the session its own lock and put
+the file I/O behind it.**
+
+9a was right that moving the emit to a thread is the wrong fix — the
+`RunSession` is shared across the agents `asyncio.gather` runs together, so a
+thread holding `RunState` reads a structure the loop is free to mutate. The way
+through is to split by *what is touched* rather than by what is slow:
+
+```
+async with the session's asyncio.Lock:
+    build the events                      loop    (touches RunState)
+    append them                           thread  (touches the file)
+    fold them into the state              loop    (touches RunState)
+    serialise the snapshot                loop    (touches RunState)
+    write it                              thread  (touches a string)
+```
+
+Nothing handed to a thread is `RunState`. `RunStore.save_snapshot` was split
+into `snapshot_payload(state)` and `write_snapshot(run_id, payload)` for exactly
+this — the serialisation happens where the state is safe to read, and only the
+bytes travel.
+
+**Two forms of emission, and the rule for choosing.** `emit` / `emit_many` /
+`note` stay, and stay correct: the phase machine runs between phases when
+nothing else is in flight, and blocking there costs nobody anything. `aemit` /
+`aemit_many` / `anote` are required on any path reachable while agents run. The
+rule is stated in `RunSession`'s docstring and is mechanically checkable — no
+`session.emit(` should appear inside an `async def` in `core/supervisor.py`, and
+none does.
+
+Applying that rule turned eleven methods async (`_record_turn`, `_supervise`,
+`_assess_drift`, `_answer_questions`, `_set_status`, `_abandon_agent`,
+`_reap_unreported`, `_stage_agent`, `_remediate`, `_report_verification`,
+`_apply_checkpoint`) and converted 37 emission sites. Every one of those methods
+already bottomed out in an async caller, so the conversion is mechanical rather
+than a change in control flow.
+
+## B1 · A lint gate that automates the convention
+
+`tools/ruff_diff.py`, plus a `lint` job in CI. It checks out the base into a
+worktree, runs ruff on both trees, and fails only when a **(file, rule)** pair
+has more findings here than there.
+
+Not a gate at zero: ruff has never been configured for this project and reports
+58 findings against its defaults, so a gate at zero would be red on arrival and
+tell nobody anything. Not a gate on the total either — an unchanged count once
+hid six new findings behind six fixed ones in this repository, which is why the
+convention has been to diff by rule and file. That convention has been followed
+by hand on every pull request since, and by hand it would eventually be skipped.
+
+It is a separate job from the test matrix: it compares two checkouts, so it
+needs `fetch-depth: 0`, and running it eight times would say the same thing
+eight times.
+
+**It caught two new findings in the commit that introduced it** — `RUF059` in
+the new test file and `PLW1510` in the tool itself. Both fixed before the gate
+was committed, which is the shortest possible demonstration that it works.
+
+## Test plan
+
+**282 pass** (276 + 6 new), 2 skipped. The gate reports 58 on `main` and 58
+here, no pair worse.
+
+The timing tests were run five times sequentially and eight times concurrently,
+all green — the check the plan records as the one that caught
+`test_the_wall_clock_bound_abandons_a_silent_agent` being flaky under load.
+
+| mechanism disabled | test that went red |
+|---|---|
+| the append is back on the loop | `test_a_slow_append_leaves_the_event_loop_free` |
+| the snapshot write is back on the loop | `test_a_slow_snapshot_write_leaves_the_event_loop_free` |
+| no lock, so two emits interleave | `…emit_holds_the_session_lock_across_its_await_points` |
+| `RunState` is handed to the thread | `test_the_state_a_thread_sees_is_never_the_live_one` |
+
+### Two tests were written, failed to discriminate, and were thrown away
+
+Worth recording, because the next person will reach for the same ones.
+
+The first made one snapshot write slow so a stale payload would land last. Which
+coroutine got the slow write was decided by a race between two worker threads,
+so it was a coin flip that passed either way.
+
+The second watched how much of the log each snapshot was written beside,
+expecting serialised emits to see it grow one event at a time. Whether the
+second append has landed by the time the first write starts is itself a race, so
+it passed with the lock removed.
+
+The lock is therefore asserted **structurally** — while a snapshot is being
+written, the session's lock is held — and the test says why, at length. This is
+the honest shape of the thing: the interleaving that breaks a lock is the one a
+test cannot reliably produce.
+
+A third draft of the loop-free test slowed *both* blocking halves at once, which
+meant either one being off the loop satisfied it; a snapshot write left on the
+loop would have passed. It is now two tests, each slowing exactly one.
+
+## What this does not claim
+
+The suite cannot prove the absence of a data race, and does not try to. What it
+proves is that the loop is free during both blocking operations, that the lock
+is held across the await points, and that `RunState` never crosses a thread
+boundary. The last of those is a guard on the shape of the code rather than on
+its behaviour, and its docstring says so.

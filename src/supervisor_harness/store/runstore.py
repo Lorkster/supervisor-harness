@@ -11,6 +11,7 @@ Layout under the harness home (``.supervisor/`` in the workspace by default)::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -264,8 +265,19 @@ class RunStore:
         was there to save. The event log, which is not derived, still fails
         loudly; the difference is deliberate.
         """
-        path = self.run_dir(state.id) / "state.json"
-        payload = json.dumps(to_jsonable(state), indent=2, ensure_ascii=False)
+        return self.write_snapshot(state.id, snapshot_payload(state))
+
+    def write_snapshot(self, run_id: str, payload: str) -> bool:
+        """The blocking half of :meth:`save_snapshot`: serialised text to disk.
+
+        Split from the serialisation so the async path can do the two in
+        different places -- the text is produced on the event loop, where
+        ``RunState`` is only ever touched, and only this is handed to a thread.
+        A thread that took the state itself would be reading a structure the
+        loop is free to mutate while it works, which is the data race that made
+        "just move the emit to a thread" the wrong fix.
+        """
+        path = self.run_dir(run_id) / "state.json"
         handle, name = tempfile.mkstemp(dir=path.parent, prefix=".state-", suffix=".tmp")
         tmp = Path(name)
         try:
@@ -530,8 +542,44 @@ class RunStore:
 
 
 
+def snapshot_payload(state: RunState) -> str:
+    """The snapshot's text, produced wherever ``state`` is safe to read.
+
+    Deliberately not a method on the store: it touches ``RunState`` and nothing
+    else, and keeping it separate is what lets a caller serialise on the event
+    loop and write from a thread.
+    """
+    return json.dumps(to_jsonable(state), indent=2, ensure_ascii=False)
+
+
 class RunSession:
-    """A live handle on one run: emit events, keep state in step, persist."""
+    """A live handle on one run: emit events, keep state in step, persist.
+
+    Emission comes in two forms, and which to use is a property of *when* the
+    caller runs rather than of what it is emitting:
+
+    ``emit`` / ``emit_many`` / ``note``
+        Synchronous. Correct anywhere nothing else is in flight -- the phase
+        machine between phases, the CLI, a host reporting one turn. They block
+        on an advisory lock and an ``fsync``, which costs nothing when there is
+        nobody to block.
+
+    ``aemit`` / ``aemit_many`` / ``anote``
+        Asynchronous, and required on any path reachable while agents are
+        running under ``asyncio.gather``. The synchronous form blocks the whole
+        event loop for the duration of the lock and the fsync, so every other
+        agent's in-flight model call stalls behind one agent's bookkeeping --
+        which is what made "parallel" agents serialise.
+
+    The asynchronous form is not simply the synchronous one in a thread. A
+    thread that took ``RunState`` with it would read a structure the loop is
+    free to mutate while it works, which is the data race that made the obvious
+    fix the wrong one. So the split is by *what is touched*: everything that
+    reads or writes ``RunState`` stays on the loop, and only the file I/O -- an
+    already-encoded event, an already-serialised snapshot -- is handed to a
+    thread. An ``asyncio.Lock`` holds the whole sequence together, so two
+    coroutines cannot interleave halfway through one emit.
+    """
 
     def __init__(self, store: RunStore, state: RunState) -> None:
         self.store = store
@@ -539,6 +587,14 @@ class RunSession:
         self._log = store.log(state.id)
         self._pending_index = False
         self._index_error: str | None = None
+        # Created lazily: a session is constructed in synchronous code, and an
+        # asyncio.Lock built outside a running loop binds to the wrong one.
+        self._alock: asyncio.Lock | None = None
+
+    def _lock(self) -> asyncio.Lock:
+        if self._alock is None:
+            self._alock = asyncio.Lock()
+        return self._alock
 
     # -- emission ----------------------------------------------------------
 
@@ -573,6 +629,44 @@ class RunSession:
 
     def note(self, text: str, actor: str = "supervisor", **fields: Any) -> Event:
         return self.emit(EventType.NOTE, {"text": text, **fields}, actor=actor)
+
+    async def aemit(
+        self,
+        type: EventType,
+        payload: dict[str, Any] | None = None,
+        actor: str = "supervisor",
+    ) -> Event:
+        """``emit``, without blocking the event loop on the lock or the fsync."""
+        return (await self.aemit_many([(type, payload or {}, actor)]))[0]
+
+    async def aemit_many(
+        self, events: list[tuple[EventType, dict[str, Any], str]]
+    ) -> list[Event]:
+        """Append a batch off the loop, applying it on the loop.
+
+        The ordering is the point. Under the lock: build the events (loop),
+        append them (thread -- the file, and nothing else), fold them into the
+        state (loop), serialise the snapshot (loop, so it is a consistent read
+        of a structure nothing else can be touching), write it (thread).
+        """
+        if not events:
+            return []
+        async with self._lock():
+            built = [
+                Event(run_id=self.state.id, type=t, actor=actor, payload=redact(payload or {}))
+                for t, payload, actor in events
+            ]
+            await asyncio.to_thread(self._log.append_many, built)
+            for event in built:
+                self.state = _apply_contained(self.state, event)
+            self._pending_index = True
+            payload_text = snapshot_payload(self.state)
+            run_id = self.state.id
+            await asyncio.to_thread(self.store.write_snapshot, run_id, payload_text)
+            return built
+
+    async def anote(self, text: str, actor: str = "supervisor", **fields: Any) -> Event:
+        return await self.aemit(EventType.NOTE, {"text": text, **fields}, actor=actor)
 
     # -- persistence -------------------------------------------------------
 

@@ -59,3 +59,35 @@ jobs:
 
       - name: Test
         run: python -m pytest -q
+
+  # Separate from the matrix: this compares two checkouts, so it needs the full
+  # history, and running it eight times would say the same thing eight times.
+  lint:
+    name: Lint (no new findings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The gate checks the base out into a worktree, so the shallow clone
+          # the default gives is not enough.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Not a gate at zero: ruff has never been configured for this project and
+      # reports 58 findings against its defaults on main, so a gate at zero
+      # would be red on arrival and tell nobody anything. This fails only when a
+      # (file, rule) pair gets worse -- the convention the pull requests have
+      # been following by hand, which is exactly the kind of check that gets
+      # skipped once someone is in a hurry.
+      - name: No new ruff findings
+        run: python tools/ruff_diff.py --base origin/${{ github.base_ref || 'main' }}
