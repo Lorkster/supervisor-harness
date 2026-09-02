@@ -159,22 +159,41 @@ async def test_a_colon_bearing_fallback_route_keeps_its_colon() -> None:
     assert recording.models == [BEDROCK_MODEL]
 
 
-# -- asking for autonomous Bedrock today fails by name -----------------------
+# -- an unknown provider type still fails by name ---------------------------
 
 
-def test_bedrock_as_a_provider_type_is_refused_by_name() -> None:
-    """Item 1b is not built, and the failure has to say so rather than misroute.
+def test_an_unknown_provider_type_is_refused_by_name() -> None:
+    """``bedrock`` was the subject of this test until item 1b made it real.
 
-    ``build_provider`` ends in a raise rather than a default, so a config that
-    says ``"type": "bedrock"`` cannot quietly become an Anthropic client posting
-    an ``x-api-key`` header at an endpoint that wants SigV4.
+    The guarantee has not changed and still needs a subject: ``build_provider``
+    ends in a raise rather than a default, so a type the harness does not
+    implement cannot quietly become an Anthropic client posting an ``x-api-key``
+    header at an endpoint that wants something else entirely. The error names
+    both the type and the provider, because a config with several providers
+    gives no other clue which one is wrong.
+
+    Bedrock's own coverage is now `tests/test_bedrock_provider.py`.
     """
     with pytest.raises(ValueError) as caught:
-        build_provider("mybedrock", ProviderConfig(type="bedrock"))
+        build_provider("myvertex", ProviderConfig(type="vertex"))
 
     message = str(caught.value)
-    assert "bedrock" in message
-    assert "mybedrock" in message
+    assert "vertex" in message
+    assert "myvertex" in message
+
+
+def test_bedrock_is_now_a_real_provider_type() -> None:
+    """The deliberate half of the change above.
+
+    Item 1a pinned that ``"type": "bedrock"`` was refused, precisely so that
+    item 1b would have to change it on purpose rather than by accident. This is
+    that change being made on purpose.
+    """
+    from supervisor_harness.providers.bedrock import BedrockProvider
+
+    provider = build_provider("mybedrock", ProviderConfig(type="bedrock", region="eu-west-1"))
+
+    assert isinstance(provider, BedrockProvider)
 
 
 # -- the delegated path is not in the model path at all ----------------------
