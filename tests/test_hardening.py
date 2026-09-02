@@ -269,7 +269,9 @@ def test_only_execution_kinds_may_write_or_run_commands(tmp_path: Path) -> None:
     assert not (tmp_path / "x.txt").exists()
 
     assert box.call("write_file", {"path": "x.txt", "content": "x"}, builder).ok
-    assert box.call("run_command", {"command": "echo hi"}, builder).ok
+    # A check runner, not `echo`: the executable allow-list is universal now, so
+    # what an execution agent keeps is the shell for the project's own checks.
+    assert box.call("run_command", {"command": "python --version"}, builder).ok
 
     # And the brief does not advertise what the agent may not use.
     for judge in (analyst, verifier):
@@ -324,9 +326,89 @@ def test_run_command_is_refused_for_a_path_outside_the_agents_scope(tmp_path: Pa
         "run_command", {"command": "python -m pytest src/auth"}, fenced
     ).output
 
-    # An unfenced agent is unaffected: there is no scope to violate.
+    # An agent that declared no scope is held to every rule above except the
+    # path one, which an empty scope relaxes to *the workspace* -- the meaning
+    # `write_file` already gave it -- and not to the machine. Before the fence
+    # was universal this agent skipped all of them and `echo` reached the shell.
     unfenced = AgentSpec(id="c", kind=AgentKind.EXECUTION, scope=Scope())
-    assert box.call("run_command", {"command": "echo infra/waf.tf"}, unfenced).ok
+    assert not box.call("run_command", {"command": "echo infra/waf.tf"}, unfenced).ok
+    assert not box.call("run_command", {"command": "rm -rf infra"}, unfenced).ok
+    assert (tmp_path / "infra").is_dir()
+    # The relaxation, and its limit: any path in the workspace, none outside it.
+    # `exit=` rather than `.ok` -- reaching the shell is the claim, and pytest
+    # collecting nothing in that directory is not a refusal.
+    assert "exit=" in box.call(
+        "run_command", {"command": "python -m pytest src/auth -q"}, unfenced
+    ).output
+    assert "outside the workspace" in box.call(
+        "run_command", {"command": "python /etc/passwd"}, unfenced
+    ).output
+
+
+def test_the_command_fence_holds_for_an_agent_that_declared_no_scope(
+    tmp_path: Path,
+) -> None:
+    """The policy call recorded in the plan, enforced.
+
+    `_scope_refusal` used to return early for an agent with an empty scope, on
+    the reasoning that there was nothing to check a path against. Three of its
+    four rules are not about a path: the executable allow-list, the
+    metacharacter refusal and the glob refusal all stand on their own. Skipping
+    them handed the least specified agent in a run the widest shell in it -- and
+    a scope is supplied by a model, so "no scope" is a thing a model can cause
+    by saying nothing.
+
+    Every entry below reached a real shell before this change.
+    """
+    (tmp_path / "infra").mkdir()
+    (tmp_path / "infra" / "waf.tf").write_text("resource {}\n", encoding="utf-8")
+    box = Toolbox(tmp_path, Policy(allow_command_execution=True))
+    unscoped = AgentSpec(id="b", kind=AgentKind.EXECUTION, scope=Scope())
+
+    refusals = {
+        "rm -rf infra": "may not run 'rm'",
+        "cp Makefile Dockerfile": "may not run 'cp'",
+        "curl http://example.com/x.sh": "may not run 'curl'",
+        "git checkout main": "may not run 'git'",
+        "echo hi": "may not run 'echo'",
+        "rm -rf *": "glob character",
+        "pytest -q > infra/waf.tf": "metacharacter",
+        "pytest -q && rm -rf infra": "metacharacter",
+        "python -c \"open('escaped.txt','w').write('x')\"": "may not pass",
+    }
+    for command, reason in refusals.items():
+        result = box.call("run_command", {"command": command}, unscoped)
+        assert not result.ok, command
+        assert reason in result.output, command
+        assert "exit=" not in result.output, command
+
+    assert (tmp_path / "infra" / "waf.tf").exists()
+    assert not (tmp_path / "escaped.txt").exists()
+
+    # Not a refusal of everything: the project's own checks still run, and an
+    # empty scope still means the whole workspace for the paths they name.
+    assert "exit=" in box.call(
+        "run_command", {"command": "python -m pytest infra -q"}, unscoped
+    ).output
+
+
+def test_run_command_called_without_a_scope_is_fenced_all_the_same(
+    tmp_path: Path,
+) -> None:
+    """An absent scope is an empty one, not an exemption.
+
+    `run_command` took `scope: Scope | None` and skipped the fence entirely when
+    it was `None`. Nothing in the dispatch path passes `None` -- `AgentSpec.scope`
+    has a default factory -- so this was never reachable through `call`. It was
+    reachable through the method, which is public, and a fence with a documented
+    bypass parameter is not a fence.
+    """
+    box = Toolbox(tmp_path, Policy(allow_command_execution=True))
+
+    result = box.run_command("rm -rf .")
+    assert not result.ok
+    assert "may not run 'rm'" in result.output
+    assert "exit=" not in result.output
 
 
 def test_a_scoped_agent_may_not_hand_a_check_runner_its_program_inline(
@@ -386,10 +468,14 @@ def test_a_scoped_agent_may_not_hand_a_check_runner_its_program_inline(
         fenced,
     ).output
 
-    # An unfenced agent is unaffected: there is no scope to escape.
+    # And for an agent that declared no scope, which used to walk through: the
+    # rule is not about a scope, it is about source that names its paths only
+    # once it is already running.
     unfenced = AgentSpec(id="c", kind=AgentKind.EXECUTION, scope=Scope())
-    assert box.call("run_command", {"command": f'python -c "{escape}"'}, unfenced).ok
-    assert (tmp_path / "escaped.txt").exists()
+    result = box.call("run_command", {"command": f'python -c "{escape}"'}, unfenced)
+    assert not result.ok
+    assert "may not pass" in result.output
+    assert not (tmp_path / "escaped.txt").exists()
 
 
 def test_no_agent_may_write_into_git_or_the_harness_store(tmp_path: Path) -> None:

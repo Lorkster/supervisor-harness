@@ -601,6 +601,10 @@ docstring at supervisor.py:20-21 asserts the invariant the code breaks.
 
 ## Policy calls still outstanding
 
+*Both decided on 2026-09-02 and closed; see "The two policy calls" at the end of
+this document. Kept as written, because the shape of each question is what the
+answer was given to.*
+
 Neither is a bug. Both change the shape of a batch, so decide before starting it.
 
 1. **Should an execution agent with no model-supplied scope be permitted to run
@@ -1017,3 +1021,117 @@ episode shifted the first real turn to `turn 1`. It has a test now
   final report are already legible in `status` and the report artifact.
 - **`RunState.drift` keeps its shape**, for the reason above.
 - **`core/supervisor.py`** gained one method (`explain`, six lines). Still 9c.
+
+---
+
+# The two policy calls — decided and closed
+
+Landed on `fix/universal-command-fence-and-lesson-origin`. Both are the calls
+recorded above under "Policy calls still outstanding", answered by the user:
+**P1 — make the command fence universal. P2 — tag lessons with their origin.**
+
+## P1 · The command fence applies to every agent
+
+`_scope_refusal` returned early for an agent with an empty scope, on the
+reasoning that there was nothing to check a path against. Three of its four
+rules are not about a path — the executable allow-list, the metacharacter
+refusal, the glob refusal — and a scope is supplied by a model, so "no scope" is
+a state a model can cause by saying nothing. The least specified agent in a run
+held the widest shell in it. Measured before the change, with
+`allow_command_execution` on: `rm -rf`, `cp`, `curl`, `echo`, `rm -rf *`,
+`pytest -q > file`, and `python -c "open(...).write(...)"` all reached a real
+shell.
+
+The early return is gone. An empty scope now relaxes exactly one rule — the
+per-path check — and relaxes it to *the workspace*, which is what an empty scope
+already meant to `write_file`, rather than to the machine.
+
+**A second bypass, found while making the first universal.** `run_command` took
+`scope: Scope | None` and skipped the fence entirely when it was `None`. Nothing
+in the dispatch path passes `None` — `AgentSpec.scope` has a default factory —
+so it was unreachable through `call`, and reachable through the method, which is
+public. A fence with a documented bypass parameter is not a fence. An absent
+scope is now an empty one.
+
+**What it costs, stated rather than discovered later:** `git status`. Git is not
+a check runner and cannot be narrowed to its read-only subcommands by name,
+because `git -c alias.s='!sh -c …' s` runs anything at all. No agent can see its
+own diff through the harness's shell any more. Nothing in the harness consumed
+one — a turn's `files_touched` is the agent's own report — and in delegated mode
+the host's own tools are unaffected. `SHARED_TREE_RULE` in `agents/brief.py`
+already told agents exactly this, so the brief and the fence now agree; before,
+the brief was wrong for unscoped agents.
+
+`tree_wide_git` and the floor are now second locks rather than sole ones. Both
+stay, so that loosening the allow-list later cannot silently reopen either.
+`test_no_agent_may_change_the_shared_trees_git_state` can no longer prove the
+shared-tree rule *through* `run_command` — the allow-list refuses `git` first —
+so it asserts `tree_wide_git` directly and says why.
+
+## P2 · Lessons carry their origin
+
+Half of this was already built and had never run.
+
+`Lesson.workspace` has existed since batch 8, is populated on all three creation
+paths, and `RunStore.lessons_for` already ranked a locally-learned lesson above a
+borrowed one and dropped lessons past an age cap. **No production caller passed
+either argument.** `_agent_packet` called `lessons_for(targets, limit)` and
+nothing else, so the ranking never ran and `policy.lesson_max_age_days` did
+nothing — a workspace configuring the cap changed no brief. Both are now passed
+from one helper, `Supervisor._lessons_for`.
+
+Three things were genuinely missing:
+
+- **The brief never said where a lesson came from.** Untagged, a convention
+  drawn from a stranger's repository reads as "this is how things go here",
+  which is exactly the judgement an agent has to make when the two disagree.
+  Each lesson now carries `(learned here, seen 3x)` or `(learned in <project>,
+  …)`, and the block closes by telling the agent that a borrowed lesson is
+  evidence, not a rule, and that this workspace wins a conflict. The origin is
+  named by the workspace's own directory, never its full path: a brief is model
+  input and someone's disk layout does not belong in it.
+- **The merge dropped the second origin.** Two projects learning the same thing
+  independently produced one row owned by whichever recorded it first, so every
+  other project read its own experience back as borrowed and ranked it below a
+  stranger's. `Lesson.also_seen_in` keeps the rest, and `learned_in` is what
+  ranking and labelling both ask.
+- **`supervisor lessons` never showed it either.** It does now.
+
+## Also corrected
+
+The README claimed `lessons.jsonl` "is rewritten without a lock, so two runs in
+different projects finishing at the same moment can lose a lesson between them".
+Batch 8 fixed that: `add_lesson` and `prune_lessons` both hold the same advisory
+lock the event log uses. The caveat had outlived the defect.
+
+## Test plan
+
+**276 pass** (267 + 9 new), 2 skipped. Ruff diffed against `main` by rule and
+file: 58 before, 58 after, no new pair.
+
+Five existing tests asserted the old P1 behaviour deliberately and were
+rewritten rather than patched — each now states the new intent and, where a
+proof moved (the shared-tree rule), says where it moved to and why.
+
+Each mechanism was disabled in turn:
+
+| mechanism disabled | test that went red |
+|---|---|
+| the early return is back | five, incl. `…command_fence_holds_for_an_agent_that_declared_no_scope` |
+| `run_command` skips the fence when scope is `None` | `…called_without_a_scope_is_fenced_all_the_same` |
+| the merge drops the second origin | `test_a_lesson_relearned_here_counts_as_local` |
+| ranking ignores a relearned origin | `…ranks_as_local_for_the_project_that_relearned_it` |
+| the brief builder stops passing workspace and the age cap | `…lessons_reaching_a_brief_are_ranked_and_aged_by_policy` |
+| the brief stops naming the origin | three, incl. `…brief_an_agent_actually_gets_carries_the_origin` |
+
+The ranking row started as `NOTHING FAILED` — a real gap, not a bad sabotage
+this time. Nothing distinguished ranking on `workspace ==` from ranking on
+`learned_in`, because every existing case had a lesson with a single origin. The
+test added for it makes the borrowed lesson stronger on every other sort key, so
+only "this project has seen it too" can lift the shared one above it.
+
+## Still outstanding after this
+
+The "Policy calls still outstanding" section above is now empty. What remains is
+`fnd_01M130P3E5SCF8`'s open half (the log lock on the async loop), 9c, and the
+two enhancements recorded as deliberately-not-done in their own batches.

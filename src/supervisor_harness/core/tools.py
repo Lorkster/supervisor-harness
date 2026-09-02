@@ -30,22 +30,24 @@ and worth stating exactly:
 * it does nothing unless ``policy.allow_command_execution`` is set;
 * only execution agents may call it, because a shell writes files and granting
   it to a kind denied ``write_file`` would hand back what that check refused;
-* an agent with a declared scope may invoke only the check runners in
-  :data:`.dod.VERIFY_EXECUTABLES`, and every argument it passes them that could
-  name a path must fall inside the scope, with metacharacters and globs refused
-  outright because they name paths no token spells;
+* **every** agent may invoke only the check runners in
+  :data:`.dod.VERIFY_EXECUTABLES`, whatever scope it declared, with
+  metacharacters and globs refused outright because they name paths no token
+  spells;
 * those check runners may not be handed their program in the command line
-  itself: ``python -c`` and ``node -e`` are refused for a scoped agent, because
-  source given as a string names its paths only once it is already running;
-* an agent with *no* declared scope has none of that fence -- there is nothing
-  to check a path against -- and reaches the whole machine;
-* two refusals apply to every agent, fenced or not, because neither is about
-  this agent's scope: no command may change the shared working tree's git state
-  (:func:`tree_wide_git`), and none may name a path under the floor
-  (:data:`VCS_DIRS`, :data:`STORE_DIRS`). The floor is complete for a scoped
-  agent, whose commands cannot name a path any other way; for an unscoped one it
-  catches the command that names what it means and nothing more, since the
-  checks that close the other three ways sit behind the same early return.
+  itself: ``python -c`` and ``node -e`` are refused, because source given as a
+  string names its paths only once it is already running;
+* every argument that could name a path must fall inside the agent's scope. This
+  is the one rule that an empty scope relaxes, and it relaxes it to *the
+  workspace* -- the same meaning ``write_file`` gives it -- rather than to the
+  machine. Until this was made universal, an agent whose task arrived with no
+  scope skipped the three rules above as well and reached any program on the
+  machine; the least specified agent in a run held the widest shell in it;
+* two refusals apply for reasons that are not about scope at all: no command may
+  change the shared working tree's git state (:func:`tree_wide_git`), and none
+  may name a path under the floor (:data:`VCS_DIRS`, :data:`STORE_DIRS`). Both
+  are now second locks rather than sole ones, and are kept so that loosening the
+  allow-list later cannot silently reopen either.
 
 What that leaves open is worth stating just as exactly, because it is a property
 of the design rather than a gap in it: a check runner runs whatever the project
@@ -132,7 +134,7 @@ COMMAND_KINDS = WRITE_KINDS
 # nothing on disk answers to it.
 _FILE_SUFFIX = re.compile(r"^[\w+.-]+\.[A-Za-z]\w*$")
 
-# Glob characters. A scoped agent may not use them at all: the shell expands
+# Glob characters. No agent may use them at all: the shell expands
 # them before the command runs, so ``rm -rf *`` names every path in the
 # workspace while containing no token that is one of those paths. They are not
 # in dod's ``_METACHARACTERS`` because a criterion command is run without a
@@ -537,13 +539,11 @@ class Toolbox:
         shell at all -- and it stays here so that removing one does not silently
         open the other.
 
-        For an *unscoped* agent it is the only path check there is, and it is not
-        a complete one: the allow-list, the metacharacter refusal and the glob
-        refusal all sit behind the early return below, so a command that computes
-        a path rather than naming it still reaches the floor. Closing that means
-        deciding whether an unscoped agent should hold a shell at all, which is a
-        policy question rather than this defect. What it does close is the naive
-        form -- an agent that names the path it means.
+        It is no longer the *only* check an unscoped agent gets: the early
+        return it used to sit in front of is gone, so the allow-list, the
+        metacharacter refusal and the glob refusal now apply to every agent.
+        This stays anyway, for the reason above -- the floor is not about a
+        scope, and two locks on it means removing one does not open the other.
         """
         for token in self._path_candidates(shell_split(command)):
             rel = scope_relative(token, self.workspace.as_posix())
@@ -562,26 +562,36 @@ class Toolbox:
         Without this the fence is decorative: an agent confined to ``src/auth/**``
         is refused a write to ``infra/`` and then reaches it with ``sh -c``.
 
-        Only an agent that actually has a fence is checked. Reading paths out of
-        a command can never be complete -- a shell computes names this cannot
-        see -- so the four ways of naming a path it cannot follow are closed
-        rather than inspected: a metacharacter that chains or redirects, a glob
-        that expands to paths no token spells, any executable outside the check
-        runners in :data:`.dod.VERIFY_EXECUTABLES`, and a program handed to one
-        of those runners as source on the command line. The executable rule is
-        what puts ``rm``, ``cp``, ``mkdir`` and ``git checkout`` out of reach
-        entirely, rather than relying on the fence to catch their arguments.
+        **Every agent is checked, whether or not it declared a scope.** It used
+        to be only those that had one, on the reasoning that there was nothing
+        to check a path against -- but three of the four rules below are not
+        about a path at all, and skipping them handed the least specified agent
+        in a run the widest shell in it. An empty scope now means "any path in
+        the workspace", which is what it already meant to ``write_file``, and
+        not "any program on the machine".
+
+        Reading paths out of a command can never be complete -- a shell computes
+        names this cannot see -- so the four ways of naming a path it cannot
+        follow are closed rather than inspected: a metacharacter that chains or
+        redirects, a glob that expands to paths no token spells, any executable
+        outside the check runners in :data:`.dod.VERIFY_EXECUTABLES`, and a
+        program handed to one of those runners as source on the command line.
+        The executable rule is what puts ``rm``, ``cp``, ``mkdir`` and
+        ``git checkout`` out of reach entirely, rather than relying on the fence
+        to catch their arguments.
 
         It takes ``git status`` and ``git diff`` with them, which is deliberate:
         nothing here consumes a diff -- a turn's ``files_touched`` is the agent's
         own report, and the reviewer role reads files -- and git cannot be
         narrowed to its read-only subcommands by name, because
-        ``git -c alias.s='!sh -c ...' s`` runs anything at all. Letting a scoped
-        agent see its own change means fencing git's flags too, not adding it
-        here. The tree-changing subcommands are refused a second time, for every
-        agent rather than only a fenced one, by :func:`tree_wide_git`: what makes
-        them dangerous is the tree being shared, which is true whether or not
-        this agent has a scope to violate.
+        ``git -c alias.s='!sh -c ...' s`` runs anything at all. Letting an agent
+        see its own change means fencing git's flags too, not adding it here.
+        That now costs an unscoped agent ``git status`` as well, which it could
+        previously run: the allow-list is the price of the allow-list being
+        universal, and reading the tree through git was never something the
+        harness consumed. The tree-changing subcommands are still refused a
+        second time by :func:`tree_wide_git`, kept so that loosening the
+        allow-list later cannot silently reopen the shared tree.
 
         None of it makes this a sandbox: ``npm test`` still runs whatever
         ``package.json`` says. This module's docstring states what the fence
@@ -591,23 +601,20 @@ class Toolbox:
         if floor is not None:
             return floor
 
-        if not scope.paths and not scope.forbidden_paths:
-            return None
-
         metacharacter = unquoted_metacharacter(command)
         if metacharacter is not None:
             return (
-                f"a command from a scoped agent may not use the shell metacharacter "
+                f"a command may not use the shell metacharacter "
                 f"{metacharacter!r}: the paths a chained or redirected command touches "
-                "cannot be checked against your scope. Run one plain command at a time"
+                "cannot be checked at all. Run one plain command at a time"
             )
 
         glob_character = unquoted_metacharacter(command, _GLOB_CHARACTERS)
         if glob_character is not None:
             return (
-                f"a command from a scoped agent may not use the glob character "
+                f"a command may not use the glob character "
                 f"{glob_character!r}: the shell expands it to paths the command never "
-                "names, so they cannot be checked against your scope. Name each path"
+                "names, so they cannot be checked. Name each path"
             )
 
         tokens = shell_split(command)
@@ -617,7 +624,7 @@ class Toolbox:
         executable = executable_name(tokens[0])
         if executable not in VERIFY_EXECUTABLES:
             return (
-                f"a scoped agent may not run {executable!r}: only the project's own "
+                f"an agent may not run {executable!r}: only the project's own "
                 f"check runners are reachable from the shell "
                 f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Use write_file to change "
                 "a file in your scope, or report the command for the host to run"
@@ -626,10 +633,10 @@ class Toolbox:
         inline = _inline_source_flag(tokens)
         if inline is not None:
             return (
-                f"a scoped agent may not pass {inline!r} to {executable!r}: a program "
+                f"an agent may not pass {inline!r} to {executable!r}: a program "
                 "supplied as source, rather than as a module or a file, names its "
-                "paths while it runs, so none of them can be checked against your "
-                "scope. Run a module or a file instead (python -m pytest ...), or use "
+                "paths while it runs, so none of them can be checked. Run a module or a "
+                "file instead (python -m pytest ...), or use "
                 "write_file to change a file"
             )
 
@@ -654,13 +661,16 @@ class Toolbox:
                 "to true in the configuration if the harness should run commands "
                 "itself. Report the criterion as blocked rather than guessing.",
             )
-        if scope is not None:
-            refusal = self._scope_refusal(command, scope)
-            if refusal is not None:
-                return ToolResult("run_command", False, refusal)
-        # After the scope fence, not before it: a scoped agent is refused git by
-        # the executable allow-list already, and the more specific refusal is the
-        # more useful one. This one exists for the agent that has no fence.
+        # An absent scope is an empty one, not an exemption. This used to skip
+        # the fence entirely, which made `run_command(cmd)` -- the direct call,
+        # not the dispatched one -- the widest hole in the toolbox.
+        refusal = self._scope_refusal(command, scope if scope is not None else Scope())
+        if refusal is not None:
+            return ToolResult("run_command", False, refusal)
+        # After the fence, not before it: the executable allow-list refuses git
+        # to every agent now, and its message is the more useful one. This stays
+        # as the second lock the module docstring describes, so that loosening
+        # the allow-list later cannot silently reopen the shared tree.
         tree_refusal = tree_wide_git(command)
         if tree_refusal is not None:
             return ToolResult("run_command", False, tree_refusal)

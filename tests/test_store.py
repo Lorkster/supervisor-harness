@@ -361,3 +361,78 @@ def test_a_lesson_learned_here_outranks_one_borrowed_from_elsewhere(tmp_path: Pa
 
     ranked = [le.statement for le in store.lessons_for(["*"], workspace="/this/project")]
     assert ranked == ["local", "borrowed"], "both apply; the local one leads"
+
+
+def test_a_lesson_relearned_here_counts_as_local(tmp_path: Path) -> None:
+    """The merge used to drop the second origin.
+
+    Two projects learning the same thing independently produced one row, owned
+    by whichever recorded it first -- so every other project read its own
+    experience back as borrowed, and ranked it below a stranger's.
+    """
+    store = RunStore(tmp_path / ".supervisor")
+    store.add_lesson(
+        Lesson(run_id="run_A", workspace="/other/project", statement="shared", target="*")
+    )
+    store.add_lesson(
+        Lesson(run_id="run_B", workspace="/this/project", statement="shared", target="*")
+    )
+
+    merged = store.lessons()
+    assert len(merged) == 1, "the same statement and target is still one lesson"
+    lesson = merged[0]
+    assert lesson.occurrences == 2
+    assert lesson.workspace == "/other/project", "first origin is still where it began"
+    assert lesson.also_seen_in == ["/this/project"]
+
+    # And both projects now read it as their own.
+    assert lesson.learned_in("/other/project")
+    assert lesson.learned_in("/this/project")
+    assert not lesson.learned_in("/a/third/project")
+
+
+def test_an_origin_is_not_recorded_twice(tmp_path: Path) -> None:
+    """A guard: the same workspace relearning a lesson must not accumulate rows."""
+    store = RunStore(tmp_path / ".supervisor")
+    for _ in range(3):
+        store.add_lesson(
+            Lesson(run_id="r", workspace="/this/project", statement="repeated", target="*")
+        )
+    lesson = store.lessons()[0]
+    assert lesson.also_seen_in == []
+    assert lesson.occurrences == 3
+
+
+def test_a_relearned_lesson_ranks_as_local_for_the_project_that_relearned_it(
+    tmp_path: Path,
+) -> None:
+    """Ranking has to read the whole origin set, not just the first entry.
+
+    The borrowed lesson is deliberately the stronger one on every other key, so
+    only "this project has seen it too" can lift the shared one above it. That
+    is the difference between ranking on `workspace ==` and ranking on
+    `learned_in`, and nothing else in this file distinguishes them.
+    """
+    store = RunStore(tmp_path / ".supervisor")
+    for _ in range(3):
+        store.add_lesson(
+            Lesson(run_id="r", workspace="/other/project",
+                   statement="borrowed", target="*", confidence=0.9)
+        )
+    store.add_lesson(
+        Lesson(run_id="r", workspace="/other/project", statement="shared", target="*")
+    )
+    store.add_lesson(
+        Lesson(run_id="r", workspace="/this/project", statement="shared", target="*")
+    )
+
+    by_statement = {le.statement: le for le in store.lessons()}
+    assert by_statement["borrowed"].occurrences == 3
+    assert by_statement["shared"].occurrences == 2, "weaker on every key but origin"
+
+    ranked = [le.statement for le in store.lessons_for(["*"], workspace="/this/project")]
+    assert ranked == ["shared", "borrowed"]
+
+    # And from a project that has never seen either, the stronger one leads.
+    elsewhere = [le.statement for le in store.lessons_for(["*"], workspace="/a/third")]
+    assert elsewhere == ["borrowed", "shared"]
