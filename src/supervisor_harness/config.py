@@ -103,6 +103,17 @@ class Policy:
     # rule allows. A plan may narrow this further; nothing may widen it.
     scope_envelope: list[str] = field(default_factory=list)
     scope_envelope_forbidden: list[str] = field(default_factory=list)
+    # How long a grant stands before a resume has to ask again. Resuming a run
+    # older than this continues to analyse and report freely, but will not spawn
+    # an execution agent until the envelope is renewed -- the same rule as "you
+    # approve before anything touches your code", applied to consent that has
+    # gone stale rather than to consent that was never given. 0 disables it.
+    #
+    # Not a PROTECTED_SETTING for the same reason `scope_envelope` is not: a
+    # workspace can shorten the life of a grant over itself, and lengthening it
+    # past the default is the direction that would need protecting -- which the
+    # user's own config, being trusted, is where it belongs.
+    envelope_max_age_days: int = 7
 
     # Analysis
     min_analysis_lenses: int = 2

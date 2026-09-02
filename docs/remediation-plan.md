@@ -890,6 +890,9 @@ and 58 after, with no new pair. Two were introduced and fixed on the way
 - **No time bound on a scope.** The assessment above named it alongside the
   envelope. It is a different mechanism — an envelope is about extent, a bound is
   about duration — and nothing in the harness currently expires anything.
+  *(Taken up as B2 on 2026-09-02; see the end of this document. The last clause
+  was already wrong when written — `lesson_max_age_days` and `Budget.max_seconds`
+  both expired things — and what actually had no bound was the grant itself.)*
 - **`core/supervisor.py` is still one module** (9c), now a little over 2200
   lines. Attenuation added one method and two helpers to it rather than being
   spread across the four agent builders, which is the right trade for a fence but
@@ -1255,3 +1258,114 @@ proves is that the loop is free during both blocking operations, that the lock
 is held across the await points, and that `RunState` never crosses a thread
 boundary. The last of those is a guard on the shape of the code rather than on
 its behaviour, and its docstring says so.
+
+---
+
+# B2 — a time bound on the grant
+
+Landed on `feat/envelope-grant-expiry`. The enhancement recorded as
+deliberately-not-done with the scope envelope, taken up on request.
+
+## What the note that scheduled it got wrong
+
+The envelope batch recorded: *"nothing in the harness currently expires
+anything."* That was already false when it was written. `lesson_max_age_days`
+had expired lessons since batch 8, and `Budget.max_seconds` had been enforceable
+since batch 6.
+
+Checked properly, duration was bounded nearly everywhere:
+
+| what | bounded by | since |
+|---|---|---|
+| an agent's turns | `Budget.max_turns` | always |
+| its tokens, seconds, tool calls | `Budget.exhausted`, all four ceilings | batch 6 |
+| a silent host agent | `agent_timeout_seconds`, `max_unreported_dispatches` | batch 6 |
+| a phase's agents | the phase transition that ends them | always |
+| a lesson | `lesson_max_age_days` | batch 8, wired in P2 |
+| **the run's grant** | **nothing** | — |
+
+`ScopeEnvelope` carried no date, and `_check_resume_fidelity` compares host and
+workspace but never *time*. A run resumed months later, on the same machine and
+in the same directory, produced no divergence at all and executed against an
+envelope approved in a context that had had months to move on.
+
+That is the whole of B2's residue, and it is a real one.
+
+## Two design calls, both put to the user
+
+**What a stale grant does: re-approval before any execution.** Not a warning
+(the other resume divergences are warnings, and this one governs what may be
+written), and not a refusal to resume (that throws away a long analysis over a
+clock). Analysis and reporting continue freely; the first *new* execution agent
+waits. An agent already mid-flight is left alone — it was spawned under a grant
+that was current then, and ending it would destroy work to make a point about a
+clock.
+
+**Whether individual scopes expire too: no.** `Budget` already bounds an agent's
+lifetime on four axes. Putting a clock inside the write fence would make the
+fence behave differently on a slow machine or under a paused debugger, and
+`core/tools.py` refuses only on facts that do not change under load. Duration
+stays in the budget; extent stays in the scope.
+
+## The shape
+
+- `ScopeEnvelope.granted_at`, defaulted to now.
+- `policy.envelope_max_age_days`, **7** by default, 0 to disable. Not a
+  `PROTECTED_SETTING`, for the same reason `scope_envelope` is not: a workspace
+  may shorten the life of a grant over itself, and lengthening it belongs to the
+  user's own trusted config.
+- `envelope.stale_reason(...)` — **derived, not stored.** The grant carries its
+  date and the cap is policy, so a run does not need an event to become stale
+  and nothing has to be recomputed on resume.
+- `supervisor approve --renew-envelope`, and `renew_envelope` on the MCP tool.
+  It renews the *date*, never the paths.
+- `supervisor status` reports the reason and the remedy.
+
+The age arithmetic moved from `runstore._older_than` to `ids.older_than` /
+`ids.age_days` beside `now_iso`, so there is one implementation rather than two.
+
+## One bug the tests caught
+
+`_set_envelope` did `replace(envelope, source=source)`, which carried
+`granted_at` over from the envelope handed in — so **renewing an aged grant
+renewed everything about it except its age**, and the run stayed blocked
+forever. Emitting `ENVELOPE_SET` *is* making the grant, so the date and the
+provenance are now stamped in the same place.
+
+## Test plan
+
+**292 pass** (282 + 10 new), 2 skipped. Gate: 58 on `main`, 58 here, no pair
+worse.
+
+Every mechanism was disabled in turn and every one was caught **on the first
+pass** — no `NOTHING FAILED` rows, which has not happened in the previous four
+batches.
+
+| mechanism disabled | test that went red |
+|---|---|
+| execution does not check the grant's age | three, incl. `…pauses_before_execution_and_says_why` |
+| renewal does not refresh the date | `…renews_its_date_and_not_its_extent`, `…lets_the_run_finish` |
+| `approve` ignores `renew_envelope` | the same two |
+| renewal widens the paths to the workspace | `…renews_its_date_and_not_its_extent` |
+| the cap is ignored | six, incl. `…disabled_cap_never_is` |
+| no fallback to the run's creation date | `…recorded_before_grants_were_dated…` |
+| an unreadable date counts as expired | `…unreadable_date_does_not_block_a_resume` |
+| the grant carries no date at all | `test_the_grant_is_dated_from_when_it_was_made` |
+| status stops reporting staleness | `test_status_reports_a_stale_grant` |
+
+The test that ages a grant does so **through the log**, not by editing the
+snapshot: staleness is derived from what the log says, and a test that poked the
+state would not prove the derivation survives a fold.
+
+## One deliberate asymmetry
+
+An unreadable `granted_at` is treated as **not** stale. For a fence the safe
+direction is the restrictive one, and this is not a fence: the scope fence and
+its floor protect the workspace from the agent, while this gate asks the user to
+confirm intent. Failing it closed would refuse a resume over a formatting
+problem. The test says so.
+
+## Left after this
+
+9c, and B3 (shared semantic context) — the last open control-plane dimension,
+and the one that wants a written spec before any code.

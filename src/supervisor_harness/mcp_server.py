@@ -216,7 +216,9 @@ def build_server() -> Any:
         )
     )
     async def supervisor_approve(
-        run_id: str, decisions: list[dict[str, Any]]
+        run_id: str,
+        decisions: list[dict[str, Any]],
+        renew_envelope: bool = False,
     ) -> dict[str, Any]:
         """Apply approve / modify / reject / defer decisions.
 
@@ -228,8 +230,17 @@ def build_server() -> Any:
                  "modifications": {"action": "..."}}.
                 Modifications may edit title, action, motivation, effort,
                 scope_paths, or replace dod wholesale.
+            renew_envelope: Re-grant this run's scope envelope. A resume past
+                the grant's age limit pauses before execution and asks for
+                this; the response's detail says so with needs="envelope_
+                renewal". Show the user what the run may modify and ask whether
+                it still stands before setting it. It renews the date, never
+                the paths -- widening is not something approval can do.
+                Pass an empty decisions list when there are no tasks to decide.
         """
-        return _result(await supervisor().approve(run_id, decisions))
+        return _result(
+            await supervisor().approve(run_id, decisions, renew_envelope=renew_envelope)
+        )
 
     @server.tool(description="Current state of a run, or the most recent one.")
     async def supervisor_status(run_id: str = "") -> dict[str, Any]:

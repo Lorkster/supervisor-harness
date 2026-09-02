@@ -17,11 +17,12 @@ import os
 import shutil
 import tempfile
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from ..ids import now_iso
+from ..ids import older_than as _older_than
 from ..models import Lesson, RunState
 from ..serde import from_jsonable, to_jsonable
 from .eventlog import EventLog, FileLock
@@ -42,24 +43,6 @@ SNAPSHOT_REPLACE_BACKOFF = 0.02
 #: library is deliberately cross-workspace, so it needs an edge somewhere.
 DEFAULT_LESSON_MAX_AGE_DAYS = 180
 DEFAULT_LESSON_MAX_OCCURRENCES = 20
-
-
-def _older_than(stamp: str, max_age_days: int) -> bool:
-    """Whether an ISO timestamp is further back than the cap allows.
-
-    An unparseable or absent stamp is treated as *not* expired: dropping a record
-    because its date could not be read would destroy data over a formatting
-    problem, and the cap exists to bound growth rather than to enforce deletion.
-    """
-    if max_age_days <= 0 or not stamp:
-        return False
-    try:
-        when = datetime.fromisoformat(str(stamp))
-    except ValueError:
-        return False
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
-    return (datetime.now(UTC) - when) > timedelta(days=max_age_days)
 
 
 def _artifact_name(name: str) -> str:
