@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..serde import to_jsonable
+from ..serde import to_dict
 
 
 @dataclass
@@ -35,7 +35,7 @@ class WorkPacket:
     task_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return to_jsonable(self)
+        return to_dict(self)
 
 @dataclass
 class SupervisorResponse:
@@ -54,5 +54,5 @@ class SupervisorResponse:
     detail: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return to_jsonable(self)
+        return to_dict(self)
 

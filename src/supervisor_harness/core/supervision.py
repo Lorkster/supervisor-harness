@@ -41,7 +41,7 @@ from ..models import (
 )
 from ..providers.base import ChatMessage, CompletionRequest
 from ..providers.router import ModelRouter
-from ..serde import to_jsonable
+from ..serde import to_dict, to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from .blackboard import Blackboard, answer_from_record
@@ -344,7 +344,7 @@ class Supervision:
             {"agent_id": agent_id, "assessment": to_jsonable(merged)},
         )
         session.sync_index()
-        return to_jsonable(merged)
+        return to_dict(merged)
     def _after_directive(
         self, session: RunSession, agent: AgentSpec, directive: Directive
     ) -> SupervisorResponse:

@@ -91,13 +91,15 @@ max-complexity = 15
 "tools/**" = ["S603", "S607"]
 
 # The codebase turned out to be almost fully annotated -- 3 errors across 40
-# files when this was first run, all fixed in the same batch -- so unlike ruff
-# this gates at **zero** from the start. `--strict` costs 14 more errors in 8
-# files and is recorded in docs/quality-assessment.md as finding Q-T2.
+# files when this was first run -- so it has gated at **zero** from the start.
+# `strict` was turned on when finding Q-T2 closed: it cost 25 errors, every one
+# of them fixed rather than suppressed. There are no `type: ignore`s holding it
+# up, which is what makes it worth having.
 [tool.mypy]
 python_version = "3.11"
 files = ["src/supervisor_harness"]
-ignore_missing_imports = true      # mcp, anthropic and boto3 ship partial stubs
+strict = true
+ignore_missing_imports = true      # anthropic and boto3 ship partial stubs
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

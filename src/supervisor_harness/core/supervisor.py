@@ -93,6 +93,12 @@ from .lifecycle import Lifecycle
 from .packets import Packets
 from .reporting import Reporting
 from .responses import SupervisorResponse
+
+#: Re-exported for the callers that have always imported it from here --
+#: the CLI, the MCP server and the tests. It lives in `core/responses.py`
+#: because `core/reporting.py` constructs one, and importing it from the
+#: module that imports *that* would be a cycle.
+__all__ = ["Supervisor", "SupervisorResponse"]
 from .supervision import Supervision
 from .tools import Toolbox, render_results
 

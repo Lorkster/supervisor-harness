@@ -13,11 +13,21 @@ import dataclasses
 import enum
 import types
 import typing
-from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, TypeVar, Union, cast, get_args, get_origin, get_type_hints
 
 T = TypeVar("T")
 
 _NONE = type(None)
+
+
+def to_dict(value: Any) -> dict[str, Any]:
+    """:func:`to_jsonable` for something known to be a dataclass or a mapping.
+
+    `to_jsonable` returns `Any` because it genuinely can return anything -- a
+    list, a string, a number. Every caller that hands it a dataclass gets a
+    dict, and this says so once rather than each of them casting.
+    """
+    return cast("dict[str, Any]", to_jsonable(value))
 
 
 def to_jsonable(value: Any) -> Any:

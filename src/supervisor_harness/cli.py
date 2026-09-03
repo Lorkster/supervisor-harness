@@ -22,6 +22,7 @@ import asyncio
 import json
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -313,7 +314,13 @@ def _parse_turn(raw: str) -> dict[str, Any] | None:
     """
     from .providers.base import extract_json
 
-    for attempt in (lambda: json.loads(raw), lambda: json.loads(raw, strict=False)):
+    # Annotated because a tuple of lambdas infers as untyped, and calling
+    # one then counts as a call into untyped code.
+    attempts: tuple[Callable[[], Any], ...] = (
+        lambda: json.loads(raw),
+        lambda: json.loads(raw, strict=False),
+    )
+    for attempt in attempts:
         try:
             parsed = attempt()
         except (json.JSONDecodeError, TypeError, ValueError):
