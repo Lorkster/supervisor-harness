@@ -105,14 +105,8 @@ def _result(response: SupervisorResponse) -> dict[str, Any]:
     return payload
 
 
-def build_server() -> Any:
-    """Construct the MCP server with the harness tools registered."""
-    server = _Server(
-        name="supervisor-harness",
-        instructions=INSTRUCTIONS,
-        version="0.1.0",
-    )
-
+def _register_run_tools(server: Any) -> None:
+    """The tools that drive a run: start it, answer it, and decide on it."""
     @server.tool(
         description=(
             "Start a supervised run. Analyses the task from the angles that fit it, "
@@ -242,6 +236,24 @@ def build_server() -> Any:
             await supervisor().approve(run_id, decisions, renew_envelope=renew_envelope)
         )
 
+    @server.tool(
+        description="Resume a persisted run and get the next thing to do."
+    )
+    async def supervisor_resume(run_id: str = "") -> dict[str, Any]:
+        """Pick a run up where it stopped.
+
+        Args:
+            run_id: The run. Omit it for the most recent run in this store.
+        """
+        sup = supervisor()
+        target = run_id or (sup.store.latest_run_id() or "")
+        if not target:
+            return {"error": "no run to resume"}
+        return _result(await sup.resume(target))
+
+
+def _register_read_tools(server: Any) -> None:
+    """The tools that read a run back without changing it."""
     @server.tool(description="Current state of a run, or the most recent one.")
     async def supervisor_status(run_id: str = "") -> dict[str, Any]:
         """Phase, agents, drift and definition-of-done progress.
@@ -285,21 +297,6 @@ def build_server() -> Any:
         sup = supervisor()
         sup.store.reindex()
         return {"runs": sup.store.index().list_runs(limit)}
-
-    @server.tool(
-        description="Resume a persisted run and get the next thing to do."
-    )
-    async def supervisor_resume(run_id: str = "") -> dict[str, Any]:
-        """Pick a run up where it stopped.
-
-        Args:
-            run_id: The run. Omit it for the most recent run in this store.
-        """
-        sup = supervisor()
-        target = run_id or (sup.store.latest_run_id() or "")
-        if not target:
-            return {"error": "no run to resume"}
-        return _result(await sup.resume(target))
 
     @server.tool(
         description=(
@@ -347,6 +344,9 @@ def build_server() -> Any:
             ]
         }
 
+
+def _register_meta_tools(server: Any) -> None:
+    """What the harness itself is configured to do."""
     @server.tool(
         description=(
             "Which model each stage of a run is routed to, and whether each provider "
@@ -367,6 +367,24 @@ def build_server() -> Any:
             "providers": await sup.router.health(),
         }
 
+
+def build_server() -> Any:
+    """Construct the MCP server with the harness tools registered.
+
+    Registration is grouped rather than one flat run of twelve decorated
+    closures. A nested `def` counts toward its enclosing function's
+    complexity, so the flat form measured 17 (finding Q-A2) while each tool
+    in it is trivial.
+    """
+    """Construct the MCP server with the harness tools registered."""
+    server = _Server(
+        name="supervisor-harness",
+        instructions=INSTRUCTIONS,
+        version="0.1.0",
+    )
+    _register_run_tools(server)
+    _register_read_tools(server)
+    _register_meta_tools(server)
     return server
 
 
