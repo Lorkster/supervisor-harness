@@ -257,6 +257,75 @@ Methods on one class cannot be moved to another file without choosing how:
 **Cost:** high churn, no new tests to write, and the risk is entirely in what a
 mechanical change does silently.
 
+## Done — split by layer
+
+The user chose **split by layer**. What that turned out to mean is worth
+recording, because the coupling was measured before anything moved rather than
+assumed.
+
+Each candidate layer was scored by what it calls outside itself:
+
+| layer | methods | lines | needs | calls out |
+| --- | ---: | ---: | --- | --- |
+| reporting | 8 | 211 | `config`, `store` | **none** |
+| packets | 9 | 199 | `config`, `store`, `workspace`, `host` | **none** |
+| agents | 13 | 329 | `config`, `router`, `toolbox` | 7, all into *supervise* |
+| supervise | 11 | 455 | `config`, `router`, `store` | 12, into *agents*, *packets*, *reporting* and the phase machine |
+
+**Two layers were real and came out whole:** `core/reporting.py` and
+`core/packets.py` called *nothing* outward, which is what made lifting them safe
+rather than hopeful. `core/responses.py` followed, because `reporting` needed to
+construct a `SupervisorResponse` and importing it from the module that imports
+*it* would have been a cycle — the same shape as Q-A1, one level down.
+
+**The other two are genuinely entangled**, and the numbers say why: `supervise`
+calls back into the phase machine (`_report_stage` drives `_advance`,
+`_apply_plan`, `_apply_synthesis`), and `agents` calls into `supervise`. Cutting
+either out requires handing it a reference to the supervisor — which is option 1
+from the table above, *"a god object by another name"*, the option this document
+rejected. It was not done, and the reason is measurement rather than fatigue.
+
+`core/supervisor.py` is **2,591 → 2,145 lines**. That is a real reduction and it
+is not the whole of what "impossible to maintain" was about. What remains is a
+phase machine and the supervision loop that answers to it, which is one
+cohesive thing with a genuinely circular call graph — not a pile of unrelated
+code that happened to share a file.
+
+**Where the remaining size actually is**, for whoever picks this up: the
+complexity is not here (finding Q-A2 — `core/supervisor.py` has 3 complexity
+findings; `store/events.py` has a 123-statement, 48-branch function). Attacking
+Q-A2 is likely worth more than forcing the last two layers apart.
+
+### How "no behaviour change" was established
+
+Not asserted — checked. The moved methods were copied as **text**, and
+**16 of the 17 are byte-identical** to the ones they replaced, verified by
+parsing both trees and comparing source spans.
+
+The seventeenth is `status`, and the exception is recorded rather than smoothed
+over: one expression in it was 104 characters under the project's line limit and
+could not be folded in place, because it was an implicit concatenation of two
+f-strings and splitting the first across lines is a syntax error before 3.12. It
+became `_dod_summary`. Nothing in the suite asserted the string it produces, so
+`tests/test_reporting.py` was written for it and sabotage-checked two ways.
+
+**Two tests changed, and neither assertion did.** Both named a moved method by
+its old address (`Supervisor._outstanding_directive`, `Supervisor._previous_turns`)
+as an unbound function. One of them also had to be *widened*: it scanned
+`inspect.getsource(Supervisor)` for a reintroduced log rescan, and after the
+split that scan would have silently stopped covering the methods that moved.
+
+### The invariant that had to survive
+
+The `emit`/`aemit` rule was stated in this project's notes as *"mechanically
+checkable — no `session.emit(` inside an `async def` in core/supervisor.py"*.
+Nothing checked it, and it was scoped to a filename that was about to stop
+holding that code.
+
+It is now `tests/test_architecture.py::test_no_synchronous_emit_inside_an_async_function`,
+over the **whole package**, and it was added *before* the split rather than
+after, so the move happened under the guard.
+
 **The design decision above is still open.** It is a design call rather than a
 policy one, and it should be made against the code with the three options
 costed — not settled by whoever starts typing first.
@@ -439,7 +508,7 @@ moves have a reason beyond preference.
 | 1 | **3a** — the paradigm document | Cheap, independent, overdue, and it is what a new reader currently gets wrong. **Done** — see below. |
 | 2 | **1b** — the Bedrock optional extra | Small, independent, closes issue #31 — and it lands *before* the assessment so the assessment covers the module set being kept. **Done** — see §1b. |
 | 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. **Done** — [`quality-assessment.md`](quality-assessment.md). |
-| 4 | **2 (9c)** — the split | Made against 4a's criteria and protected by 4a's coverage. |
+| 4 | **2 (9c)** — the split | **Done** — split by layer; see §2. Two layers came out whole, two are measurably entangled. |
 | 5 | **4b** — close the remaining findings in batches | Against the settled layout, so cleanup diffs are not written into `core/supervisor.py` and immediately moved again. |
 | 6 | **3b** — the diagrams | Last, unchanged: diagrams that name modules go stale the moment the modules move. |
 

@@ -60,6 +60,7 @@ and none of them can rot quietly.
 | Types | `mypy` (config in `pyproject.toml`) | **zero**, from the start |
 | Lint | `tools/ruff_diff.py`, now against a configured rule set | **no new** (file, rule) pairs |
 | Architecture | `tests/test_architecture.py` — criteria 1 and 3, executed | zero cycles |
+| Emission | `tests/test_architecture.py` — no sync `emit()` inside an `async def` | zero, package-wide |
 | Doc references | `tools/check_doc_refs.py` | zero |
 
 Two notes on what changed in the instruments themselves:
@@ -135,6 +136,9 @@ cycle. `tests/test_architecture.py` now executes criteria 1 and 3 directly, so
 thing worth having before a split.
 
 **Q-A2 · Complexity is concentrated outside the module scheduled for splitting.**
+*(Confirmed by the split: `core/supervisor.py` is now 2,145 lines and still holds
+only 3 complexity findings. Splitting it did not touch the complexity, exactly as
+this finding predicted.)*
 The table above. `store/events.py`'s fold at 48 branches is the extreme; the
 journal builder, the final-report renderer and `cli.py`'s largest command follow.
 None of these is in `core/supervisor.py`.

@@ -18,7 +18,9 @@ import pytest
 from supervisor_harness.config import Policy, load_config
 from supervisor_harness.core.dod import verify_command
 from supervisor_harness.core.drift import TurnContext, assess_heuristically
+from supervisor_harness.core.packets import Packets
 from supervisor_harness.core.paths import normalise_path, path_matches
+from supervisor_harness.core.reporting import Reporting
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.core.tools import Toolbox, available_tools
 from supervisor_harness.models import (
@@ -842,15 +844,15 @@ async def test_a_settled_agent_is_not_handed_a_stale_directive(
     state.agents[agent.id] = agent
 
     # Never taken a turn -> nothing outstanding, so a fresh brief is correct.
-    assert Supervisor._outstanding_directive(state, agent) is None
+    assert Packets._outstanding_directive(state, agent) is None
 
     state.turn_counts[agent.id] = 1
     state.directives.append(Directive(agent_id=agent.id, kind=DirectiveKind.NARROW))
-    assert Supervisor._outstanding_directive(state, agent).kind is DirectiveKind.NARROW
+    assert Packets._outstanding_directive(state, agent).kind is DirectiveKind.NARROW
 
     # A later accept settles it.
     state.directives.append(Directive(agent_id=agent.id, kind=DirectiveKind.ACCEPT))
-    assert Supervisor._outstanding_directive(state, agent) is None
+    assert Packets._outstanding_directive(state, agent) is None
 
 
 def test_the_supervisor_reads_turns_from_state_not_by_rescanning_the_log() -> None:
@@ -862,13 +864,17 @@ def test_the_supervisor_reads_turns_from_state_not_by_rescanning_the_log() -> No
     the regression is silent: a reintroduced rescan returns the right answer and
     only costs time, so no behavioural test would notice it.
     """
-    source = Path(inspect.getsourcefile(Supervisor) or "")
-    body = inspect.getsource(Supervisor)
-
-    assert "session.events()" not in body, (
-        f"a full log rescan is back in {source.name}; read RunState.turns instead"
-    )
-    for method in (Supervisor._previous_turns, Supervisor._change_summary):
+    # Every class the supervision path is split across, not just `Supervisor`.
+    # `_previous_turns` and `_change_summary` moved to `Packets` when
+    # core/supervisor.py was split by layer, and a scan of `Supervisor` alone
+    # would have stopped covering them -- silently, since this guard is
+    # structural and would still have passed.
+    for owner in (Supervisor, Packets, Reporting):
+        source = Path(inspect.getsourcefile(owner) or "")
+        assert "session.events()" not in inspect.getsource(owner), (
+            f"a full log rescan is back in {source.name}; read RunState.turns instead"
+        )
+    for method in (Packets._previous_turns, Packets._change_summary):
         assert "state.turns" in inspect.getsource(method), method.__name__
 
 

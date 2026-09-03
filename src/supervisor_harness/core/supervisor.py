@@ -32,29 +32,23 @@ from __future__ import annotations
 
 import asyncio
 import traceback
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ..agents.brief import (
-    build_analysis_brief,
-    build_execution_brief,
-    build_verification_brief,
     render_directive,
 )
 from ..agents.registry import AgentRegistry
 from ..agents.roles import ROLES_BY_ID
 from ..config import KNOWN_STAGES, HarnessConfig, Policy, load_config
 from ..contracts import (
-    ANALYSIS_TURN_SCHEMA,
     CHECKPOINT_SCHEMA,
     DRIFT_SCHEMA,
-    EXECUTION_TURN_SCHEMA,
     LESSONS_SCHEMA,
     PLANNING_SCHEMA,
     SYNTHESIS_SCHEMA,
-    VERIFICATION_SCHEMA,
     parse_checkpoint,
     parse_drift,
     parse_established,
@@ -85,7 +79,6 @@ from ..models import (
     DoDCriterion,
     DriftAssessment,
     ExecutionTask,
-    Lesson,
     Phase,
     RunMode,
     RunState,
@@ -93,7 +86,6 @@ from ..models import (
     ScopeEnvelope,
     TaskDecision,
     TaskStatus,
-    Usage,
 )
 from ..providers.base import ChatMessage, CompletionRequest
 from ..providers.router import ModelRouter
@@ -105,8 +97,6 @@ from .baseline import git_baseline
 from .blackboard import (
     Blackboard,
     answer_from_record,
-    contested_keys,
-    render_context,
 )
 from .dod import verify_criterion
 from .drift import (
@@ -118,8 +108,11 @@ from .drift import (
     status_after,
 )
 from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
-from .journal import RunJournal, build_journal
-from .tools import Toolbox, render_results, render_tools_section
+from .journal import RunJournal
+from .packets import Packets
+from .reporting import Reporting
+from .responses import SupervisorResponse
+from .tools import Toolbox, render_results
 
 # Stage agents are ordinary agents so that planning, synthesis, the checkpoint
 # and the improvement pass all flow through the same report/supervise path.
@@ -139,21 +132,6 @@ MAX_QUESTIONS_PER_TURN = 3
 TOOL_ECHO_CHARS = 4000
 TOOL_RESULT_CHARS = 8000
 
-#: How many of a run's notes ``status`` returns. The whole list is in the state
-#: and all of it is in the log; this is what fits in an answer meant to be read.
-STATUS_NOTE_LIMIT = 20
-
-# Directives that leave the agent owing another turn. The rest (accept, stop,
-# escalate) settle it, so there is nothing outstanding to re-issue.
-CONTINUATION_DIRECTIVES = frozenset({
-    DirectiveKind.CONTINUE,
-    DirectiveKind.REFOCUS,
-    DirectiveKind.NARROW,
-    DirectiveKind.DEEPEN,
-    DirectiveKind.ANSWER,
-    DirectiveKind.REJECT,
-})
-
 STAGE_ROLES = {
     "planner": ("planning", PLANNING_SCHEMA),
     "synthesizer": ("synthesis", SYNTHESIS_SCHEMA),
@@ -162,44 +140,8 @@ STAGE_ROLES = {
 }
 
 
-@dataclass
-class WorkPacket:
-    """One unit of work for the host (or the harness) to execute."""
-
-    run_id: str
-    agent_id: str
-    kind: str
-    title: str
-    brief: str
-    schema: dict[str, Any]
-    turn_index: int = 0
-    turns_remaining: int = 0
-    host_agent_type: str | None = None
-    model: str = "host"
-    task_id: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return to_jsonable(self)
 
 
-@dataclass
-class SupervisorResponse:
-    """What the caller should do next."""
-
-    run_id: str
-    phase: str
-    action: str          # dispatch | await_reports | await_approval | complete | failed
-    message: str = ""
-    packets: list[WorkPacket] = field(default_factory=list)
-    tasks: list[dict[str, Any]] = field(default_factory=list)
-    task_notes: dict[str, list[str]] = field(default_factory=dict)
-    directive: dict[str, Any] | None = None
-    checkpoint: dict[str, Any] | None = None
-    report_markdown: str = ""
-    detail: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return to_jsonable(self)
 
 
 class Supervisor:
@@ -223,6 +165,10 @@ class Supervisor:
         self.host = host or detect_host(self.workspace)
         self.router = router or ModelRouter(self.config, host_name=self.host.name)
         self.toolbox = Toolbox(self.workspace, self.config.policy, self.store.root)
+        # The layers below the phase machine. Neither calls back into it, which
+        # is what made them separable at all -- see docs/quality-assessment.md.
+        self.reporting = Reporting(self.config, self.store)
+        self.packets = Packets(self.config, self.store, self.workspace, self.host)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -245,7 +191,7 @@ class Supervisor:
             host=self.host.name,
         )
         session = self.store.create(state)
-        self._registry_for(session, host_agents)
+        self.packets._registry_for(session, host_agents)
         await session.anote(
             "run created",
             host=self.host.name,
@@ -272,14 +218,14 @@ class Supervisor:
 
     async def advance(self, run_id: str, host_agents: list[dict[str, Any]] | None = None) -> SupervisorResponse:
         session = self.store.open(run_id)
-        self._registry_for(session, host_agents)
+        self.packets._registry_for(session, host_agents)
         return await self._advance(session)
 
     async def resume(self, run_id: str) -> SupervisorResponse:
         """Reopen a persisted run and continue from wherever it stopped."""
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self._registry_for(session, None)
+        self.packets._registry_for(session, None)
         await session.anote("run resumed", phase=str(session.state.phase))
         return await self._advance(session)
 
@@ -296,7 +242,7 @@ class Supervisor:
         """
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self._registry_for(session, None)
+        self.packets._registry_for(session, None)
         state = session.state
 
         agent = state.agents.get(agent_id)
@@ -332,119 +278,23 @@ class Supervisor:
         )
         return await self._advance(session)
 
-    def explain(self, run_id: str, agent_id: str = "") -> RunJournal:
-        """Why each directive was issued to each agent, assembled from the log.
 
-        Deliberately not from the snapshot. ``RunState.drift`` is keyed by agent
-        id, so the fold keeps only each agent's newest assessment and overwrites
-        the rest -- and an assessment that has been overwritten cannot explain
-        the directive it produced. ``status`` answers where a run is now from
-        the snapshot; this answers how it got there, from the record.
-        """
-        state = self.store.load_state(run_id)
-        return build_journal(state, self.store.log(run_id).read_all(), agent_id)
-
-    def status(self, run_id: str) -> dict[str, Any]:
-        state = self.store.load_state(run_id)
-        return {
-            "run_id": state.id,
-            "phase": str(state.phase),
-            "mode": str(state.mode),
-            "backend": str(state.backend),
-            "prompt": state.prompt,
-            "created_at": state.created_at,
-            "updated_at": state.updated_at,
-            "agents": [
-                {
-                    "id": a.id,
-                    "role": a.role,
-                    "kind": str(a.kind),
-                    "title": a.title,
-                    "status": str(a.status),
-                    "turns": state.turn_counts.get(a.id, 0),
-                    # How silent it has been: packets handed out since it last
-                    # answered. The host can see one of its agents is overdue
-                    # before the supervisor's own bound abandons it.
-                    "unreported_dispatches": a.unreported_dispatches,
-                    "drift": state.drift[a.id].score if a.id in state.drift else None,
-                    "model": a.binding.ref(),
-                }
-                for a in state.agents.values()
-            ],
-            # What the run itself was entitled to touch. ``None`` where no
-            # envelope was ever established, which is a different fact from an
-            # envelope naming the whole workspace and is reported as one.
-            "envelope": to_jsonable(state.envelope) if state.envelope else None,
-            # Why a resume will pause before execution, or None. Derived rather
-            # than stored: the grant carries its date and the cap is policy, so
-            # a run does not need an event to become stale.
-            "envelope_stale": stale_reason(
-                state.envelope, state.created_at,
-                self.config.policy.envelope_max_age_days,
-            ),
-            # What the run's agents established for each other, and where two of
-            # them keyed a claim the same way and said different things.
-            "established": [
-                {"key": f.key, "statement": f.statement, "evidence": f.evidence,
-                 "by": f.role or f.agent_id}
-                for f in state.established
-            ],
-            "contested_facts": sorted(contested_keys(state.established)),
-            "open_questions": sorted({
-                q for turn in state.turns for q in turn.open_questions
-            }),
-            "findings": len(state.findings),
-            "tasks": [
-                {
-                    "id": t.id,
-                    "title": t.title,
-                    "status": str(t.status),
-                    "decision": str(t.decision) if t.decision else None,
-                    "dod": f"{sum(1 for c in t.mandatory_criteria if c.status is CriterionStatus.PASS)}"
-                           f"/{len(t.mandatory_criteria)}",
-                    "satisfied": t.dod_satisfied(),
-                }
-                for t in state.tasks.values()
-            ],
-            "checkpoints": [
-                {"iteration": c.iteration, "passed": c.passed, "quality": c.quality,
-                 "scope_fidelity": c.scope_fidelity, "completeness": c.completeness}
-                for c in state.checkpoints
-            ],
-            "lessons": len(state.lessons),
-            "artifacts": [
-                {"path": a.path, "kind": a.kind, "actor": a.actor, "ts": a.ts}
-                for a in state.artifacts
-            ],
-            # Types the fold has no branch for. Reported rather than kept to
-            # itself: a run replayed by an older build, or one written with a
-            # misspelled type, is projecting less than the log holds, and the
-            # state is the only place that is visible.
-            "unhandled_events": list(state.unhandled_events),
-            # The three ways a run can be projecting less than its log holds, or
-            # its log less than was written to it. All three used to be silent,
-            # and a run missing records read back as a complete, plausible one.
-            "orphaned_events": list(state.orphaned_events),
-            "rejected_events": list(state.rejected_events),
-            "damaged_lines": state.damaged_lines,
-            # Why things went the way they did: an agent abandoned, a stage
-            # fallen back, an index projection failed. The fold used to drop
-            # these, so a failed run reported its failure without the sentence
-            # explaining it, and only `supervisor events --type note` could say.
-            # Newest last, and capped -- a long run's early notes are audit
-            # material for the log, not context for a status read.
-            "notes": [
-                {"text": n.text, "actor": n.actor, "ts": n.ts, **n.context}
-                for n in state.notes[-STATUS_NOTE_LIMIT:]
-            ],
-            "note_count": len(state.notes),
-            "usage": to_jsonable(state.total_usage()),
-            "error": state.error,
-        }
 
     # ------------------------------------------------------------------
     # Phase machine
     # ------------------------------------------------------------------
+
+    # -- reporting -------------------------------------------------------
+    #
+    # Kept here as one-line delegations because they are public API: the CLI,
+    # the MCP server and the tests all call `supervisor.status(...)`. The bodies
+    # are in `core/reporting.py`.
+
+    def status(self, run_id: str) -> dict[str, Any]:
+        return self.reporting.status(run_id)
+
+    def explain(self, run_id: str, agent_id: str = "") -> RunJournal:
+        return self.reporting.explain(run_id, agent_id)
 
     async def _advance(self, session: RunSession) -> SupervisorResponse:
         """Move the run forward until it needs something from outside."""
@@ -476,12 +326,12 @@ class Supervisor:
             elif phase is Phase.IMPROVING:
                 response = await self._run_improvement(session)
             else:
-                response = self._final_response(session)
+                response = self.reporting._final_response(session)
 
             if response is not None:
                 session.sync_index()
                 return response
-        return self._error(
+        return self.reporting._error(
             session,
             f"phase machine did not settle after {limit} steps; last phase "
             f"{session.state.phase.value}",
@@ -494,7 +344,7 @@ class Supervisor:
 
     async def _begin_planning(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
-        registry = self._registry_for(session, None)
+        registry = self.packets._registry_for(session, None)
         lenses = phases.plan_lenses(state, self.config)
         fallback = phases.build_analysis_agents(state, self.config, registry, lenses)
 
@@ -521,7 +371,9 @@ class Supervisor:
             # was already ANALYZING, so nothing noticed. Two full analysis fleets
             # for one run. Re-entering planning re-issues the same packet to the
             # same agent instead, which the dispatch bound already accounts for.
-            packet = self._stage_packet(session, agent, system, user, PLANNING_SCHEMA, "planning")
+            packet = self.packets._stage_packet(
+                session, agent, system, user, PLANNING_SCHEMA, "planning"
+            )
             return SupervisorResponse(
                 run_id=state.id, phase=str(state.phase), action="dispatch",
                 message=(
@@ -596,7 +448,7 @@ class Supervisor:
         analysts = [a for a in state.agents.values() if a.kind is AgentKind.ANALYSIS]
 
         if not analysts:
-            registry = self._registry_for(session, None)
+            registry = self.packets._registry_for(session, None)
             lenses = phases.plan_lenses(state, self.config)
             self._spawn(session, phases.build_analysis_agents(state, self.config, registry, lenses))
             analysts = [a for a in state.agents.values() if a.kind is AgentKind.ANALYSIS]
@@ -612,7 +464,7 @@ class Supervisor:
             await self._run_agents_autonomously(session, pending)
             return None
 
-        packets = [self._dispatch_packet(session, agent) for agent in pending]
+        packets = [self.packets._dispatch_packet(session, agent) for agent in pending]
         return SupervisorResponse(
             run_id=state.id, phase=str(state.phase), action="dispatch",
             message=(
@@ -647,18 +499,22 @@ class Supervisor:
                 a.role == "synthesizer" and a.status is AgentStatus.DONE
                 for a in state.agents.values()
             ):
-                return self._error(session, "synthesis agent finished without producing tasks")
+                return self.reporting._error(
+                    session, "synthesis agent finished without producing tasks"
+                )
             agent = await self._stage_agent(session, "synthesizer", stage)
             if agent is None:
                 # Nothing downstream exists without synthesis: no report, no
                 # tasks. The findings stay on the log, and the run says why it
                 # stopped rather than re-issuing a packet nobody will run.
-                return self._error(
+                return self.reporting._error(
                     session,
                     "synthesis was abandoned without being reported; the run has "
                     "findings but no merged report or tasks",
                 )
-            packet = self._stage_packet(session, agent, system, user, SYNTHESIS_SCHEMA, "synthesis")
+            packet = self.packets._stage_packet(
+                session, agent, system, user, SYNTHESIS_SCHEMA, "synthesis"
+            )
             return SupervisorResponse(
                 run_id=state.id, phase=str(state.phase), action="dispatch",
                 message="Synthesis stage. Merge the findings, then report with supervisor_report.",
@@ -681,7 +537,7 @@ class Supervisor:
         )
 
         if not tasks or not wants_execution:
-            self._write_run_artifacts(session)
+            self.reporting._write_run_artifacts(session)
             self._transition(session, Phase.IMPROVING)
             return
 
@@ -730,7 +586,7 @@ class Supervisor:
                 "actions, motivations and definitions of done, and ask which to approve, "
                 "modify or reject. Then call supervisor_approve with the decisions."
             ),
-            tasks=[self._task_view(t) for t in proposed],
+            tasks=[self.reporting._task_view(t) for t in proposed],
             task_notes=notes,
             detail={"envelope": to_jsonable(effective(state.envelope))},
         )
@@ -784,7 +640,7 @@ class Supervisor:
             return self._await_envelope_renewal(session, stale)
 
         if not active:
-            registry = self._registry_for(session, None)
+            registry = self.packets._registry_for(session, None)
             fresh: list[AgentSpec] = []
             for task in phases.runnable_tasks(state):
                 if task.assigned_agent_id and task.status is not TaskStatus.FAILED:
@@ -812,7 +668,7 @@ class Supervisor:
             await self._run_agents_autonomously(session, active)
             return None
 
-        packets = [self._dispatch_packet(session, agent) for agent in active]
+        packets = [self.packets._dispatch_packet(session, agent) for agent in active]
         return SupervisorResponse(
             run_id=state.id, phase=str(state.phase), action="dispatch",
             message=(
@@ -835,7 +691,7 @@ class Supervisor:
             if a.kind is AgentKind.VERIFICATION and a.status in ACTIVE_AGENT_STATUSES
         ])
         if not active:
-            registry = self._registry_for(session, None)
+            registry = self.packets._registry_for(session, None)
             fresh: list[AgentSpec] = []
             for task in state.tasks.values():
                 if task.status is not TaskStatus.AWAITING_VERIFICATION:
@@ -872,7 +728,7 @@ class Supervisor:
             await self._run_agents_autonomously(session, active)
             return None
 
-        packets = [self._dispatch_packet(session, agent) for agent in active]
+        packets = [self.packets._dispatch_packet(session, agent) for agent in active]
         return SupervisorResponse(
             run_id=state.id, phase=str(state.phase), action="dispatch",
             message=(
@@ -941,7 +797,9 @@ class Supervisor:
                 await self._apply_checkpoint(session, deterministic, replace(deterministic, gaps=[]))
                 return None
             system, user = phases.checkpoint_prompt(state, deterministic)
-            packet = self._stage_packet(session, agent, system, user, CHECKPOINT_SCHEMA, "checkpoint")
+            packet = self.packets._stage_packet(
+                session, agent, system, user, CHECKPOINT_SCHEMA, "checkpoint"
+            )
             return SupervisorResponse(
                 run_id=state.id, phase=str(state.phase), action="dispatch",
                 message=(
@@ -1013,7 +871,7 @@ class Supervisor:
     async def _run_improvement(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
         if not self.config.policy.learn_from_failures:
-            return self._complete(session)
+            return self.reporting._complete(session)
 
         for lesson in phases.mechanical_lessons(state):
             self._record_lesson(session, lesson)
@@ -1025,7 +883,7 @@ class Supervisor:
             a.role == "improver" and a.status is AgentStatus.DONE for a in state.agents.values()
         )
         if already_ran:
-            return self._complete(session)
+            return self.reporting._complete(session)
 
         if self._delegated(stage):
             agent = await self._stage_agent(session, "improver", stage)
@@ -1033,9 +891,11 @@ class Supervisor:
                 # Same rule as a failed learning pass: never end a run badly over
                 # the lessons it did not get to write down.
                 await session.anote("improvement stage abandoned; ending with the mechanical lessons")
-                return self._complete(session)
+                return self.reporting._complete(session)
             system, user = phases.lessons_prompt(state, checkpoint)
-            packet = self._stage_packet(session, agent, system, user, LESSONS_SCHEMA, "improvement")
+            packet = self.packets._stage_packet(
+                session, agent, system, user, LESSONS_SCHEMA, "improvement"
+            )
             return SupervisorResponse(
                 run_id=state.id, phase=str(state.phase), action="dispatch",
                 message="Improvement stage. Extract reusable lessons from this run, then report.",
@@ -1047,11 +907,11 @@ class Supervisor:
             data = await self._call(stage, system, user, LESSONS_SCHEMA)
         except Exception as exc:  # noqa: BLE001 - never fail a run over the learning pass
             await session.anote(f"improvement stage skipped: {exc}")
-            return self._complete(session)
+            return self.reporting._complete(session)
 
         for lesson in parse_lessons(data, state.id, state.workspace):
             self._record_lesson(session, lesson)
-        return self._complete(session)
+        return self.reporting._complete(session)
 
     def _record_lesson(self, session: RunSession, lesson: Any) -> None:
         stored = self.store.add_lesson(lesson)
@@ -1067,7 +927,7 @@ class Supervisor:
         """Record one agent turn, supervise it, and say what happens next."""
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self._registry_for(session, None)
+        self.packets._registry_for(session, None)
         state = session.state
 
         agent = state.agents.get(agent_id)
@@ -1192,7 +1052,7 @@ class Supervisor:
             open_questions=[
                 str(q).strip() for q in (payload.get("open_questions") or []) if str(q).strip()
             ],
-            usage=self._usage_from(payload),
+            usage=self.reporting._usage_from(payload),
         )
 
         # Only analysis agents establish facts for the run. An execution agent
@@ -1326,7 +1186,7 @@ class Supervisor:
         ctx = TurnContext(
             agent=agent,
             turn=turn,
-            previous_turns=self._previous_turns(session, agent.id, before=turn.id),
+            previous_turns=self.packets._previous_turns(session, agent.id, before=turn.id),
             brief=state.briefs.get(agent.id) or agent.brief,
             task_prompt=state.prompt,
             turn_index=max(0, turns_used - 1),
@@ -1403,7 +1263,7 @@ class Supervisor:
         if agent is None or heuristic is None:
             return {"error": "no assessment to escalate"}
 
-        turns = self._previous_turns(session, agent_id)
+        turns = self.packets._previous_turns(session, agent_id)
         if not turns:
             return {"error": "no turns recorded"}
         last = turns[-1]
@@ -1459,7 +1319,7 @@ class Supervisor:
             response.detail = {"agents_remaining": len(remaining)}
             return response
 
-        packet = self._agent_packet(session, agent, directive=directive)
+        packet = self.packets._agent_packet(session, agent, directive=directive)
         response.action = "dispatch"
         response.packets = [packet]
         response.message = (
@@ -1496,7 +1356,7 @@ class Supervisor:
         state = session.state
         task = state.tasks.get(agent.task_id or "")
         if task is None:
-            return self._error(session, f"verification agent {agent.id} has no task")
+            return self.reporting._error(session, f"verification agent {agent.id} has no task")
 
         by_id = {c.id: c for c in task.dod}
         applied = 0
@@ -1583,14 +1443,14 @@ class Supervisor:
                 run_id=state.id, agent_id=agent.id, seq=1,
                 reasoning=str(payload.get("reasoning", "")),
                 output=str(payload.get("summary") or payload.get("restated_goal") or "")[:4000],
-                usage=self._usage_from(payload),
+                usage=self.reporting._usage_from(payload),
             ))},
             actor=agent.id,
         )
         await self._set_status(session, agent, AgentStatus.DONE)
 
         if agent.role == "planner":
-            registry = self._registry_for(session, None)
+            registry = self.packets._registry_for(session, None)
             lenses = phases.plan_lenses(state, self.config)
             fallback = phases.build_analysis_agents(state, self.config, registry, lenses)
             self._apply_plan(session, payload, fallback, registry)
@@ -1628,7 +1488,7 @@ class Supervisor:
         """
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self._registry_for(session, None)
+        self.packets._registry_for(session, None)
         state = session.state
 
         if renew_envelope:
@@ -1665,7 +1525,7 @@ class Supervisor:
         approved = [t for t in state.tasks.values() if t.status is TaskStatus.APPROVED]
         if not approved:
             await session.anote("no tasks approved; ending with the analysis report")
-            self._write_run_artifacts(session)
+            self.reporting._write_run_artifacts(session)
             self._transition(session, Phase.IMPROVING)
         else:
             self._transition(session, Phase.EXECUTING)
@@ -1716,7 +1576,7 @@ class Supervisor:
         piece of work, not three. The outer one is the supervised loop: each real
         answer is recorded, assessed for drift, and answered with a directive.
         """
-        packet = self._agent_packet(session, agent)
+        packet = self.packets._agent_packet(session, agent)
         history: list[ChatMessage] = [ChatMessage("user", packet.brief)]
 
         for _ in range(agent.budget.max_turns):
@@ -1885,7 +1745,7 @@ class Supervisor:
                 # terminate -- so the run ends here, naming the phase and cause.
                 delegated = self._host_routed_stages()
                 session = self.store.open(response.run_id)
-                return self._error(
+                return self.reporting._error(
                     session,
                     f"autonomous run cannot consume a {response.action!r} response in "
                     f"phase {response.phase}; "
@@ -1927,20 +1787,6 @@ class Supervisor:
         )
         return response.json()
 
-    def _registry_for(
-        self, session: RunSession, host_agents: list[dict[str, Any]] | None
-    ) -> AgentRegistry:
-        """Build the registry, persisting any newly declared host agents.
-
-        The host declares what it can spawn when it starts or advances a run.
-        That declaration is recorded on the run so every later phase can still
-        match roles to real subagent types, including after a resume in a
-        different session.
-        """
-        if host_agents:
-            session.emit(EventType.HOST_AGENTS_DECLARED, {"agents": list(host_agents)})
-        declared = host_agents or session.state.host_agents
-        return AgentRegistry(self.workspace, self.host, declared)
 
     def _check_resume_fidelity(self, session: RunSession) -> None:
         """Note when this process is not the one the run was started under.
@@ -2148,311 +1994,19 @@ class Supervisor:
         self._spawn(session, [spec])
         return session.state.agents[spec.id]
 
-    def _stage_packet(
-        self,
-        session: RunSession,
-        agent: AgentSpec,
-        system: str,
-        user: str,
-        schema: dict[str, Any],
-        kind: str,
-    ) -> WorkPacket:
-        brief = f"{system}\n\n---\n\n{user}"
-        session.emit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
-        session.emit(EventType.AGENT_DISPATCHED, {"agent_id": agent.id, "kind": kind})
-        return WorkPacket(
-            run_id=session.state.id,
-            agent_id=agent.id,
-            kind=kind,
-            title=agent.title,
-            brief=brief,
-            schema=schema,
-            turns_remaining=1,
-            host_agent_type=agent.host_agent_type,
-            model=agent.binding.ref(),
-        )
 
-    def _agent_packet(
-        self, session: RunSession, agent: AgentSpec, directive: Directive | None = None
-    ) -> WorkPacket:
-        state = session.state
-        peers = [a for a in state.agents.values() if a.kind is agent.kind]
-        turns_used = state.turn_counts.get(agent.id, 0)
 
-        # A host-run agent uses the host's own tools and must not be told about
-        # the harness's; only an agent the harness drives itself gets this.
-        tools = (
-            render_tools_section(agent, self.config.policy)
-            if agent.backend is Backend.AUTONOMOUS
-            else ""
-        )
 
-        if agent.kind is AgentKind.ANALYSIS:
-            schema = ANALYSIS_TURN_SCHEMA
-            brief = build_analysis_brief(
-                state, agent, ROLES_BY_ID.get(agent.role), peers, schema,
-                shared_context=render_context(
-                    state.shared_context, state.facts, state.established
-                ),
-                lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
-                tools=tools,
-            )
-        elif agent.kind is AgentKind.EXECUTION:
-            schema = EXECUTION_TURN_SCHEMA
-            task = state.tasks.get(agent.task_id or "")
-            findings = [
-                f"[{f.severity.value}] {f.title}: {f.detail}"
-                for f in state.findings
-                if task and f.id in task.rationale_refs
-            ]
-            brief = build_execution_brief(
-                state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
-                ROLES_BY_ID.get(agent.role), peers, schema,
-                shared_context=render_context(
-                    state.shared_context, state.facts, state.established
-                ),
-                lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
-                supporting_findings=findings,
-                tools=tools,
-            )
-        else:
-            schema = VERIFICATION_SCHEMA
-            task = state.tasks.get(agent.task_id or "")
-            summary = self._change_summary(session, task)
-            brief = build_verification_brief(
-                state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
-                schema, change_summary=summary, tools=tools,
-            )
 
-        # The brief is rendered once and reused, so it stays a stable anchor for
-        # drift scoring. Persisted for the same reason: a process that could not
-        # see it scored the same turn quite differently.
-        stored = state.briefs.get(agent.id)
-        if stored:
-            brief = stored
-        else:
-            session.emit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
 
-        # A continuation carries the brief *and* the directive. The directive
-        # alone ends with "reply with the same contract as before", which assumes
-        # the agent still remembers its brief -- true while the host keeps it
-        # alive, false after a resume, when the host spawns a fresh agent. A
-        # packet has to stand on its own, as the protocol says it does.
-        if directive is not None:
-            brief = f"{brief}\n\n---\n\n{render_directive(directive, agent)}"
 
-        return WorkPacket(
-            run_id=state.id,
-            agent_id=agent.id,
-            kind=str(agent.kind),
-            title=agent.title,
-            brief=brief,
-            schema=schema,
-            turn_index=turns_used,
-            turns_remaining=max(0, agent.budget.max_turns - turns_used),
-            host_agent_type=agent.host_agent_type,
-            model=agent.binding.ref(),
-            task_id=agent.task_id,
-        )
 
-    @staticmethod
-    def _outstanding_directive(state: RunState, agent: AgentSpec) -> Directive | None:
-        """The directive this agent was issued and has not yet answered.
 
-        Without this, resuming a run re-briefed every agent from scratch and
-        dropped the correction it was mid-way through applying -- the agent had
-        no idea it had been told to narrow its scope, and the supervisor had no
-        idea it had said so.
-        """
-        if state.turn_counts.get(agent.id, 0) == 0:
-            return None
-        for directive in reversed(state.directives):
-            if directive.agent_id == agent.id:
-                return directive if directive.kind in CONTINUATION_DIRECTIVES else None
-        return None
 
-    def _dispatch_packet(self, session: RunSession, agent: AgentSpec) -> WorkPacket:
-        """Packet for an agent being (re-)dispatched, carrying any open directive.
 
-        Every packet handed to the host is recorded, because the count of them
-        is the only evidence the supervisor has that an agent which never
-        answers has been asked more than once.
-        """
-        packet = self._agent_packet(
-            session, agent,
-            directive=self._outstanding_directive(session.state, agent),
-        )
-        session.emit(EventType.AGENT_DISPATCHED, {"agent_id": agent.id, "kind": packet.kind})
-        return packet
 
-    def _lessons_for(self, agent: AgentSpec) -> list[Lesson]:
-        """The lessons this agent's brief should carry.
 
-        Both keyword arguments were previously left at their defaults by every
-        caller, which meant two behaviours existed and never ran: `lessons_for`
-        ranks a lesson learned in this workspace above one borrowed from another
-        at equal strength, and it drops lessons past an age cap that
-        `policy.lesson_max_age_days` is supposed to set. A workspace configuring
-        that cap changed nothing, and borrowed experience sorted level with
-        local. Passing both here is the whole fix.
-        """
-        policy = self.config.policy
-        return self.store.lessons_for(
-            [agent.role],
-            policy.max_lessons_in_brief,
-            workspace=str(self.workspace),
-            max_age_days=policy.lesson_max_age_days,
-        )
 
-    def _schema_for(self, agent: AgentSpec) -> dict[str, Any]:
-        return {
-            AgentKind.ANALYSIS: ANALYSIS_TURN_SCHEMA,
-            AgentKind.EXECUTION: EXECUTION_TURN_SCHEMA,
-            AgentKind.VERIFICATION: VERIFICATION_SCHEMA,
-        }.get(agent.kind, ANALYSIS_TURN_SCHEMA)
-
-    def _change_summary(self, session: RunSession, task: ExecutionTask | None) -> str:
-        if task is None:
-            return ""
-        state = session.state
-        parts: list[str] = []
-        for turn in state.turns:
-            agent = state.agents.get(turn.agent_id)
-            if agent is None or agent.task_id != task.id:
-                continue
-            if turn.output:
-                parts.append(turn.output)
-            if turn.files_touched:
-                parts.append("Files touched: " + ", ".join(turn.files_touched))
-        return "\n\n".join(parts[-4:])
-
-    @staticmethod
-    def _previous_turns(
-        session: RunSession, agent_id: str, before: str | None = None
-    ) -> list[AgentTurn]:
-        """This agent's turns, from the folded state rather than from the log.
-
-        All three readers here used to re-parse the whole of ``events.jsonl``,
-        because the fold kept the turn *count* and discarded the body. This one
-        is called once per supervised turn, from ``_supervise``, so the cost of
-        supervising a run was quadratic in the length of the run being
-        supervised -- and the log is the largest file the harness writes.
-        """
-        return [
-            turn for turn in session.state.turns
-            if turn.agent_id == agent_id and not (before and turn.id == before)
-        ]
-
-    @staticmethod
-    def _usage_from(payload: dict[str, Any]) -> Usage:
-        raw = payload.get("usage")
-        if isinstance(raw, dict):
-            return Usage(
-                input_tokens=int(raw.get("input_tokens", 0) or 0),
-                output_tokens=int(raw.get("output_tokens", 0) or 0),
-                seconds=float(raw.get("seconds", 0) or 0),
-                tool_calls=int(raw.get("tool_calls", 0) or 0),
-            )
-        return Usage()
-
-    @staticmethod
-    def _task_view(task: ExecutionTask) -> dict[str, Any]:
-        return {
-            "id": task.id,
-            "title": task.title,
-            "action": task.action,
-            "motivation": task.motivation,
-            "closes_findings": task.rationale_refs,
-            "risk": str(task.risk),
-            "effort": task.effort,
-            "suggested_role": task.suggested_role,
-            "depends_on": task.depends_on,
-            "scope": to_jsonable(task.scope),
-            "definition_of_done": [
-                {
-                    "id": c.id,
-                    "statement": c.statement,
-                    "method": str(c.method),
-                    "command": c.command,
-                    "expect": c.expect,
-                    "rubric": c.rubric,
-                    "mandatory": c.mandatory,
-                }
-                for c in task.dod
-            ],
-        }
-
-    def _write_run_artifacts(self, session: RunSession) -> None:
-        """Write the run's two documents: what happened, and what it closed.
-
-        The reconciliation is written alongside the report rather than derived
-        on request, because the question it answers -- which findings did this
-        run actually fix, and which are still open? -- is asked after the run is
-        over, and was previously reconstructed by hand from the report.
-        """
-        state = session.state
-        path = self.store.write_artifact(
-            state.id, "report.md", phases.final_report_markdown(state)
-        )
-        session.emit(EventType.ARTIFACT_WRITTEN, {"path": str(path), "kind": "report"})
-
-        reconciliation = self.store.write_artifact(
-            state.id, "reconciliation.md", phases.reconciliation_markdown(state)
-        )
-        session.emit(
-            EventType.ARTIFACT_WRITTEN,
-            {"path": str(reconciliation), "kind": "reconciliation"},
-        )
-
-    def _complete(self, session: RunSession) -> SupervisorResponse:
-        self._write_run_artifacts(session)
-        session.emit(EventType.RUN_ENDED, {"phase": str(Phase.COMPLETE)})
-        session.sync_index()
-        return self._final_response(session)
-
-    def _final_response(self, session: RunSession) -> SupervisorResponse:
-        state = session.state
-        markdown = phases.final_report_markdown(state)
-        satisfied = [t for t in state.tasks.values() if t.dod_satisfied()]
-        executed = state.approved_tasks()
-        return SupervisorResponse(
-            run_id=state.id,
-            phase=str(state.phase),
-            action="failed" if state.phase is Phase.FAILED else "complete",
-            message=(
-                f"Run {state.phase.value}. "
-                f"{len(satisfied)}/{len(executed)} task(s) meet their definition of done."
-                if executed
-                else f"Run {state.phase.value} with an analysis report."
-            ),
-            report_markdown=markdown,
-            checkpoint=to_jsonable(state.checkpoints[-1]) if state.checkpoints else None,
-            detail={
-                "artifact": str(self.store.run_dir(state.id) / "artifacts" / "report.md"),
-                "reconciliation": str(
-                    self.store.run_dir(state.id) / "artifacts" / "reconciliation.md"
-                ),
-                "findings": len(state.findings),
-                "findings_open": [
-                    r.finding.id
-                    for r in phases.reconcile_findings(state)
-                    if r.state != phases.FINDING_FIXED
-                ],
-                "lessons": len(state.lessons),
-                "dod_satisfied": [t.id for t in satisfied],
-                "dod_unmet": {
-                    t.id: [c.statement for c in t.unmet_criteria()]
-                    for t in executed if not t.dod_satisfied()
-                },
-            },
-        )
-
-    def _error(self, session: RunSession, message: str) -> SupervisorResponse:
-        session.emit(EventType.RUN_ENDED, {"phase": str(Phase.FAILED), "error": message})
-        session.sync_index()
-        return SupervisorResponse(
-            run_id=session.state.id, phase=str(Phase.FAILED), action="failed", message=message
-        )
 
     async def aclose(self) -> None:
         await self.router.aclose()
