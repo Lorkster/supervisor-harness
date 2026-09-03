@@ -245,16 +245,16 @@ def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatc
         state.tasks[task.id] = _merge_into(seen_task, task) if seen_task is not None else task
 
     elif t is EventType.CRITERION_VERIFIED:
-        task = state.tasks.get(p["task_id"])
-        if task is None:
+        verified = state.tasks.get(p["task_id"])
+        if verified is None:
             orphan(p["task_id"])
-        elif not any(crit.id == p["criterion_id"] for crit in task.dod):
+        elif not any(crit.id == p["criterion_id"] for crit in verified.dod):
             # The task is here but this criterion is not: a definition of done
             # that was replaced after the verdict was recorded. Worth naming
             # separately, since the task existing makes it look accounted for.
             orphan(f"{p['task_id']}/{p['criterion_id']}")
         else:
-            for crit in task.dod:
+            for crit in verified.dod:
                 if crit.id == p["criterion_id"]:
                     crit.status = CriterionStatus(p["status"])
                     crit.evidence = p.get("evidence", "")

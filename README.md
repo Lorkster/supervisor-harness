@@ -609,6 +609,7 @@ memory.
 | [`docs/reasoning-control-plane.md`](docs/reasoning-control-plane.md) | **What the harness is.** The four dimensions of the design, each pointing at the code that implements it, and what each one deliberately does not do. |
 | [`docs/protocol.md`](docs/protocol.md) | The wire protocol between the harness and the host. |
 | [`docs/shared-context-spec.md`](docs/shared-context-spec.md) | Shared semantic context in full: the design, its decided choices, and its open ones. |
+| [`docs/quality-assessment.md`](docs/quality-assessment.md) | The standard this codebase is held to, what it measures against it, and the findings still open. |
 | [`docs/remediation-plan.md`](docs/remediation-plan.md) | The history — what a review of this codebase found, what was fixed, and why each call was made. |
 | [`docs/next-three.md`](docs/next-three.md) | What is scheduled next, and what has already been decided. |
 

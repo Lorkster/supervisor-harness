@@ -152,6 +152,19 @@ jobs:
       - name: No new ruff findings
         run: python tools/ruff_diff.py --base origin/${{ github.base_ref || 'main' }}
 
+      # Gates at zero, unlike ruff. The codebase turned out to be almost fully
+      # annotated -- 3 errors across 40 files when this was first measured -- so
+      # there is no baseline to grandfather in and nothing to stage.
+      - name: Types
+        run: python -m mypy
+
+      # A floor, not a target. 82.2% when first measured; this fails if a change
+      # drops it, which is the property worth having -- the number itself is far
+      # less interesting than the direction. The gaps are findings Q-C1..Q-C4 in
+      # docs/quality-assessment.md, and closing them raises this floor.
+      - name: Coverage floor
+        run: python -m pytest -q --cov=supervisor_harness --cov-report=term:skip-covered --cov-fail-under=82
+
       # docs/reasoning-control-plane.md explains the design by pointing at the
       # code that implements it, by file and line. That is the useful form and
       # also the one that rots silently -- the code moves, the line number does

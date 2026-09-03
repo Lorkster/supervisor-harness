@@ -400,6 +400,30 @@ cover, not findings:
 criteria, findings with ids, and a batch plan, in the shape
 `docs/remediation-plan.md` already uses so that the two read the same way.
 
+### 4a closed
+
+Landed on `chore/quality-assessment` as
+[`docs/quality-assessment.md`](quality-assessment.md): ten written criteria, 15
+findings with ids, a five-batch plan for 4b, and the instruments in CI — a
+coverage floor at 82%, mypy gating at **zero**, and ruff against a configured
+rule set for the first time.
+
+Four findings are closed by that batch itself: the three type errors, and a real
+flaw in `tools/ruff_diff.py` — it ran ruff separately in each tree, so each used
+its own configuration, meaning any change to the rule set compared two different
+rule sets. Both trees now use the working tree's.
+
+**Two claims in this document were wrong, and the measurement says so.** Type
+coverage was not a risk: 3 errors across 40 files. And the argument for putting
+4a before the split — *"with no coverage measurement nobody knows what fraction
+of a 2,584-line module they exercise"* — was answered at **94%**. The ordering
+still holds, for the other reason given: *how* to split is an architecture
+question and the criteria should precede the design call. But the fear was
+unfounded, and the complexity numbers reframe item 2 further: the worst function
+in the codebase is `store/events.py`'s fold at 48 branches, and
+`core/supervisor.py` holds only 3 complexity findings. **The split is a
+file-size fix, not a complexity fix**, and should not be sold as the latter.
+
 **Order:** after item 2, because a split that moves half the package would
 invalidate architecture findings written against the current layout.
 
@@ -414,7 +438,7 @@ moves have a reason beyond preference.
 | --- | --- | --- |
 | 1 | **3a** — the paradigm document | Cheap, independent, overdue, and it is what a new reader currently gets wrong. **Done** — see below. |
 | 2 | **1b** — the Bedrock optional extra | Small, independent, closes issue #31 — and it lands *before* the assessment so the assessment covers the module set being kept. **Done** — see §1b. |
-| 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. |
+| 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. **Done** — [`quality-assessment.md`](quality-assessment.md). |
 | 4 | **2 (9c)** — the split | Made against 4a's criteria and protected by 4a's coverage. |
 | 5 | **4b** — close the remaining findings in batches | Against the settled layout, so cleanup diffs are not written into `core/supervisor.py` and immediately moved again. |
 | 6 | **3b** — the diagrams | Last, unchanged: diagrams that name modules go stale the moment the modules move. |

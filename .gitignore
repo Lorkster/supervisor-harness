@@ -11,3 +11,9 @@ venv/
 *.db
 .env
 .DS_Store
+
+# Coverage and type-check artefacts
+.coverage
+coverage.json
+htmlcov/
+.mypy_cache/

@@ -76,7 +76,9 @@ def _coerce(value: Any, tp: Any) -> Any:
     if isinstance(tp, type) and issubclass(tp, enum.Enum):
         return tp(value)
 
-    if dataclasses.is_dataclass(tp) and isinstance(value, dict):
+    # `is_dataclass` is true of instances as well as classes; `from_jsonable`
+    # takes a class, so the isinstance check is narrowing rather than noise.
+    if isinstance(tp, type) and dataclasses.is_dataclass(tp) and isinstance(value, dict):
         return from_jsonable(value, tp)
 
     return value
