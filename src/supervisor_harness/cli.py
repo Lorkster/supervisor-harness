@@ -116,23 +116,30 @@ def cmd_init(args: argparse.Namespace) -> int:
         written.append(str(config_path.relative_to(workspace)))
 
     host = detect_host(workspace)
-    targets = {"claude", "cursor"} if args.host == "both" else {args.host or host.name.split("-")[0]}
+    targets = (
+        {"claude", "cursor"} if args.host == "both"
+        else {args.host or host.name.split("-")[0]}
+    )
 
     if "claude" in targets or host.name == "claude-code":
         skill_dir = workspace / ".claude" / "skills" / "supervise"
         skill_dir.mkdir(parents=True, exist_ok=True)
-        _copy(INTEGRATIONS / "claude_code" / "SKILL.md", skill_dir / "SKILL.md", args.force, written, workspace)
+        _copy(INTEGRATIONS / "claude_code" / "SKILL.md", skill_dir / "SKILL.md",
+              args.force, written, workspace)
         cmd_dir = workspace / ".claude" / "commands"
         cmd_dir.mkdir(parents=True, exist_ok=True)
-        _copy(INTEGRATIONS / "claude_code" / "supervise.md", cmd_dir / "supervise.md", args.force, written, workspace)
+        _copy(INTEGRATIONS / "claude_code" / "supervise.md", cmd_dir / "supervise.md",
+              args.force, written, workspace)
 
     if "cursor" in targets or host.name == "cursor":
         rules_dir = workspace / ".cursor" / "rules"
         rules_dir.mkdir(parents=True, exist_ok=True)
-        _copy(INTEGRATIONS / "cursor" / "supervisor.mdc", rules_dir / "supervisor.mdc", args.force, written, workspace)
+        _copy(INTEGRATIONS / "cursor" / "supervisor.mdc", rules_dir / "supervisor.mdc",
+              args.force, written, workspace)
         cmd_dir = workspace / ".cursor" / "commands"
         cmd_dir.mkdir(parents=True, exist_ok=True)
-        _copy(INTEGRATIONS / "cursor" / "supervise.md", cmd_dir / "supervise.md", args.force, written, workspace)
+        _copy(INTEGRATIONS / "cursor" / "supervise.md", cmd_dir / "supervise.md",
+              args.force, written, workspace)
 
     mcp_path = workspace / ".mcp.json"
     template = json.loads((INTEGRATIONS / "mcp.json").read_text(encoding="utf-8"))
@@ -768,7 +775,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", parents=[common], help="install host integrations and an example config")
+    p = sub.add_parser("init", parents=[common],
+                       help="install host integrations and an example config")
     p.add_argument("--host", choices=["claude", "cursor", "both"], default="",
                    help="which host to install for (default: whichever is detected)")
     p.add_argument("--force", action="store_true", help="overwrite existing files")
@@ -788,7 +796,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="approve every proposed task without asking")
     p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("start", parents=[common], help="begin a host-delegated run and print its packets")
+    p = sub.add_parser("start", parents=[common],
+                       help="begin a host-delegated run and print its packets")
     p.add_argument("prompt", help="what you want done, in your own words")
     p.add_argument("--mode", choices=["auto", "report", "execute"], default="auto",
                    help="what the run should produce: 'report' ends with the analysis, "
@@ -877,7 +886,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="how many to list, newest first (default: 20)")
     p.set_defaults(func=cmd_runs)
 
-    p = sub.add_parser("lessons", parents=[common], help="show what previous runs taught the harness")
+    p = sub.add_parser("lessons", parents=[common],
+                       help="show what previous runs taught the harness")
     p.add_argument("-t", "--target", default="",
                    help="filter to a role id, 'supervisor', 'dod', or '*'")
     p.add_argument("-n", "--limit", type=int, default=20,
@@ -887,7 +897,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("providers", parents=[common], help="show model routing and provider health")
     p.set_defaults(func=cmd_providers)
 
-    p = sub.add_parser("reindex", parents=[common], help="rebuild the SQLite index from the event logs")
+    p = sub.add_parser("reindex", parents=[common],
+                       help="rebuild the SQLite index from the event logs")
     p.set_defaults(func=cmd_reindex)
 
     p = sub.add_parser(

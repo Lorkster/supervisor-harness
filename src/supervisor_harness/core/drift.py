@@ -35,15 +35,18 @@ from .paths import matches_any, scope_relative
 
 _TOKEN = re.compile(r"[a-z0-9_]{3,}")
 
-_STOPWORDS = frozenset(
-    """the and for that this with from into your you are was were will would should
+# Written as prose because that is how it is read and edited. Ruff's SIM905
+# prefers a list literal, and applying that fix produced a single 900-character
+# line -- the rule is right in general and wrong for a block this size, so the
+# text is named first and split once, which satisfies both.
+_STOPWORD_TEXT = """the and for that this with from into your you are was were will would should
     have has had not but they them their there then than when where which what who
     how why all any can could may might must our out its it's about above after
     again against because been before being below between both during each few
     more most other over same some such only own too very just also use used
     using need needs make makes made get gets got does did done"""
-    .split()
-)
+
+_STOPWORDS = frozenset(_STOPWORD_TEXT.split())
 
 
 def tokens(text: str) -> set[str]:

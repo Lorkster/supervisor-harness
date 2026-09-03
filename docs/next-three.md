@@ -8,10 +8,17 @@ what has been decided.
 It was written as *the next three*. Item 4 arrived with the 9c decision, and the
 title moved rather than the item being squeezed into one of the others.
 
-**State as of `9bb1bf7`.** 306 tests pass, 2 skipped. Ruff reports 58 findings
-against defaults the project has never configured, and CI gates on *no new*
-(file, rule) pairs rather than on zero — `python tools/ruff_diff.py`.
+**State as of `9bb1bf7`, when this document was written.** 306 tests pass, 2
+skipped. Ruff reports 58 findings against defaults the project has never
+configured, and CI gates on *no new* (file, rule) pairs rather than on zero.
 `core/supervisor.py` is 2,584 lines of a 14,860-line package.
+
+> **None of that paragraph still holds**, and it is left as written because this
+> document is also a record of what was believed when the plan was made. As of
+> batch 4b-4: 463 tests, ruff **configured and at zero** with CI running
+> `ruff check` (the by-(file, rule) diff tool is gone), coverage 88.7% with a
+> floor, mypy at zero, and `core/supervisor.py` split down to 1,652 lines.
+> `docs/quality-assessment.md` is the current standard.
 
 Every finding from the original 88-finding self-review is closed, both
 outstanding policy calls are decided, and all four dimensions of the

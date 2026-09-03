@@ -58,7 +58,7 @@ and none of them can rot quietly.
 | --- | --- | --- |
 | Coverage | `pytest --cov=supervisor_harness --cov-fail-under=88` | a **floor**; fails if it drops |
 | Types | `mypy` (config in `pyproject.toml`) | **zero**, from the start |
-| Lint | `tools/ruff_diff.py`, now against a configured rule set | **no new** (file, rule) pairs |
+| Lint | `ruff check` against the configured rule set | **zero**, since 4b-4 |
 | Architecture | `tests/test_architecture.py` — criteria 1 and 3, executed | zero cycles |
 | Emission | `tests/test_architecture.py` — no sync `emit()` inside an `async def` | zero, package-wide |
 | Doc references | `tools/check_doc_refs.py` | zero |
@@ -72,8 +72,13 @@ Two notes on what changed in the instruments themselves:
   used *its own* config. Any pull request changing the rule set therefore
   compared two different rule sets — reporting every newly-enabled rule as a
   regression, and, worse, reporting nothing at all for a change that *disabled*
-  a rule. Both trees are now measured with the working tree's configuration.
-  Recorded as **Q-Q4**, closed here.
+  a rule. Both trees were then measured with the working tree's configuration.
+  Recorded as **Q-Q4**, closed in the 4a batch.
+
+  *The tool was removed in 4b-4.* It existed to tolerate a baseline, and once
+  Q-Q1 drove that baseline to zero a plain `ruff check` was strictly stronger.
+  Keeping a second, weaker gate that can never fire first is the kind of dead
+  code this assessment exists to find.
 
 ---
 
@@ -234,11 +239,34 @@ than as a sweep.*
 
 ### Code quality
 
-**Q-Q1 · 88 ruff findings against the newly configured rule set.**
-The set is `E, F, W, I, UP, B, SIM, RUF, S` at line length 100, chosen by
-measurement — see below. Breakdown: 45 `E501`, 17 `RUF100`, 6 `UP037`, 3
-`SIM105`, 3 `S105`, 2 each of `S110`/`UP017`/`RUF022`, and seven singles.
-*Criterion 4. Cost: low, and largely mechanical.*
+**Q-Q1 · Ruff findings against the configured rule set. — CLOSED (4b-4)**
+88 at the assessment, 67 after 4b-1 enabled `BLE`/`TRY004`, and **zero** now.
+CI runs `ruff check` and fails on anything.
+
+Most of it was mechanical: 43 lines over the limit, and auto-fixable `UP037`,
+`RUF022`, `SIM102`, `SIM105`. Three findings were judgement rather than typing:
+
+- **`SIM905` was wrong here and is suppressed with the reason.** Applied, its
+  fix collapsed a readable multi-line block of 87 stopwords into a single
+  900-character line. The text is now named before it is split, which satisfies
+  the rule and keeps the block. *A linter finding is a question, not an order.*
+- **`SIM105` and `S112`/`S110` overlapped**, and `contextlib.suppress` answered
+  all three at once while saying what the `try`/`except`/`pass` meant. The
+  reason each swallow is deliberate moved from a `# noqa` into a comment.
+- **Six were false positives**, suppressed with the reason rather than worked
+  around: `S105` on a *shell* token and on `CriterionStatus.PASS`; `S607` on
+  `git` resolved through PATH deliberately; `S608` on a constant table name with
+  a bound parameter; `B027` on an optional `aclose` hook that is empty on
+  purpose.
+
+**The gate changed with it.** `tools/ruff_diff.py` was removed: it existed to
+tolerate a baseline, and once there is none a plain `ruff check` is strictly
+stronger and cannot be shadowed by a weaker check running first.
+
+**`ruff` and `mypy` are now pinned to a minor range.** A check that gates at
+zero is broken by a release that adds a rule, which would turn an unrelated pull
+request red; upgrading either should be a deliberate act whose findings someone
+reads.
 
 **Q-Q2 · 17 `# noqa` directives for rules that were never enabled — CLOSED
 (4b-1).** `E402`, `S602`, `S603`, `S608`, `C901`, `BLE001`: they read as
@@ -360,7 +388,7 @@ Ordered by value per unit of churn, not by finding number.
 | ~~**4b-1**~~ | ~~Q-Q3, Q-A1, Q-Q2~~ | **Done.** Q-Q3 needed a design decision after all — *which* object closes a shared store — and Q-Q2 was better answered by enabling the rules than by deleting the directives. |
 | ~~**4b-2**~~ | ~~Q-C5, Q-C3, Q-C4~~ | **Done.** Coverage 82.3% → **87.0%**, floor raised to 86. Found and fixed a real defect on the way — see Q-Q5. |
 | ~~**4b-3**~~ | ~~Q-C1~~ | **Done.** 0% → 95%, driven through `call_tool` rather than the closures. Coverage 87.0% → **88.8%**, floor raised to 88. |
-| **4b-4** | Q-Q1 | The 88 lint findings, mechanically, once the files have stopped moving. Stage the gate to zero **per rule** as each reaches zero — turning the whole set on at once makes every pre-existing finding a gate failure. |
+| ~~**4b-4**~~ | ~~Q-Q1~~ | **Done.** All of them to zero in one batch, so the per-rule staging the plan allowed for was not needed. `ruff check` now gates at zero and `ruff_diff.py` is gone. |
 | **4b-5** | Q-A3, Q-C2 | `cli.py`: complexity and coverage together, since both mean touching the same functions. |
 | **later** | Q-A2, Q-C6, Q-T2 | Q-A2 is real refactoring and should follow item 2 so the two do not collide. Q-C6 is best done per-module alongside the batches above rather than as a sweep. Q-T2 is a policy choice, cheapest while files are being touched. |
 

@@ -31,6 +31,7 @@ in-memory change second, which is what makes a run resumable from any point.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import traceback
 from dataclasses import replace
 from pathlib import Path
@@ -189,7 +190,9 @@ class Supervisor:
 
         return await self._advance(session)
 
-    async def advance(self, run_id: str, host_agents: list[dict[str, Any]] | None = None) -> SupervisorResponse:
+    async def advance(
+        self, run_id: str, host_agents: list[dict[str, Any]] | None = None
+    ) -> SupervisorResponse:
         session = self.store.open(run_id)
         self.packets._registry_for(session, host_agents)
         return await self._advance(session)
@@ -427,7 +430,9 @@ class Supervisor:
         if not analysts:
             registry = self.packets._registry_for(session, None)
             lenses = phases.plan_lenses(state, self.config)
-            self.lifecycle._spawn(session, phases.build_analysis_agents(state, self.config, registry, lenses))
+            self.lifecycle._spawn(
+            session, phases.build_analysis_agents(state, self.config, registry, lenses)
+        )
             analysts = [a for a in state.agents.values() if a.kind is AgentKind.ANALYSIS]
 
         pending = await self.lifecycle._reap_unreported(
@@ -771,7 +776,9 @@ class Supervisor:
                 )
                 # The mechanical scoring standing in for the judgement it did
                 # not get: same numbers, and its gaps counted once.
-                await self._apply_checkpoint(session, deterministic, replace(deterministic, gaps=[]))
+                await self._apply_checkpoint(
+                    session, deterministic, replace(deterministic, gaps=[])
+                )
                 return None
             system, user = phases.checkpoint_prompt(state, deterministic)
             packet = self.packets._stage_packet(
@@ -823,7 +830,10 @@ class Supervisor:
         corrections = checkpoint.remediation or checkpoint.gaps
         tasks = list(state.tasks.values())
         for task in tasks:
-            if task.status is not TaskStatus.FAILED or task.attempts >= self.config.policy.max_task_attempts:
+            if (
+                task.status is not TaskStatus.FAILED
+                or task.attempts >= self.config.policy.max_task_attempts
+            ):
                 continue
             task.status = TaskStatus.APPROVED
             task.assigned_agent_id = None
@@ -838,9 +848,11 @@ class Supervisor:
             count += 1
 
         for agent in state.agents.values():
-            if agent.kind in (AgentKind.EXECUTION, AgentKind.VERIFICATION):
-                if agent.status in ACTIVE_AGENT_STATUSES:
-                    await self.lifecycle._set_status(session, agent, AgentStatus.STOPPED)
+            if (
+                agent.kind in (AgentKind.EXECUTION, AgentKind.VERIFICATION)
+                and agent.status in ACTIVE_AGENT_STATUSES
+            ):
+                await self.lifecycle._set_status(session, agent, AgentStatus.STOPPED)
         return count
 
     # -- improvement ---------------------------------------------------
@@ -867,7 +879,9 @@ class Supervisor:
             if agent is None:
                 # Same rule as a failed learning pass: never end a run badly over
                 # the lessons it did not get to write down.
-                await session.anote("improvement stage abandoned; ending with the mechanical lessons")
+                await session.anote(
+                    "improvement stage abandoned; ending with the mechanical lessons"
+                )
                 return self.reporting._complete(session)
             system, user = phases.lessons_prompt(state, checkpoint)
             packet = self.packets._stage_packet(
@@ -951,7 +965,8 @@ class Supervisor:
             # agent whose whole job is judgement produced no turn event at all:
             # its reasoning, self-assessment, blocked_on and usage reached
             # nothing, and it was the only agent in a run with no drift score.
-            await self.supervision._assess_drift(session, agent, await self.supervision._record_turn(session, agent, payload))
+            verification_turn = await self.supervision._record_turn(session, agent, payload)
+            await self.supervision._assess_drift(session, agent, verification_turn)
             return await self._report_verification(session, agent, payload)
 
         turn = await self.supervision._record_turn(session, agent, payload)
@@ -965,10 +980,10 @@ class Supervisor:
             self.config.policy,
             max(0, turn.seq - 1),
         ):
-            try:
+            # A failed second opinion is not fatal: the heuristic assessment
+            # already stands, and the escalation is an extra rather than a step.
+            with contextlib.suppress(Exception):
                 await self.supervision.supervise_with_model(session.state.id, agent.id)
-            except Exception:  # noqa: BLE001 - a failed second opinion is not fatal
-                pass
 
         if agent.kind is AgentKind.EXECUTION and directive.kind in (
             DirectiveKind.ACCEPT, DirectiveKind.STOP, DirectiveKind.ESCALATE
@@ -1349,7 +1364,8 @@ class Supervisor:
                 # Same as the host path: the turn is recorded and assessed
                 # before the verdict is applied, so a verifier's work is visible
                 # on both backends rather than on neither.
-                await self.supervision._assess_drift(session, agent, await self.supervision._record_turn(session, agent, payload))
+                turn = await self.supervision._record_turn(session, agent, payload)
+                await self.supervision._assess_drift(session, agent, turn)
                 await self._report_verification(session, agent, payload)
                 return
 
@@ -1361,10 +1377,9 @@ class Supervisor:
                 self.config.policy,
                 turn.seq - 1,
             ):
-                try:
+                # As above: the escalation is an extra, not a step.
+                with contextlib.suppress(Exception):
                     await self.supervision.supervise_with_model(session.state.id, agent.id)
-                except Exception:  # noqa: BLE001 - a failed second opinion is not fatal
-                    pass
 
             if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP, DirectiveKind.ESCALATE):
                 if agent.kind is AgentKind.EXECUTION:

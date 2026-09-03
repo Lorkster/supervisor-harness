@@ -333,8 +333,10 @@ def test_quality_bars_are_not_suppressed_by_a_criterion_about_output_format() ->
     added_innocent = apply_quality_bars(innocent, Policy())
     added_covered = apply_quality_bars(covered, Policy())
 
-    assert any("conventions" in c.statement for c in added_innocent),         "the code-quality bar was suppressed by the word 'format'"
-    assert not any("conventions" in c.statement for c in added_covered),         "a criterion about the formatter should still cover the code-quality bar"
+    assert any("conventions" in c.statement for c in added_innocent), \
+        "the code-quality bar was suppressed by the word 'format'"
+    assert not any("conventions" in c.statement for c in added_covered), \
+        "a criterion about the formatter should still cover the code-quality bar"
 
 
 def test_quality_bars_are_not_suppressed_by_test_data_or_security_cameras() -> None:
@@ -352,8 +354,10 @@ def test_quality_bars_are_not_suppressed_by_test_data_or_security_cameras() -> N
 
     added = apply_quality_bars(task, Policy())
 
-    assert any(c.method is VerifyMethod.TEST for c in added),         "the test bar was suppressed by the phrase 'test data'"
-    assert any("weakness" in c.statement for c in added),         "the security bar was suppressed by the phrase 'security cameras'"
+    assert any(c.method is VerifyMethod.TEST for c in added), \
+        "the test bar was suppressed by the phrase 'test data'"
+    assert any("weakness" in c.statement for c in added), \
+        "the security bar was suppressed by the phrase 'security cameras'"
 
 
 # --------------------------------------------------------------------------

@@ -39,8 +39,10 @@ _TIMEOUT = 15
 def _git(workspace: Path, *args: str) -> str | None:
     """One read-only git command, or ``None`` if git could not answer it."""
     try:
+        # S607: `git` is looked up on PATH on purpose -- pinning an absolute
+        # path would break every machine that installs it somewhere else.
         completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
-            ["git", "-C", str(workspace), *args],
+            ["git", "-C", str(workspace), *args],  # noqa: S607 - resolved on PATH
             capture_output=True, text=True, timeout=_TIMEOUT, check=False,
         )
     except (OSError, subprocess.SubprocessError):

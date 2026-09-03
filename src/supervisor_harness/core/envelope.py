@@ -186,7 +186,8 @@ def stale_reason(
     days = f"{age:.0f}" if age is not None else "?"
     return (
         f"this run's scope envelope was granted {days} days ago, past the "
-        f"{max_age_days}-day limit. It still describes {render(envelope.paths if envelope else [])}, "
+        f"{max_age_days}-day limit. It still describes "
+        f"{render(envelope.paths if envelope else [])}, "
         "but the workspace it was drawn against has had that long to change"
     )
 

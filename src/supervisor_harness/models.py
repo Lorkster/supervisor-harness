@@ -131,7 +131,7 @@ class VerifyMethod(StrEnum):
 
 class CriterionStatus(StrEnum):
     UNVERIFIED = "unverified"
-    PASS = "pass"
+    PASS = "pass"  # noqa: S105 - a verification verdict, not a password
     FAIL = "fail"
     BLOCKED = "blocked"
     WAIVED = "waived"
@@ -306,7 +306,7 @@ class Usage:
     seconds: float = 0.0
     tool_calls: int = 0
 
-    def add(self, other: "Usage") -> "Usage":
+    def add(self, other: Usage) -> Usage:
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,

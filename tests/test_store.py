@@ -18,7 +18,7 @@ from supervisor_harness.store.runstore import RunStore
 
 
 def _state(run_id: str) -> RunState:
-    return RunState(id=run_id, prompt=f"prompt for {run_id}", workspace="/tmp/ws")
+    return RunState(id=run_id, prompt=f"prompt for {run_id}", workspace="/workspace")
 
 
 def _user_version(path: Path) -> int:

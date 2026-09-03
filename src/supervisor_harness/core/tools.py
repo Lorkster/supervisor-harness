@@ -217,9 +217,11 @@ def _inline_source_flag(tokens: list[str]) -> str | None:
         if skip:  # the value of the flag before it, not a flag itself.
             skip = False
             continue
-        if token == "-":
+        # S105 reads `token` as a credential. It is a command-line token: this
+        # function walks the argv of a command the fence is inspecting.
+        if token == "-":  # noqa: S105 - a shell token, not a secret
             return "-"  # the program is read from standard input.
-        if token == "--" or not token.startswith("-"):
+        if token == "--" or not token.startswith("-"):  # noqa: S105 - as above
             return None  # the interpreter's own options have ended.
         if token.startswith("--"):
             name = token.partition("=")[0]

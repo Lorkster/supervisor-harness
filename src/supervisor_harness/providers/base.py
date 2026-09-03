@@ -94,8 +94,13 @@ class Provider(abc.ABC):
     def describe(self) -> dict[str, Any]:
         return {"name": self.name}
 
-    async def aclose(self) -> None:
-        """Release any held connections."""
+    async def aclose(self) -> None:  # noqa: B027 - an optional hook, not a contract
+        """Release any held connections.
+
+        Deliberately concrete and empty rather than abstract: a provider that
+        holds no connection has nothing to close, and requiring every one to
+        say so would be ceremony. Subclasses that own a client override it.
+        """
 
 
 # --------------------------------------------------------------------------
