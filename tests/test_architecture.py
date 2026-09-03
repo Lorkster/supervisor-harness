@@ -100,6 +100,44 @@ def test_models_is_a_leaf_of_the_internal_graph() -> None:
     assert relative <= {"ids"}, f"models imports from the package: {sorted(relative)}"
 
 
+def test_no_synchronous_emit_inside_an_async_function() -> None:
+    """Emission has two forms, and using the wrong one loses events under load.
+
+    `RunSession.emit` is correct only where nothing else is in flight. Anything
+    reachable while agents are running must use `aemit`, which takes the log lock
+    off the event loop -- the defect that batch D1 fixed.
+
+    This invariant has been stated in the project's notes as "mechanically
+    checkable" since then, and nothing checked it. It was also stated as a
+    property of *`core/supervisor.py`*, which is about to stop being where that
+    code lives: the split into layers moves async methods into new modules, and
+    a rule scoped to one filename would have quietly stopped applying to them.
+
+    So it is checked here, over the whole package, before the split rather than
+    after it.
+    """
+    offenders: list[str] = []
+
+    for path in sorted(SRC.rglob("*.py")):
+        for function in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(function, ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(function):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "emit"
+                ):
+                    offenders.append(
+                        f"{path.relative_to(SRC).as_posix()}:{node.lineno} "
+                        f"in async {function.name}"
+                    )
+
+    assert offenders == [], "synchronous emit() inside an async function: " + ", ".join(
+        offenders
+    )
+
+
 def test_the_baseline_key_lives_with_the_dict_it_keys() -> None:
     """Q-A1, pinned where it would regress.
 

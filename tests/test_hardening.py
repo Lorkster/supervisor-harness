@@ -18,7 +18,11 @@ import pytest
 from supervisor_harness.config import Policy, load_config
 from supervisor_harness.core.dod import verify_command
 from supervisor_harness.core.drift import TurnContext, assess_heuristically
+from supervisor_harness.core.lifecycle import Lifecycle
+from supervisor_harness.core.packets import Packets
 from supervisor_harness.core.paths import normalise_path, path_matches
+from supervisor_harness.core.reporting import Reporting
+from supervisor_harness.core.supervision import Supervision
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.core.tools import Toolbox, available_tools
 from supervisor_harness.models import (
@@ -230,16 +234,20 @@ def test_the_turn_context_is_built_from_the_workspace_recorded_on_the_run() -> N
     ``self.workspace`` is the right answer at run *creation*, where the process's
     own workspace is the one being recorded.
     """
-    source = Path(inspect.getsourcefile(Supervisor) or "")
+    # Searched across every class the supervision path is split over. The
+    # construction moved to `Supervision` when core/supervisor.py was split by
+    # layer, and a search scoped to `Supervisor` alone found nothing -- which
+    # this assertion is here to refuse rather than pass over.
     builders = {
-        name: inspect.getsource(fn)
-        for name, fn in vars(Supervisor).items()
+        f"{owner.__name__}.{name}": inspect.getsource(fn)
+        for owner in (Supervisor, Supervision, Lifecycle, Packets, Reporting)
+        for name, fn in vars(owner).items()
         if callable(fn) and "TurnContext(" in inspect.getsource(fn)
     }
-    assert builders, f"nothing in {source.name} builds a TurnContext any more"
-    for name, body in builders.items():
-        assert "workspace=str(state.workspace)" in body, f"{source.name}:{name}"
-        assert "workspace=str(self.workspace)" not in body, f"{source.name}:{name}"
+    assert builders, "nothing in the supervision path builds a TurnContext any more"
+    for where, body in builders.items():
+        assert "workspace=str(state.workspace)" in body, where
+        assert "workspace=str(self.workspace)" not in body, where
 
 
 # --------------------------------------------------------------------------
@@ -842,15 +850,15 @@ async def test_a_settled_agent_is_not_handed_a_stale_directive(
     state.agents[agent.id] = agent
 
     # Never taken a turn -> nothing outstanding, so a fresh brief is correct.
-    assert Supervisor._outstanding_directive(state, agent) is None
+    assert Packets._outstanding_directive(state, agent) is None
 
     state.turn_counts[agent.id] = 1
     state.directives.append(Directive(agent_id=agent.id, kind=DirectiveKind.NARROW))
-    assert Supervisor._outstanding_directive(state, agent).kind is DirectiveKind.NARROW
+    assert Packets._outstanding_directive(state, agent).kind is DirectiveKind.NARROW
 
     # A later accept settles it.
     state.directives.append(Directive(agent_id=agent.id, kind=DirectiveKind.ACCEPT))
-    assert Supervisor._outstanding_directive(state, agent) is None
+    assert Packets._outstanding_directive(state, agent) is None
 
 
 def test_the_supervisor_reads_turns_from_state_not_by_rescanning_the_log() -> None:
@@ -862,13 +870,17 @@ def test_the_supervisor_reads_turns_from_state_not_by_rescanning_the_log() -> No
     the regression is silent: a reintroduced rescan returns the right answer and
     only costs time, so no behavioural test would notice it.
     """
-    source = Path(inspect.getsourcefile(Supervisor) or "")
-    body = inspect.getsource(Supervisor)
-
-    assert "session.events()" not in body, (
-        f"a full log rescan is back in {source.name}; read RunState.turns instead"
-    )
-    for method in (Supervisor._previous_turns, Supervisor._change_summary):
+    # Every class the supervision path is split across, not just `Supervisor`.
+    # `_previous_turns` and `_change_summary` moved to `Packets` when
+    # core/supervisor.py was split by layer, and a scan of `Supervisor` alone
+    # would have stopped covering them -- silently, since this guard is
+    # structural and would still have passed.
+    for owner in (Supervisor, Packets, Reporting):
+        source = Path(inspect.getsourcefile(owner) or "")
+        assert "session.events()" not in inspect.getsource(owner), (
+            f"a full log rescan is back in {source.name}; read RunState.turns instead"
+        )
+    for method in (Packets._previous_turns, Packets._change_summary):
         assert "state.turns" in inspect.getsource(method), method.__name__
 
 
@@ -1065,7 +1077,7 @@ async def test_a_turn_reaches_the_log_under_one_lock(tmp_path: Path) -> None:
         RunState(id="run_A", prompt="p", workspace=str(tmp_path))
     )
     agent = AgentSpec(run_id="run_A", kind=AgentKind.ANALYSIS, role="security", scope=Scope())
-    supervisor._spawn(session, [agent])
+    supervisor.lifecycle._spawn(session, [agent])
     payload = {
         "output": "found several things",
         "status": "running",
@@ -1076,7 +1088,7 @@ async def test_a_turn_reaches_the_log_under_one_lock(tmp_path: Path) -> None:
 
     eventlog.FileLock.acquire = counted
     try:
-        turn = await supervisor._record_turn(
+        turn = await supervisor.supervision._record_turn(
             session, session.state.agents[agent.id], payload
         )
     finally:

@@ -901,7 +901,7 @@ async def test_autonomous_run_fails_on_a_host_routed_stage(
     def no_host_stages() -> list[str]:
         return []
 
-    supervisor._host_routed_stages = no_host_stages
+    supervisor.lifecycle._host_routed_stages = no_host_stages
     response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
 
     assert response.action == "failed"
@@ -961,7 +961,7 @@ async def _drive_one_analysis_turn(
         objectives=["Find exploitable weaknesses"], scope=Scope(),
         budget=Budget(max_turns=1), binding=supervisor.config.binding_for("analysis"),
     )
-    supervisor._spawn(session, [agent])
+    supervisor.lifecycle._spawn(session, [agent])
     await supervisor._drive_agent(session, session.state.agents[agent.id])
     return seen, session
 
@@ -1045,7 +1045,7 @@ async def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
         RunState(id="run_A", prompt=PROMPT, workspace=str(workspace))
     )
     agent = _agent(id="agt_1", objectives=["Check authentication failure modes"])
-    supervisor._spawn(session, [agent])
+    supervisor.lifecycle._spawn(session, [agent])
     live = session.state.agents["agt_1"]
 
     turn = AgentTurn(
@@ -1054,14 +1054,14 @@ async def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
         files_touched=["src/auth/login.py"],
         messages=[_question("agt_1", "should I cover authentication failure modes?")],
     )
-    await supervisor._record_turn(session, live, {
+    await supervisor.supervision._record_turn(session, live, {
         "output": turn.output, "status": "running",
         "files_touched": turn.files_touched,
         "messages": [{"recipient": "supervisor", "kind": "question",
                       "subject": "should I cover authentication failure modes?",
                       "content": "should I cover authentication failure modes?"}],
     })
-    directive = await supervisor._supervise(session, live, turn)
+    directive = await supervisor.supervision._supervise(session, live, turn)
 
     assert directive.kind is DirectiveKind.ANSWER
     assert any("Your brief already says" in c for c in directive.corrections), (
@@ -1069,7 +1069,7 @@ async def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
     )
 
     # Answered once: the next turn does not answer the same question again.
-    second = await supervisor._supervise(session, live, turn)
+    second = await supervisor.supervision._supervise(session, live, turn)
     assert second.kind is not DirectiveKind.ANSWER
 
 
@@ -1097,7 +1097,7 @@ async def test_a_question_the_record_cannot_answer_is_not_invented(
         RunState(id="run_A", prompt=PROMPT, workspace=str(workspace))
     )
     agent = _agent(id="agt_1")
-    supervisor._spawn(session, [agent])
+    supervisor.lifecycle._spawn(session, [agent])
     live = session.state.agents["agt_1"]
 
     turn = AgentTurn(
@@ -1105,14 +1105,14 @@ async def test_a_question_the_record_cannot_answer_is_not_invented(
         output="Traced the login handler and the rate limiter around it.",
         files_touched=["src/auth/login.py"],
     )
-    await supervisor._record_turn(session, live, {
+    await supervisor.supervision._record_turn(session, live, {
         "output": turn.output, "status": "running",
         "files_touched": turn.files_touched,
         "messages": [{"recipient": "supervisor", "kind": "question",
                       "subject": "which kubernetes namespace hosts staging?",
                       "content": "which kubernetes namespace hosts staging?"}],
     })
-    directive = await supervisor._supervise(session, live, turn)
+    directive = await supervisor.supervision._supervise(session, live, turn)
 
     assert any("does not cover it" in c for c in directive.corrections), directive.corrections
     assert not any("Your brief already says" in c for c in directive.corrections)
@@ -1139,19 +1139,19 @@ async def test_an_answer_never_displaces_a_correction(workspace: Path, config, f
         RunState(id="run_A", prompt=PROMPT, workspace=str(workspace))
     )
     agent = _agent(id="agt_1")
-    supervisor._spawn(session, [agent])
+    supervisor.lifecycle._spawn(session, [agent])
     live = session.state.agents["agt_1"]
 
     # A write to a forbidden path is uncorrectable after the fact: STOP.
     turn = AgentTurn(agent_id="agt_1", output="Rewrote the terraform module.",
                      files_touched=["infra/waf.tf"])
-    await supervisor._record_turn(session, live, {
+    await supervisor.supervision._record_turn(session, live, {
         "output": turn.output, "status": "running", "files_touched": ["infra/waf.tf"],
         "messages": [{"recipient": "supervisor", "kind": "question",
                       "subject": "is infra in my scope?",
                       "content": "is infra in my scope?"}],
     })
-    directive = await supervisor._supervise(session, live, turn)
+    directive = await supervisor.supervision._supervise(session, live, turn)
 
     assert directive.kind is DirectiveKind.STOP, "the answer displaced the correction"
     assert any("On your question" in c for c in directive.corrections), directive.corrections
