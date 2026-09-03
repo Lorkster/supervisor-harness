@@ -99,7 +99,9 @@ class AnthropicProvider(Provider):
 
         data = resp.json()
         text = "".join(
-            block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
+            block.get("text", "")
+            for block in data.get("content", [])
+            if block.get("type") == "text"
         )
         usage_raw = data.get("usage") or {}
         reasoning = "".join(

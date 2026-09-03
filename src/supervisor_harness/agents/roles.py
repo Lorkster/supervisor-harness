@@ -71,7 +71,10 @@ ANALYSIS_ROLES: list[Role] = [
             "Which boundary should own this behaviour, and why that one?",
             "What breaks if this needs to scale or be replaced later?",
         ],
-        out_of_scope=["line-level style critique", "writing the implementation", "unrelated subsystems"],
+        out_of_scope=[
+            "line-level style critique", "writing the implementation",
+            "unrelated subsystems",
+        ],
         keywords=["design", "architecture", "refactor", "structure", "system", "service",
                   "module", "integration", "migrate", "scale", "pattern", "rewrite",
                   "boundary", "coupling", "abstraction", "decompose"],
@@ -99,7 +102,10 @@ ANALYSIS_ROLES: list[Role] = [
             "What happens on the failure path -- does it fail closed?",
             "Is any secret, token or personal data logged, cached or returned?",
         ],
-        out_of_scope=["performance tuning", "code style", "speculative threats with no reachable path"],
+        out_of_scope=[
+            "performance tuning", "code style",
+            "speculative threats with no reachable path",
+        ],
         keywords=["auth", "authentication", "authorization", "login", "password", "token",
                   "secret", "credential", "encrypt", "permission", "session", "api", "endpoint",
                   "user", "input", "upload", "sql", "injection", "cors", "cookie", "oauth",

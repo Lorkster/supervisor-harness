@@ -31,7 +31,10 @@ def new_id(prefix: str) -> str:
 
 def now_iso() -> str:
     """UTC timestamp with millisecond precision, always ``Z``-suffixed."""
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{int(time.time() * 1000) % 1000:03d}Z"
+    return (
+        time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        + f".{int(time.time() * 1000) % 1000:03d}Z"
+    )
 
 
 def age_days(stamp: str) -> float | None:

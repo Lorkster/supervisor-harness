@@ -112,7 +112,7 @@ class RunStore:
             pass
 
     @classmethod
-    def discover(cls, workspace: Path | str | None = None) -> "RunStore":
+    def discover(cls, workspace: Path | str | None = None) -> RunStore:
         """Resolve the harness home from ``SUPERVISOR_HOME`` or the workspace."""
         env = os.environ.get(HOME_ENV)
         if env:
@@ -133,13 +133,13 @@ class RunStore:
     def exists(self, run_id: str) -> bool:
         return (self.runs_dir / run_id / "events.jsonl").exists()
 
-    def create(self, state: RunState) -> "RunSession":
+    def create(self, state: RunState) -> RunSession:
         """Start a new run and write its genesis event."""
         session = RunSession(self, state)
         session.emit(EventType.RUN_CREATED, {"run": to_jsonable(state)})
         return session
 
-    def open(self, run_id: str) -> "RunSession":
+    def open(self, run_id: str) -> RunSession:
         """Resume an existing run by replaying its log."""
         if not self.exists(run_id):
             raise FileNotFoundError(f"no such run: {run_id}")

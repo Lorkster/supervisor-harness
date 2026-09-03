@@ -14,6 +14,7 @@ hosted model while drift checks run locally on Ollama.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -392,10 +393,10 @@ def _apply_env_overrides(config: HarnessConfig) -> None:
     """Environment wins over files, so a single run can be redirected cheaply."""
     backend = os.environ.get("SUPERVISOR_BACKEND")
     if backend:
-        try:
+        # An unrecognised value is ignored rather than fatal: the variable is
+        # set by hand, and a typo should not stop a run from starting.
+        with contextlib.suppress(ValueError):
             config.backend = Backend(backend.lower())
-        except ValueError:
-            pass
 
     if os.environ.get("SUPERVISOR_HOME"):
         config.home = os.environ["SUPERVISOR_HOME"]

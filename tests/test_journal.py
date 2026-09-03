@@ -357,7 +357,7 @@ async def test_turns_are_numbered_by_turn_not_by_episode(
     assert "turn 0 |" in text
     # Every agent's first rendered turn is turn 0, whatever preceded it.
     for block in text.split(chr(10) + "  agt_")[1:]:
-        turns = [l for l in block.splitlines() if l.strip().startswith("turn ")]
+        turns = [line for line in block.splitlines() if line.strip().startswith("turn ")]
         if turns:
             assert turns[0].strip().startswith("turn 0 |"), turns[0]
 

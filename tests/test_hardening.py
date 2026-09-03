@@ -749,7 +749,11 @@ def test_malformed_but_recoverable_agent_output_is_accepted() -> None:
     """The CLI used to reject turns the MCP path accepted."""
     from supervisor_harness.cli import _parse_turn
 
-    loose = 'Here is my answer:\n{"output": "line one\nline two", "status": "done"}\nhope that helps'
+    loose = (
+        'Here is my answer:\n'
+        '{"output": "line one\nline two", "status": "done"}\n'
+        'hope that helps'
+    )
     assert _parse_turn(loose) == {"output": "line one\nline two", "status": "done"}
     assert extract_json(loose) == {"output": "line one\nline two", "status": "done"}
     assert _parse_turn("no json here at all") is None

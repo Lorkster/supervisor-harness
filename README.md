@@ -197,14 +197,19 @@ supervisor resume                      # picks up where it stopped
 
 ```bash
 python -m pytest -q
-python tools/ruff_diff.py
+python -m ruff check .
 ```
 
-The second one is the lint gate CI runs. It is not a gate at zero: ruff has
-never been configured for this project and reports 58 findings against its
-defaults, so it fails only when a **(file, rule)** pair gets worse than the base
-branch. Comparing totals instead would be worse than nothing — an unchanged
-count once hid six new findings behind six fixed ones here.
+The second is the lint gate CI runs, and it is a gate at **zero**. It was not
+always: ruff went unconfigured until the rule set was chosen by measurement, and
+the 67 findings that set produced were tolerated by a by-(file, rule) diff until
+they were driven to zero. Widening the set later means taking the new rule to
+zero in the same change rather than reintroducing a baseline — a permanent
+backlog is not a standard.
+
+Both `ruff` and `mypy` are pinned to a minor range for that reason: when a check
+gates at zero, a new release that adds a rule turns an unrelated pull request
+red, and upgrading should be a deliberate act whose findings someone reads.
 
 ### Every command
 

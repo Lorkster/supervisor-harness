@@ -123,14 +123,10 @@ jobs:
   # Separate from the matrix: this compares two checkouts, so it needs the full
   # history, and running it eight times would say the same thing eight times.
   lint:
-    name: Lint (no new findings)
+    name: Lint, types and coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          # The gate checks the base out into a worktree, so the shallow clone
-          # the default gives is not enough.
-          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -143,14 +139,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      # Not a gate at zero: ruff has never been configured for this project and
-      # reports 58 findings against its defaults on main, so a gate at zero
-      # would be red on arrival and tell nobody anything. This fails only when a
-      # (file, rule) pair gets worse -- the convention the pull requests have
-      # been following by hand, which is exactly the kind of check that gets
-      # skipped once someone is in a hurry.
-      - name: No new ruff findings
-        run: python tools/ruff_diff.py --base origin/${{ github.base_ref || 'main' }}
+      # A gate at zero, which it could not be until batch 4b-4 drove the
+      # configured rule set to zero findings. It replaces `tools/ruff_diff.py`,
+      # which tolerated a baseline and compared each pull request against main
+      # by (file, rule) pair -- necessary while there were 67 findings to
+      # grandfather in, and strictly weaker now that there are none.
+      - name: Lint
+        run: python -m ruff check .
 
       # Gates at zero, unlike ruff. The codebase turned out to be almost fully
       # annotated -- 3 errors across 40 files when this was first measured -- so

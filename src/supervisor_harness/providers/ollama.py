@@ -85,7 +85,9 @@ class OllamaProvider(Provider):
         try:
             resp = await self._http().post("/api/chat", json=body, timeout=request.timeout)
         except httpx.HTTPError as exc:
-            raise ProviderError(self.name, f"request failed ({self.base_url}): {exc}", retryable=True) from exc
+            raise ProviderError(
+                self.name, f"request failed ({self.base_url}): {exc}", retryable=True
+            ) from exc
 
         if resp.status_code >= 400:
             raise ProviderError(

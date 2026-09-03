@@ -8,6 +8,7 @@ stays typed.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import enum
 import types
@@ -67,10 +68,10 @@ def _coerce(value: Any, tp: Any) -> Any:
         for candidate in get_args(tp):
             if candidate is _NONE:
                 continue
-            try:
+            # Union probing is inherently lossy: a candidate that does not fit
+            # is the normal case, and falling out of the `with` tries the next.
+            with contextlib.suppress(Exception):
                 return _coerce(value, candidate)
-            except Exception:  # noqa: BLE001 - union probing is inherently lossy
-                continue
         return value
 
     if isinstance(tp, type) and issubclass(tp, enum.Enum):

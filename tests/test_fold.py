@@ -20,7 +20,10 @@ from supervisor_harness.store.events import Event, EventType, fold
 from supervisor_harness.store.runstore import RunStore
 
 
-def _event(type: EventType | str, payload: dict | None = None, *, seq: int, actor: str = "supervisor") -> Event:
+def _event(
+    type: EventType | str, payload: dict | None = None, *,
+    seq: int, actor: str = "supervisor",
+) -> Event:
     return Event(seq=seq, run_id="run_A", type=type, actor=actor, payload=payload or {})
 
 
@@ -218,12 +221,14 @@ def test_a_replayed_checkpoint_does_not_extend_the_remediation_budget() -> None:
             seq=seq,
         )
 
-    assert fold([checkpoint("chk_1", 1, seq=1), checkpoint("chk_2", 2, seq=2)]).checkpoint_iteration == 2
+    ascending = fold([checkpoint("chk_1", 1, seq=1), checkpoint("chk_2", 2, seq=2)])
+    assert ascending.checkpoint_iteration == 2
 
     # The later record carries the lower iteration: an earlier checkpoint
     # re-emitted, or two writers whose records landed in the other order.
     # Assignment took the last one seen and handed the run a spent round back.
-    assert fold([checkpoint("chk_2", 2, seq=1), checkpoint("chk_1", 1, seq=2)]).checkpoint_iteration == 2
+    descending = fold([checkpoint("chk_2", 2, seq=1), checkpoint("chk_1", 1, seq=2)])
+    assert descending.checkpoint_iteration == 2
 
     # And folding onto a state that already holds a higher mark, as any replay
     # onto a live state does.
@@ -253,7 +258,8 @@ def test_fold_keeps_the_initial_state_given_to_it() -> None:
     """RUN_CREATED merges into the accumulator instead of replacing it."""
     initial = RunState(id="run_A", shared_context="prior context")
     state = fold(
-        [_event(EventType.RUN_CREATED, {"run": to_jsonable(RunState(id="run_A", prompt="p"))}, seq=1)],
+        [_event(EventType.RUN_CREATED,
+                {"run": to_jsonable(RunState(id="run_A", prompt="p"))}, seq=1)],
         initial,
     )
 
@@ -362,7 +368,8 @@ def test_a_snapshot_written_before_the_watermark_existed_reads_as_stale(
     """Such a file carries no position, so it is refolded once and rewritten."""
     store = _store(tmp_path)
     store.log("run_A").append(Event(run_id="run_A", type=EventType.RUN_CREATED,
-                                    payload={"run": to_jsonable(RunState(id="run_A", prompt="from the log"))}))
+                                    payload={"run": to_jsonable(
+                                        RunState(id="run_A", prompt="from the log"))}))
     snapshot = store.runs_dir / "run_A" / "state.json"
     snapshot.write_text(
         json.dumps({"id": "run_A", "prompt": "from a build with no last_seq"}), encoding="utf-8"

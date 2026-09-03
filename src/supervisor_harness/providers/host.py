@@ -43,4 +43,4 @@ class HostProvider(Provider):
         return {"name": self.name, "host": self.host_name, "delegated": True}
 
 
-__all__ = ["HostProvider", "DelegationRequired"]
+__all__ = ["DelegationRequired", "HostProvider"]

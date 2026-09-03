@@ -131,4 +131,4 @@ class OpenRouterProvider(Provider):
             self._client = None
 
 
-__all__ = ["OpenRouterProvider", "ChatMessage"]
+__all__ = ["ChatMessage", "OpenRouterProvider"]

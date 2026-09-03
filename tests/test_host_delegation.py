@@ -79,7 +79,9 @@ class HostSimulator:
         )
         return self.answers.answer_for(stage, request)
 
-    async def drive(self, response: SupervisorResponse, *, approve: bool = True) -> SupervisorResponse:
+    async def drive(
+        self, response: SupervisorResponse, *, approve: bool = True
+    ) -> SupervisorResponse:
         """Run the loop the host-side skill is documented to run."""
         for _ in range(60):
             if response.action == "complete" or response.action == "failed":
@@ -113,7 +115,9 @@ class HostSimulator:
         raise AssertionError("host loop did not terminate")
 
 
-async def test_host_delegated_run_completes(host_supervisor: Supervisor, fake: FakeProvider) -> None:
+async def test_host_delegated_run_completes(
+    host_supervisor: Supervisor, fake: FakeProvider
+) -> None:
     """The full lifecycle works with the host executing every stage."""
     simulator = HostSimulator(host_supervisor, fake)
     start = await host_supervisor.start(PROMPT, mode=RunMode.EXECUTE)
@@ -172,7 +176,9 @@ async def test_analysis_packets_are_parallel_and_name_their_peers(
     assert all("Output contract" in b for b in briefs)
 
 
-async def test_host_agents_are_matched_to_roles(workspace: Path, host_config: HarnessConfig) -> None:
+async def test_host_agents_are_matched_to_roles(
+    workspace: Path, host_config: HarnessConfig
+) -> None:
     """Roles bind to the host's own subagent types when it declares them."""
     store = RunStore(workspace / ".supervisor")
     host = HostInfo(name="claude-code", workspace=str(workspace), confidence=1.0)

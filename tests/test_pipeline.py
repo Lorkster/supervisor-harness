@@ -82,8 +82,10 @@ async def test_modification_cannot_drop_a_mandatory_bar(supervisor: Supervisor) 
 
     assert "weakness" in statements, "the security bar survived no modification"
     assert "conventions" in statements, "the code-quality bar survived no modification"
-    assert any(c.method is VerifyMethod.TEST for c in task.dod),         "the test bar survived no modification"
-    assert any(c.statement == "It is finished" for c in task.dod),         "the replacement the user asked for was discarded"
+    assert any(c.method is VerifyMethod.TEST for c in task.dod), \
+        "the test bar survived no modification"
+    assert any(c.statement == "It is finished" for c in task.dod), \
+        "the replacement the user asked for was discarded"
 
     notes = [e.payload.get("text", "") for e in session.events()
              if e.type is EventType.NOTE]

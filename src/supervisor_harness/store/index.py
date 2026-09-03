@@ -77,7 +77,10 @@ CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq);
 PRAGMA user_version = {SCHEMA_VERSION};
 """
 
-_RUN_TABLES = ("agents", "findings", "tasks", "criteria", "checkpoints", "lessons", "messages", "events")
+_RUN_TABLES = (
+    "agents", "findings", "tasks", "criteria", "checkpoints", "lessons",
+    "messages", "events",
+)
 _ALL_TABLES = ("runs", *_RUN_TABLES)
 
 
@@ -242,7 +245,8 @@ class RunIndex:
                 cur.execute(
                     "INSERT OR REPLACE INTO messages (id, run_id, sender, recipient, kind, "
                     "subject, ts) VALUES (?,?,?,?,?,?,?)",
-                    (msg.id, state.id, msg.sender, msg.recipient, str(msg.kind), msg.subject, msg.ts),
+                    (msg.id, state.id, msg.sender, msg.recipient, str(msg.kind),
+                     msg.subject, msg.ts),
                 )
 
             for event in events or []:
@@ -260,7 +264,12 @@ class RunIndex:
             cur = self._conn.cursor()
             cur.execute("DELETE FROM runs WHERE id = ?", (run_id,))
             for table in _RUN_TABLES:
-                cur.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+                # Interpolated, but `_RUN_TABLES` is a module constant and the
+                # value is bound -- no part of this comes from a run or a model.
+                cur.execute(
+                    f"DELETE FROM {table} WHERE run_id = ?",  # noqa: S608 - constant name
+                    (run_id,),
+                )
 
     def prune(self, live_run_ids: list[str]) -> list[str]:
         """Drop rows for runs that no longer exist. Returns the ids removed.

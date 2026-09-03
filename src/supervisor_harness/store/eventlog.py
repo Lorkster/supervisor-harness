@@ -101,7 +101,9 @@ class FileLock:
                 # denying the file, a lock file that keeps vanishing -- times
                 # out rather than spinning on os.open without pause.
                 if time.monotonic() >= deadline:
-                    raise LockTimeout(f"could not acquire {self.path} within {self.timeout}s") from None
+                    raise LockTimeout(
+                    f"could not acquire {self.path} within {self.timeout}s"
+                ) from None
                 time.sleep(LOCK_POLL_INTERVAL)
                 continue
             self._fd = fd
@@ -196,7 +198,7 @@ class FileLock:
         # Still there: the file is orphaned but no longer being refreshed, so
         # the next contender breaks it as stale rather than waiting forever.
 
-    def __enter__(self) -> "FileLock":
+    def __enter__(self) -> FileLock:
         self.acquire()
         return self
 

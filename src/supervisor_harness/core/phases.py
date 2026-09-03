@@ -95,7 +95,9 @@ def build_analysis_agents(
     return specs
 
 
-def planning_prompt(state: RunState, registry: AgentRegistry, lenses: list[Role]) -> tuple[str, str]:
+def planning_prompt(
+    state: RunState, registry: AgentRegistry, lenses: list[Role]
+) -> tuple[str, str]:
     """Ask a model to sharpen the deterministic plan for this specific task."""
     system = (
         "You are the planning stage of a supervised multi-agent run. A deterministic "
@@ -886,7 +888,9 @@ def mechanical_lessons(state: RunState) -> list[Lesson]:
                         run_id=state.id,
                     workspace=state.workspace,
                         category=LessonCategory.DOD,
-                        trigger=f"criterion {crit.id!r} could not be checked: {crit.evidence[:160]}",
+                        trigger=(
+                f"criterion {crit.id!r} could not be checked: {crit.evidence[:160]}"
+            ),
                         statement="A definition-of-done criterion was written in a form that "
                                   "could not be verified",
                         why="A criterion that cannot be checked cannot close a task, so the "
@@ -1005,7 +1009,9 @@ def final_report_markdown(state: RunState) -> str:
                         "blocked": "!", "waived": "~"}.get(crit.status.value, " ")
                 required = "" if crit.mandatory else " _(optional)_"
                 lines.append(f"- [{flag}] {crit.statement}{required}")
-                lines.append(f"    - method: `{crit.method.value}`, status: **{crit.status.value}**")
+                lines.append(
+                f"    - method: `{crit.method.value}`, status: **{crit.status.value}**"
+            )
                 if crit.evidence:
                     evidence = _display(crit.evidence).splitlines()
                     lines.append(f"    - evidence: `{evidence[0][:160]}`")
