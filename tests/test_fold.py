@@ -573,3 +573,54 @@ def test_a_replay_still_builds_the_state_from_nothing() -> None:
 
     assert state.tasks["tsk_1"].title == "only an update"
     assert "agent_status -> agt_1" in state.orphaned_events
+
+
+# --------------------------------------------------------------------------
+# The dispatch table (finding Q-A2)
+# --------------------------------------------------------------------------
+
+
+def test_every_event_type_has_a_handler_except_the_unknown_sentinel() -> None:
+    """A guard the 24-way `elif` chain could not have had.
+
+    `_apply` used to be one 123-statement function with a cyclomatic complexity
+    of 46, and an `EventType` added without a branch fell silently into the
+    `else`: the event was recorded in `unhandled_events` and the run carried on
+    as though it had nothing to do. That is exactly right for a type this build
+    has never heard of, and exactly wrong for one it defines itself.
+
+    As a table the difference is checkable, so it is checked here.
+
+    `UNKNOWN` is the one deliberate exclusion. It is the sentinel a type read
+    off disk arrives as when this build does not recognise it, and it has to
+    reach the recording branch -- giving it a handler would hide the very case
+    the branch exists for.
+    """
+    from supervisor_harness.store.events import _HANDLERS
+
+    unhandled = {member for member in EventType if member not in _HANDLERS}
+
+    assert unhandled == {EventType.UNKNOWN}, (
+        "event type(s) with no handler: "
+        + ", ".join(sorted(str(m) for m in unhandled - {EventType.UNKNOWN}))
+    )
+
+
+def test_an_event_type_with_no_handler_is_recorded_rather_than_dropped() -> None:
+    """The `else` branch, which is what the table falls through to.
+
+    Asserted through `fold` rather than by calling the branch, because the
+    property is about what a *reader of the run* sees: an event nothing projects
+    has to show up in `unhandled_events`, or a log that disagrees with the code
+    that reads it looks like a run that simply had less happen in it.
+    """
+    from supervisor_harness.store.events import UNRECOGNISED_TYPE_KEY
+
+    named = fold([_event(EventType.UNKNOWN, {UNRECOGNISED_TYPE_KEY: "from_the_future"}, seq=1)])
+    assert named.unhandled_events == ["from_the_future"], (
+        "the name the log carried is the one worth reporting"
+    )
+
+    # Without that key there is nothing to report but the sentinel itself.
+    bare = fold([_event(EventType.UNKNOWN, {}, seq=1)])
+    assert bare.unhandled_events == [str(EventType.UNKNOWN)]

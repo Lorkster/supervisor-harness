@@ -47,6 +47,7 @@ rather than being dropped for not fitting the shape.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -127,6 +128,188 @@ class RunJournal:
     unattributed: int = 0
 
 
+class _JournalBuilder:
+    """Assembles a run's journal from its log, one event at a time.
+
+    A class rather than a function with nested handlers, and the reason is
+    the six pieces of state below: the handlers all read and write them, so
+    as free functions they would each take the lot. Nested handlers were
+    tried first and made the complexity *worse* -- C901 counts a nested
+    `def` as part of its enclosing function (finding Q-A2).
+    """
+
+    def __init__(self, state: RunState, agent_id: str = "") -> None:
+        self.state = state
+        # Kept because a handler asks it directly: a note that belongs to no
+        # agent is a run-level note only when no agent filter was given.
+        self.agent_id = agent_id
+        self.journal = RunJournal(
+            run_id=state.id,
+            prompt=state.prompt,
+            phase=str(state.phase),
+            mode=str(state.mode),
+            envelope=state.envelope,
+        )
+        self.wanted = {agent_id} if agent_id else set(state.agents)
+        self.journals: dict[str, AgentJournal] = {
+            aid: AgentJournal(agent=state.agents.get(aid), brief=state.briefs.get(aid, ""))
+            for aid in self.wanted
+            if aid in state.agents
+        }
+        # The episode currently open per agent, so an event attaches to the
+        # turn it followed rather than to the agent as a whole.
+        self.open_episode: dict[str, Episode] = {}
+        self.messages: dict[str, Message] = {}
+
+    def episode_for(self, aid: str) -> Episode | None:
+        """The open episode for ``aid``, opening the pre-turn one if needed."""
+        entry = self.journals.get(aid)
+        if entry is None:
+            return None
+        current = self.open_episode.get(aid)
+        if current is None:
+            current = Episode()
+            entry.episodes.append(current)
+            self.open_episode[aid] = current
+        return current
+
+
+    def on_envelope_set(self, event: Event, payload: dict[str, Any]) -> None:
+        self.journal.envelope_history.append(
+            from_jsonable(payload.get("envelope", {}), ScopeEnvelope)
+        )
+
+
+    def on_message_sent(self, event: Event, payload: dict[str, Any]) -> None:
+        message = from_jsonable(payload["message"], Message)
+        self.messages[message.id] = message
+
+
+    def on_turn_recorded(self, event: Event, payload: dict[str, Any]) -> None:
+        turn = from_jsonable(payload["turn"], AgentTurn)
+        entry = self.journals.get(turn.agent_id)
+        if entry is None:
+            self.journal.unattributed += 1
+            return
+        current = self.open_episode.get(turn.agent_id)
+        # An opening episode that recorded nothing is an artefact of the
+        # walk, and the first turn claims it. One that recorded something --
+        # a scope narrowed at spawn, a status change -- describes a moment
+        # before any turn existed, and folding it into turn 0 would date
+        # those facts to a turn that had not happened yet.
+        if current is not None and current.turn is None and _is_empty(current):
+            current.turn = turn
+        else:
+            current = Episode(turn=turn)
+            entry.episodes.append(current)
+            self.open_episode[turn.agent_id] = current
+
+
+    def on_drift_assessed(self, event: Event, payload: dict[str, Any]) -> None:
+        aid = payload.get("agent_id", "")
+        current = self.episode_for(aid)
+        if current is None:
+            self.journal.unattributed += 1
+            return
+        assessment = from_jsonable(payload["assessment"], DriftAssessment)
+        _check_turn_link(current, assessment.turn_id, "drift assessment")
+        current.assessments.append(assessment)
+
+
+    def on_directive_issued(self, event: Event, payload: dict[str, Any]) -> None:
+        directive = from_jsonable(payload["directive"], Directive)
+        current = self.episode_for(directive.agent_id)
+        if current is None:
+            self.journal.unattributed += 1
+            return
+        _check_turn_link(current, directive.turn_id, "directive")
+        if current.directive is not None:
+            current.anomalies.append(
+                f"a second directive ({directive.kind.value}) was issued for "
+                f"the same turn as {current.directive.kind.value}"
+            )
+        current.directive = directive
+        # A directive carries the inbox it delivered. Prefer the message the
+        # log recorded over the copy embedded in the directive, since the
+        # former accumulates delivery self.state.
+        current.inbox = [self.messages.get(m.id, m) for m in directive.inbox]
+
+
+    def on_message_delivered(self, event: Event, payload: dict[str, Any]) -> None:
+        aid = payload.get("agent_id", "")
+        current = self.episode_for(aid)
+        if current is None:
+            self.journal.unattributed += 1
+            return
+        known = {m.id for m in current.inbox}
+        for mid in payload.get("message_ids", []):
+            if mid not in known and mid in self.messages:
+                current.inbox.append(self.messages[mid])
+
+
+    def on_fact_established(self, event: Event, payload: dict[str, Any]) -> None:
+        current = self.episode_for(event.actor)
+        if current is None:
+            self.journal.unattributed += 1
+            return
+        current.established.append(from_jsonable(payload["fact"], Fact))
+
+
+    def on_agent_status(self, event: Event, payload: dict[str, Any]) -> None:
+        aid = payload.get("agent_id", "")
+        current = self.episode_for(aid)
+        if current is None:
+            self.journal.unattributed += 1
+            return
+        current.status_changes.append(str(payload.get("status", "")))
+
+
+    def on_note(self, event: Event, payload: dict[str, Any]) -> None:
+        note = Note(
+            id=event.id,
+            text=str(payload.get("text", "")),
+            actor=event.actor,
+            ts=event.ts,
+            context={
+                k: str(v) for k, v in payload.items()
+                if k != "text" and not isinstance(v, (dict, list))
+            },
+        )
+        # A note names its subject by actor, or by an ``agent_id`` in its
+        # context; anything else belongs to the run.
+        subject = note.actor if note.actor in self.journals else note.context.get("agent_id", "")
+        current = self.episode_for(subject) if subject in self.journals else None
+        if current is not None:
+            current.notes.append(note)
+        elif not self.agent_id:
+            self.journal.run_notes.append(note)
+
+
+    def feed(self, event: Event) -> None:
+        handler = _HANDLERS.get(event.type)
+        if handler is not None:
+            handler(self, event, event.payload)
+
+    def finish(self) -> RunJournal:
+        self.journal.agents = [
+            self.journals[aid] for aid in self.state.agents if aid in self.journals
+        ]
+        return self.journal
+
+
+_HANDLERS: dict[EventType, Callable[[_JournalBuilder, Event, dict[str, Any]], None]] = {
+    EventType.ENVELOPE_SET: _JournalBuilder.on_envelope_set,
+    EventType.MESSAGE_SENT: _JournalBuilder.on_message_sent,
+    EventType.TURN_RECORDED: _JournalBuilder.on_turn_recorded,
+    EventType.DRIFT_ASSESSED: _JournalBuilder.on_drift_assessed,
+    EventType.DIRECTIVE_ISSUED: _JournalBuilder.on_directive_issued,
+    EventType.MESSAGE_DELIVERED: _JournalBuilder.on_message_delivered,
+    EventType.FACT_ESTABLISHED: _JournalBuilder.on_fact_established,
+    EventType.AGENT_STATUS: _JournalBuilder.on_agent_status,
+    EventType.NOTE: _JournalBuilder.on_note,
+}
+
+
 def build_journal(
     state: RunState, events: list[Event], agent_id: str = ""
 ) -> RunJournal:
@@ -137,145 +320,10 @@ def build_journal(
     Filtering by ``agent_id`` narrows the episodes, never the run-level facts --
     an agent's scope is only meaningful beside the envelope above it.
     """
-    journal = RunJournal(
-        run_id=state.id,
-        prompt=state.prompt,
-        phase=str(state.phase),
-        mode=str(state.mode),
-        envelope=state.envelope,
-    )
-
-    wanted = {agent_id} if agent_id else set(state.agents)
-    journals: dict[str, AgentJournal] = {
-        aid: AgentJournal(agent=state.agents.get(aid), brief=state.briefs.get(aid, ""))
-        for aid in wanted
-        if aid in state.agents
-    }
-    # The episode currently open per agent, so an event attaches to the turn it
-    # followed rather than to the agent as a whole.
-    open_episode: dict[str, Episode] = {}
-    messages: dict[str, Message] = {}
-
-    def episode_for(aid: str) -> Episode | None:
-        """The open episode for ``aid``, opening the pre-turn one if needed."""
-        entry = journals.get(aid)
-        if entry is None:
-            return None
-        current = open_episode.get(aid)
-        if current is None:
-            current = Episode()
-            entry.episodes.append(current)
-            open_episode[aid] = current
-        return current
-
+    builder = _JournalBuilder(state, agent_id)
     for event in sorted(events, key=lambda e: e.seq):
-        payload = event.payload
-        kind = event.type
-
-        if kind is EventType.ENVELOPE_SET:
-            journal.envelope_history.append(
-                from_jsonable(payload.get("envelope", {}), ScopeEnvelope)
-            )
-
-        elif kind is EventType.MESSAGE_SENT:
-            message = from_jsonable(payload["message"], Message)
-            messages[message.id] = message
-
-        elif kind is EventType.TURN_RECORDED:
-            turn = from_jsonable(payload["turn"], AgentTurn)
-            entry = journals.get(turn.agent_id)
-            if entry is None:
-                journal.unattributed += 1
-                continue
-            current = open_episode.get(turn.agent_id)
-            # An opening episode that recorded nothing is an artefact of the
-            # walk, and the first turn claims it. One that recorded something --
-            # a scope narrowed at spawn, a status change -- describes a moment
-            # before any turn existed, and folding it into turn 0 would date
-            # those facts to a turn that had not happened yet.
-            if current is not None and current.turn is None and _is_empty(current):
-                current.turn = turn
-            else:
-                current = Episode(turn=turn)
-                entry.episodes.append(current)
-                open_episode[turn.agent_id] = current
-
-        elif kind is EventType.DRIFT_ASSESSED:
-            aid = payload.get("agent_id", "")
-            current = episode_for(aid)
-            if current is None:
-                journal.unattributed += 1
-                continue
-            assessment = from_jsonable(payload["assessment"], DriftAssessment)
-            _check_turn_link(current, assessment.turn_id, "drift assessment")
-            current.assessments.append(assessment)
-
-        elif kind is EventType.DIRECTIVE_ISSUED:
-            directive = from_jsonable(payload["directive"], Directive)
-            current = episode_for(directive.agent_id)
-            if current is None:
-                journal.unattributed += 1
-                continue
-            _check_turn_link(current, directive.turn_id, "directive")
-            if current.directive is not None:
-                current.anomalies.append(
-                    f"a second directive ({directive.kind.value}) was issued for "
-                    f"the same turn as {current.directive.kind.value}"
-                )
-            current.directive = directive
-            # A directive carries the inbox it delivered. Prefer the message the
-            # log recorded over the copy embedded in the directive, since the
-            # former accumulates delivery state.
-            current.inbox = [messages.get(m.id, m) for m in directive.inbox]
-
-        elif kind is EventType.MESSAGE_DELIVERED:
-            aid = payload.get("agent_id", "")
-            current = episode_for(aid)
-            if current is None:
-                journal.unattributed += 1
-                continue
-            known = {m.id for m in current.inbox}
-            for mid in payload.get("message_ids", []):
-                if mid not in known and mid in messages:
-                    current.inbox.append(messages[mid])
-
-        elif kind is EventType.FACT_ESTABLISHED:
-            current = episode_for(event.actor)
-            if current is None:
-                journal.unattributed += 1
-                continue
-            current.established.append(from_jsonable(payload["fact"], Fact))
-
-        elif kind is EventType.AGENT_STATUS:
-            aid = payload.get("agent_id", "")
-            current = episode_for(aid)
-            if current is None:
-                journal.unattributed += 1
-                continue
-            current.status_changes.append(str(payload.get("status", "")))
-
-        elif kind is EventType.NOTE:
-            note = Note(
-                id=event.id,
-                text=str(payload.get("text", "")),
-                actor=event.actor,
-                ts=event.ts,
-                context={
-                    k: str(v) for k, v in payload.items()
-                    if k != "text" and not isinstance(v, (dict, list))
-                },
-            )
-            # A note names its subject by actor, or by an ``agent_id`` in its
-            # context; anything else belongs to the run.
-            subject = note.actor if note.actor in journals else note.context.get("agent_id", "")
-            current = episode_for(subject) if subject in journals else None
-            if current is not None:
-                current.notes.append(note)
-            elif not agent_id:
-                journal.run_notes.append(note)
-
-    journal.agents = [journals[aid] for aid in state.agents if aid in journals]
-    return journal
+        builder.feed(event)
+    return builder.finish()
 
 
 def _is_empty(episode: Episode) -> bool:
@@ -376,7 +424,74 @@ def _render_agent(entry: AgentJournal, width: int) -> list[str]:
     return out
 
 
+def _episode_assessments(episode: Episode, width: int) -> list[str]:
+    """How the turn scored, heuristically and then by model if it escalated."""
+    out: list[str] = []
+    for assessment in episode.assessments:
+        out.append(
+            f"      drift     {assessment.score:.2f} "
+            f"({'on brief' if assessment.on_task else 'off brief'}) "
+            f"by {assessment.checked_by}"
+        )
+        for signal in assessment.signals:
+            out.append(f"                - {signal.kind} [{signal.severity}]: "
+                       f"{_wrap(signal.detail, width, 18)}")
+        if assessment.summary:
+            out.append(f"                {_wrap(assessment.summary, width, 16)}")
+    return out
+
+
+def _episode_inbox(episode: Episode, width: int) -> list[str]:
+    """What the agent was carrying from other agents when it took the turn."""
+    out: list[str] = []
+    for message in episode.inbox:
+        out.append(f"      inbox     from {message.sender} ({message.kind}): "
+                   f"{_wrap(message.subject or message.content, width, 16)}")
+    return out
+
+
+def _episode_directive(episode: Episode, width: int) -> list[str]:
+    """The decision itself, and the corrections that came with it.
+
+    The reason the journal exists: everything above is the evidence for
+    this."""
+    out: list[str] = []
+    if episode.directive is not None:
+        directive = episode.directive
+        out.append(f"      DIRECTIVE {directive.kind.value.upper()}"
+                   f"   ({directive.turns_remaining} turn(s) left)")
+        if directive.rationale:
+            out.append(f"                because {_wrap(directive.rationale, width, 24)}")
+        for correction in directive.corrections:
+            out.append(f"                fix: {_wrap(correction, width, 21)}")
+        for focus in directive.focus:
+            out.append(f"                focus: {_wrap(focus, width, 23)}")
+        for forbidden in directive.forbidden:
+            out.append(f"                not: {_wrap(forbidden, width, 21)}")
+    elif episode.turn is not None:
+        out.append("      DIRECTIVE none -- this turn settled the agent itself")
+    return out
+
+
+def _episode_trailers(episode: Episode, width: int) -> list[str]:
+    """Notes, status changes and anomalies, in that order."""
+    out: list[str] = []
+    for note in episode.notes:
+        out.append(f"      note      {_wrap(note.text, width, 16)}")
+    for status in episode.status_changes:
+        out.append(f"      status    -> {status}")
+    for anomaly in episode.anomalies:
+        out.append(f"      ANOMALY   {_wrap(anomaly, width, 16)}")
+    return out
+
+
 def _render_episode(episode: Episode, index: int, width: int) -> list[str]:
+    """One supervised turn, and why it was answered the way it was.
+
+    One function per part. This was a single body with a cyclomatic
+    complexity of 21 (finding Q-A2), and each part is an independent
+    "render this if the episode has one".
+    """
     if episode.turn is None:
         out = ["    before the first turn"]
     else:
@@ -397,44 +512,9 @@ def _render_episode(episode: Episode, index: int, width: int) -> list[str]:
                 f"      says      {fact.key}: {_wrap(fact.statement, width, 16)}"
                 + (f"  [{fact.evidence}]" if fact.evidence else "")
             )
-
-    for assessment in episode.assessments:
-        out.append(
-            f"      drift     {assessment.score:.2f} "
-            f"({'on brief' if assessment.on_task else 'off brief'}) "
-            f"by {assessment.checked_by}"
-        )
-        for signal in assessment.signals:
-            out.append(f"                - {signal.kind} [{signal.severity}]: "
-                       f"{_wrap(signal.detail, width, 18)}")
-        if assessment.summary:
-            out.append(f"                {_wrap(assessment.summary, width, 16)}")
-
-    for message in episode.inbox:
-        out.append(f"      inbox     from {message.sender} ({message.kind}): "
-                   f"{_wrap(message.subject or message.content, width, 16)}")
-
-    if episode.directive is not None:
-        directive = episode.directive
-        out.append(f"      DIRECTIVE {directive.kind.value.upper()}"
-                   f"   ({directive.turns_remaining} turn(s) left)")
-        if directive.rationale:
-            out.append(f"                because {_wrap(directive.rationale, width, 24)}")
-        for correction in directive.corrections:
-            out.append(f"                fix: {_wrap(correction, width, 21)}")
-        for focus in directive.focus:
-            out.append(f"                focus: {_wrap(focus, width, 23)}")
-        for forbidden in directive.forbidden:
-            out.append(f"                not: {_wrap(forbidden, width, 21)}")
-    elif episode.turn is not None:
-        out.append("      DIRECTIVE none -- this turn settled the agent itself")
-
-    for note in episode.notes:
-        out.append(f"      note      {_wrap(note.text, width, 16)}")
-    for status in episode.status_changes:
-        out.append(f"      status    -> {status}")
-    for anomaly in episode.anomalies:
-        out.append(f"      ANOMALY   {_wrap(anomaly, width, 16)}")
+    for part in (_episode_assessments, _episode_inbox,
+                 _episode_directive, _episode_trailers):
+        out += part(episode, width)
     return out
 
 

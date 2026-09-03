@@ -59,6 +59,7 @@ and none of them can rot quietly.
 | Coverage | `pytest --cov=supervisor_harness --cov-fail-under=92` | a **floor**; fails if it drops |
 | Types | `mypy` (config in `pyproject.toml`) | **zero**, from the start |
 | Lint | `ruff check` against the configured rule set | **zero**, since 4b-4 |
+| Complexity | `C901`, in that rule set | **zero above 15**, since Q-A2 |
 | Architecture | `tests/test_architecture.py` — criteria 1 and 3, executed | zero cycles |
 | Emission | `tests/test_architecture.py` — no sync `emit()` inside an `async def` | zero, package-wide |
 | Doc references | `tools/check_doc_refs.py` | zero |
@@ -140,14 +141,34 @@ cycle. `tests/test_architecture.py` now executes criteria 1 and 3 directly, so
 **item 2 cannot reintroduce a cycle while moving imports around**, which is the
 thing worth having before a split.
 
-**Q-A2 · Complexity is concentrated outside the module scheduled for splitting.**
-*(Confirmed by the split: `core/supervisor.py` is now 1,652 lines and still holds
-its complexity findings. Splitting it did not touch the complexity, exactly as
-this finding predicted — the two are independent problems.)*
-The table above. `store/events.py`'s fold at 48 branches is the extreme; the
-journal builder, the final-report renderer and `cli.py`'s largest command follow.
-None of these is in `core/supervisor.py`.
-*Criterion 2. Cost: medium, and it is real refactoring rather than moving.*
+**Q-A2 · Complexity concentrated outside the module that was split. — CLOSED**
+Every function this finding named, and two more:
+
+| function | was | now |
+| --- | ---: | --- |
+| `store/events.py` `_apply` — the fold | **46** | a dispatch table of 26 handlers |
+| `core/journal.py` `build_journal` | 26 | a `_JournalBuilder` with a method each |
+| `core/phases.py` `final_report_markdown` | 25 | one function per section |
+| `core/journal.py` `_render_episode` | 21 | one function per part |
+| `mcp_server.py` `build_server` | 17 | three grouped registrars |
+| `core/blackboard.py` `answer_from_record` | 17 | one function per source |
+
+**`C901` is now enabled, bounded at 15, at zero.** The number is chosen rather
+than inherited: ruff's default of 10 would leave nine functions between 11 and 13
+outstanding, and gating on a bound the codebase does not meet is the tolerated
+baseline criterion 4 rejects. At 15 nothing above can return. Lower it when
+those nine are dealt with; do not raise it.
+
+**One attempt was abandoned after measuring it.** `build_journal` was first
+rewritten with nested handler closures, which turned the 9-way `elif` chain into
+a table and made the metric **worse** — 26 → 27 — because C901 counts a nested
+`def` toward its enclosing function. The builder object is the version that
+actually reduces it, and the same effect explains why `build_server` measured 17
+while every tool in it is trivial.
+
+*Still open, and recorded rather than closed:* nine functions between 11 and 13
+— `validate_criteria` (13), `_drive_agent` (13), `detect_contradictions` (12),
+`_inline_source_flag` (12), and five at 11.
 
 **Q-A3 · `cli.py`'s complexity. — CLOSED (4b-5)** All four findings are gone;
 `ruff check --select C901,PLR0912,PLR0915` is clean on the file.
@@ -405,7 +426,9 @@ Ordered by value per unit of churn, not by finding number.
 | ~~**4b-3**~~ | ~~Q-C1~~ | **Done.** 0% → 95%, driven through `call_tool` rather than the closures. Coverage 87.0% → **88.8%**, floor raised to 88. |
 | ~~**4b-4**~~ | ~~Q-Q1~~ | **Done.** All of them to zero in one batch, so the per-rule staging the plan allowed for was not needed. `ruff check` now gates at zero and `ruff_diff.py` is gone. |
 | ~~**4b-5**~~ | ~~Q-A3, Q-C2~~ | **Done.** Coverage 42% → 80%, all four complexity findings cleared, and the rendering proved unchanged by diffing 33 CLI invocations before and after. |
-| **later** | Q-A2, Q-C6, Q-T2 | Q-A2 is real refactoring and should follow item 2 so the two do not collide. Q-C6 is best done per-module alongside the batches above rather than as a sweep. Q-T2 is a policy choice, cheapest while files are being touched. |
+| ~~Q-A2~~ | ~~done~~ | Six functions restructured, `C901` gated at 15. Nine functions between 11 and 13 remain, recorded above. |
+"
+    "| **later** | Q-C6, Q-T2 | Q-C6 is best done per-module rather than as a sweep. Q-T2 is a policy choice, cheapest while files are being touched. |
 
 **Where item 2 (the split) fits.** Between 4b-1 and 4b-2. It needs the cheap
 architecture finding closed first (Q-A1, so the package graph is a DAG before

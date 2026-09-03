@@ -7,6 +7,7 @@ never as a side effect written straight into the state snapshot.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import Any
@@ -99,227 +100,298 @@ class Event:
 # A dispatch table by nature, and the longest function in the codebase: 123
 # statements across 48 branches. Recorded as finding Q-A2 rather than
 # suppressed -- see docs/quality-assessment.md.
-def _apply(state: RunState, event: Event) -> RunState:
+def _orphan(state: RunState, event_type: EventType, target: str) -> None:
+    """Record an event whose branch exists but whose target does not.
+
+    A no-op here is indistinguishable from an event that had nothing to do,
+    which is what made a log disagreeing with itself fold to a state that
+    looked complete. Deduplicated by type and target, so a run that keeps
+    reporting against one absent agent records it once.
+    """
+    _remember(state.orphaned_events, f"{event_type} -> {target}")
+
+
+def _on_run_created(state: RunState, event: Event) -> None:
     p = event.payload
-    t = event.type
+    genesis = from_jsonable(p.get("run", {}), RunState)
+    state.id = genesis.id
+    state.prompt = genesis.prompt
+    state.workspace = genesis.workspace
+    state.mode = genesis.mode
+    state.backend = genesis.backend
+    state.host = genesis.host
+    state.created_at = genesis.created_at
 
-    def orphan(target: str) -> None:
-        """Record an event whose branch exists but whose target does not.
 
-        A no-op here is indistinguishable from an event that had nothing to do,
-        which is what made a log disagreeing with itself fold to a state that
-        looked complete. Deduplicated by type and target, so a run that keeps
-        reporting against one absent agent records it once.
-        """
-        _remember(state.orphaned_events, f"{t} -> {target}")
+def _on_phase_changed(state: RunState, event: Event) -> None:
+    p = event.payload
+    state.phase = Phase(p["phase"])
+    if p.get("error"):
+        state.error = p["error"]
 
-    if t is EventType.RUN_CREATED:
-        # Merge the genesis record's identity and configuration into the
-        # accumulator rather than replacing it: a second RUN_CREATED anywhere in
-        # the log must not discard the history folded before it, and fold()'s
-        # initial state must survive it. Phase is left to PHASE_CHANGED and
-        # RUN_ENDED, which are the events that actually move it.
-        genesis = from_jsonable(p.get("run", {}), RunState)
-        state.id = genesis.id
-        state.prompt = genesis.prompt
-        state.workspace = genesis.workspace
-        state.mode = genesis.mode
-        state.backend = genesis.backend
-        state.host = genesis.host
-        state.created_at = genesis.created_at
 
-    elif t is EventType.PHASE_CHANGED:
-        state.phase = Phase(p["phase"])
-        if p.get("error"):
-            state.error = p["error"]
+def _on_host_agents_declared(state: RunState, event: Event) -> None:
+    p = event.payload
+    state.host_agents = list(p.get("agents") or [])
 
-    elif t is EventType.HOST_AGENTS_DECLARED:
-        state.host_agents = list(p.get("agents") or [])
 
-    elif t is EventType.RUN_MODE_SET:
-        state.mode = RunMode(p["mode"])
+def _on_run_mode_set(state: RunState, event: Event) -> None:
+    p = event.payload
+    state.mode = RunMode(p["mode"])
 
-    elif t is EventType.ENVELOPE_SET:
-        # Replaced rather than merged. The envelope is emitted twice in a
-        # normal run -- once from configuration at creation, once when the plan
-        # narrows it -- and each event carries the whole resulting envelope, so
-        # the fold is the last one and the log is the provenance.
-        state.envelope = from_jsonable(p["envelope"], ScopeEnvelope)
 
-    elif t is EventType.CONTEXT_SET:
-        if p.get("shared_context") is not None:
-            state.shared_context = str(p["shared_context"])
-        for key, value in (p.get("facts") or {}).items():
-            state.facts[str(key)] = str(value)
+def _on_envelope_set(state: RunState, event: Event) -> None:
+    p = event.payload
+    state.envelope = from_jsonable(p["envelope"], ScopeEnvelope)
 
-    elif t is EventType.FACT_ESTABLISHED:
-        # Appended, never keyed. `CONTEXT_SET` writes `facts[key] = value` and
-        # the last writer wins, which is correct for the two keys the harness
-        # sets itself and would be a silent overwrite of one agent's work by
-        # another's here. Deduplicated on the pair, so a replay does not turn
-        # one claim into two.
-        fact = from_jsonable(p["fact"], Fact)
-        if not any(
-            f.key == fact.key and f.statement == fact.statement
-            and f.agent_id == fact.agent_id
-            for f in state.established
-        ):
-            state.established.append(fact)
 
-    elif t is EventType.BRIEF_RENDERED:
-        state.briefs[p["agent_id"]] = str(p.get("brief", ""))
+def _on_context_set(state: RunState, event: Event) -> None:
+    p = event.payload
+    if p.get("shared_context") is not None:
+        state.shared_context = str(p["shared_context"])
+    for key, value in (p.get("facts") or {}).items():
+        state.facts[str(key)] = str(value)
 
-    elif t is EventType.AGENT_SPAWNED:
-        spec = from_jsonable(p["agent"], AgentSpec)
-        seen = state.agents.get(spec.id)
-        state.agents[spec.id] = _merge_into(seen, spec) if seen is not None else spec
-        state.turn_counts.setdefault(spec.id, 0)
 
-    elif t is EventType.AGENT_DISPATCHED:
-        # A packet went out to the host for this agent. Counted, because a host
-        # agent that never answers is otherwise indistinguishable from one still
-        # working, and the count is what the abandonment bound is measured on.
-        agent = state.agents.get(p["agent_id"])
-        if agent is not None:
-            agent.unreported_dispatches += 1
-            if not agent.unreported_since:
-                agent.unreported_since = event.ts
-        else:
-            orphan(p["agent_id"])
+def _on_fact_established(state: RunState, event: Event) -> None:
+    p = event.payload
+    fact = from_jsonable(p["fact"], Fact)
+    if not any(
+        f.key == fact.key and f.statement == fact.statement
+        and f.agent_id == fact.agent_id
+        for f in state.established
+    ):
+        state.established.append(fact)
 
-    elif t is EventType.AGENT_STATUS:
-        agent = state.agents.get(p["agent_id"])
-        if agent is not None:
-            agent.status = AgentStatus(p["status"])
-        else:
-            orphan(p["agent_id"])
 
-    elif t is EventType.TURN_RECORDED:
-        turn = from_jsonable(p["turn"], AgentTurn)
-        # The body, not only the tally. Kept whole, including the turn's own
-        # findings and messages: they are projected separately as well, by the
-        # FINDING_ADDED and MESSAGE_SENT events the same turn emits, so this
-        # duplicates them -- but a half-populated ``AgentTurn`` is a trap for
-        # whoever reads one next, and the log holds the whole thing either way.
-        first_time = _upsert(state.turns, turn)
-        if first_time:
-            # Both of these are running totals, so they are the two things in
-            # this branch a replay could double. The list above cannot be, and
-            # the resets below are assignments; these needed the guard.
-            state.turn_counts[turn.agent_id] = state.turn_counts.get(turn.agent_id, 0) + 1
-            prior = state.usage.get(turn.agent_id, Usage())
-            state.usage[turn.agent_id] = prior.add(turn.usage)
-        # The agent answered, so it is not silent: the abandonment bound starts
-        # again from the next packet it is handed.
-        agent = state.agents.get(turn.agent_id)
-        if agent is not None:
-            agent.unreported_dispatches = 0
-            agent.unreported_since = ""
+def _on_brief_rendered(state: RunState, event: Event) -> None:
+    p = event.payload
+    state.briefs[p["agent_id"]] = str(p.get("brief", ""))
 
-    elif t is EventType.FINDING_ADDED:
-        _upsert(state.findings, from_jsonable(p["finding"], Finding))
 
-    elif t is EventType.DIRECTIVE_ISSUED:
-        _upsert(state.directives, from_jsonable(p["directive"], Directive))
+def _on_agent_spawned(state: RunState, event: Event) -> None:
+    p = event.payload
+    spec = from_jsonable(p["agent"], AgentSpec)
+    seen = state.agents.get(spec.id)
+    state.agents[spec.id] = _merge_into(seen, spec) if seen is not None else spec
+    state.turn_counts.setdefault(spec.id, 0)
 
-    elif t is EventType.DRIFT_ASSESSED:
-        state.drift[p["agent_id"]] = from_jsonable(p["assessment"], DriftAssessment)
 
-    elif t is EventType.MESSAGE_SENT:
-        _upsert(state.messages, from_jsonable(p["message"], Message))
+def _on_agent_dispatched(state: RunState, event: Event) -> None:
+    p = event.payload
+    agent = state.agents.get(p["agent_id"])
+    if agent is not None:
+        agent.unreported_dispatches += 1
+        if not agent.unreported_since:
+            agent.unreported_since = event.ts
+    else:
+        _orphan(state, event.type, p["agent_id"])
 
-    elif t is EventType.MESSAGE_DELIVERED:
-        ids = set(p.get("message_ids", []))
-        recipient = p.get("agent_id", "")
-        for msg in state.messages:
-            if msg.id in ids and recipient and recipient not in msg.delivered_to:
-                msg.delivered_to.append(recipient)
 
-    elif t is EventType.TASK_PROPOSED:
-        task = from_jsonable(p["task"], ExecutionTask)
-        seen_task = state.tasks.get(task.id)
-        state.tasks[task.id] = _merge_into(seen_task, task) if seen_task is not None else task
-        if p.get("notes"):
-            state.task_notes[task.id] = [str(n) for n in p["notes"]]
+def _on_agent_status(state: RunState, event: Event) -> None:
+    p = event.payload
+    agent = state.agents.get(p["agent_id"])
+    if agent is not None:
+        agent.status = AgentStatus(p["status"])
+    else:
+        _orphan(state, event.type, p["agent_id"])
 
-    elif t in (EventType.TASK_DECIDED, EventType.TASK_UPDATED):
-        task = from_jsonable(p["task"], ExecutionTask)
-        seen_task = state.tasks.get(task.id)
-        state.tasks[task.id] = _merge_into(seen_task, task) if seen_task is not None else task
 
-    elif t is EventType.CRITERION_VERIFIED:
-        verified = state.tasks.get(p["task_id"])
-        if verified is None:
-            orphan(p["task_id"])
-        elif not any(crit.id == p["criterion_id"] for crit in verified.dod):
-            # The task is here but this criterion is not: a definition of done
-            # that was replaced after the verdict was recorded. Worth naming
-            # separately, since the task existing makes it look accounted for.
-            orphan(f"{p['task_id']}/{p['criterion_id']}")
-        else:
-            for crit in verified.dod:
-                if crit.id == p["criterion_id"]:
-                    crit.status = CriterionStatus(p["status"])
-                    crit.evidence = p.get("evidence", "")
-                    crit.verified_at = event.ts
-                    crit.verified_by = event.actor
-                    break
+def _on_turn_recorded(state: RunState, event: Event) -> None:
+    p = event.payload
+    turn = from_jsonable(p["turn"], AgentTurn)
+    # The body, not only the tally. Kept whole, including the turn's own
+    # findings and messages: they are projected separately as well, by the
+    # FINDING_ADDED and MESSAGE_SENT events the same turn emits, so this
+    # duplicates them -- but a half-populated ``AgentTurn`` is a trap for
+    # whoever reads one next, and the log holds the whole thing either way.
+    first_time = _upsert(state.turns, turn)
+    if first_time:
+        # Both of these are running totals, so they are the two things in
+        # this branch a replay could double. The list above cannot be, and
+        # the resets below are assignments; these needed the guard.
+        state.turn_counts[turn.agent_id] = state.turn_counts.get(turn.agent_id, 0) + 1
+        prior = state.usage.get(turn.agent_id, Usage())
+        state.usage[turn.agent_id] = prior.add(turn.usage)
+    # The agent answered, so it is not silent: the abandonment bound starts
+    # again from the next packet it is handed.
+    agent = state.agents.get(turn.agent_id)
+    if agent is not None:
+        agent.unreported_dispatches = 0
+        agent.unreported_since = ""
 
-    elif t is EventType.REPORT_WRITTEN:
-        state.report = from_jsonable(p["report"], Report)
 
-    elif t is EventType.CHECKPOINT_RECORDED:
-        checkpoint = from_jsonable(p["checkpoint"], Checkpoint)
-        _upsert(state.checkpoints, checkpoint)
-        # The high-water mark, not the last one seen. Assignment let a replayed
-        # or out-of-order checkpoint move the counter backwards, and the
-        # remediation budget is bounded on it -- so an iteration folded twice, or
-        # a log read in a different order, silently bought the run another round
-        # of remediation it had already spent.
-        state.checkpoint_iteration = max(state.checkpoint_iteration, checkpoint.iteration)
+def _on_finding_added(state: RunState, event: Event) -> None:
+    p = event.payload
+    _upsert(state.findings, from_jsonable(p["finding"], Finding))
 
-    elif t is EventType.LESSON_LEARNED:
-        _upsert(state.lessons, from_jsonable(p["lesson"], Lesson))
 
-    elif t is EventType.ARTIFACT_WRITTEN:
-        artifact = Artifact(
-            path=str(p.get("path", "")),
-            kind=str(p.get("kind", "")),
+def _on_directive_issued(state: RunState, event: Event) -> None:
+    p = event.payload
+    _upsert(state.directives, from_jsonable(p["directive"], Directive))
+
+
+def _on_drift_assessed(state: RunState, event: Event) -> None:
+    p = event.payload
+    state.drift[p["agent_id"]] = from_jsonable(p["assessment"], DriftAssessment)
+
+
+def _on_message_sent(state: RunState, event: Event) -> None:
+    p = event.payload
+    _upsert(state.messages, from_jsonable(p["message"], Message))
+
+
+def _on_message_delivered(state: RunState, event: Event) -> None:
+    p = event.payload
+    ids = set(p.get("message_ids", []))
+    recipient = p.get("agent_id", "")
+    for msg in state.messages:
+        if msg.id in ids and recipient and recipient not in msg.delivered_to:
+            msg.delivered_to.append(recipient)
+
+
+def _on_task_proposed(state: RunState, event: Event) -> None:
+    p = event.payload
+    task = from_jsonable(p["task"], ExecutionTask)
+    seen_task = state.tasks.get(task.id)
+    state.tasks[task.id] = _merge_into(seen_task, task) if seen_task is not None else task
+    if p.get("notes"):
+        state.task_notes[task.id] = [str(n) for n in p["notes"]]
+
+
+def _on_task_decided_or_task_updated(state: RunState, event: Event) -> None:
+    p = event.payload
+    task = from_jsonable(p["task"], ExecutionTask)
+    seen_task = state.tasks.get(task.id)
+    state.tasks[task.id] = _merge_into(seen_task, task) if seen_task is not None else task
+
+
+def _on_criterion_verified(state: RunState, event: Event) -> None:
+    p = event.payload
+    verified = state.tasks.get(p["task_id"])
+    if verified is None:
+        _orphan(state, event.type, p["task_id"])
+    elif not any(crit.id == p["criterion_id"] for crit in verified.dod):
+        # The task is here but this criterion is not: a definition of done
+        # that was replaced after the verdict was recorded. Worth naming
+        # separately, since the task existing makes it look accounted for.
+        _orphan(state, event.type, f"{p['task_id']}/{p['criterion_id']}")
+    else:
+        for crit in verified.dod:
+            if crit.id == p["criterion_id"]:
+                crit.status = CriterionStatus(p["status"])
+                crit.evidence = p.get("evidence", "")
+                crit.verified_at = event.ts
+                crit.verified_by = event.actor
+                break
+
+
+def _on_report_written(state: RunState, event: Event) -> None:
+    p = event.payload
+    state.report = from_jsonable(p["report"], Report)
+
+
+def _on_checkpoint_recorded(state: RunState, event: Event) -> None:
+    p = event.payload
+    checkpoint = from_jsonable(p["checkpoint"], Checkpoint)
+    _upsert(state.checkpoints, checkpoint)
+    # The high-water mark, not the last one seen. Assignment let a replayed
+    # or out-of-order checkpoint move the counter backwards, and the
+    # remediation budget is bounded on it -- so an iteration folded twice, or
+    # a log read in a different order, silently bought the run another round
+    # of remediation it had already spent.
+    state.checkpoint_iteration = max(state.checkpoint_iteration, checkpoint.iteration)
+
+
+def _on_lesson_learned(state: RunState, event: Event) -> None:
+    p = event.payload
+    _upsert(state.lessons, from_jsonable(p["lesson"], Lesson))
+
+
+def _on_artifact_written(state: RunState, event: Event) -> None:
+    p = event.payload
+    artifact = Artifact(
+        path=str(p.get("path", "")),
+        kind=str(p.get("kind", "")),
+        actor=event.actor,
+        ts=event.ts,
+    )
+    # The report artifact is rewritten on every improvement iteration, so
+    # keep one entry per path: the latest write is the one that survives.
+    state.artifacts = [a for a in state.artifacts if a.path != artifact.path]
+    state.artifacts.append(artifact)
+
+
+def _on_note(state: RunState, event: Event) -> None:
+    p = event.payload
+    _upsert(
+        state.notes,
+        Note(
+            id=event.id,
+            text=str(p.get("text", "")),
             actor=event.actor,
             ts=event.ts,
-        )
-        # The report artifact is rewritten on every improvement iteration, so
-        # keep one entry per path: the latest write is the one that survives.
-        state.artifacts = [a for a in state.artifacts if a.path != artifact.path]
-        state.artifacts.append(artifact)
+            context={k: str(v) for k, v in p.items() if k != "text"},
+        ),
+    )
 
-    elif t is EventType.NOTE:
-        # Not audit-only after all. A note is the only record of why an agent was
-        # abandoned, why a stage fell back, why an index projection failed -- so
-        # dropping it here meant every reader working from ``RunState`` reported
-        # a failed run without the sentence explaining it.
-        _upsert(
-            state.notes,
-            Note(
-                id=event.id,
-                text=str(p.get("text", "")),
-                actor=event.actor,
-                ts=event.ts,
-                context={k: str(v) for k, v in p.items() if k != "text"},
-            ),
-        )
 
-    elif t is EventType.RUN_ENDED:
-        state.phase = Phase(p.get("phase", Phase.COMPLETE))
-        if p.get("error"):
-            state.error = p["error"]
+def _on_run_ended(state: RunState, event: Event) -> None:
+    p = event.payload
+    state.phase = Phase(p.get("phase", Phase.COMPLETE))
+    if p.get("error"):
+        state.error = p["error"]
 
+
+#: Which handler answers for each event type. A dispatch table rather than
+#: a 24-way `elif` chain: the fold used to be one 123-statement function
+#: with a cyclomatic complexity of 46, and adding an event type meant
+#: finding the right place in the middle of it (finding Q-A2).
+#:
+#: The table is checked against `EventType` by a test, so a member added
+#: without a handler is a failure rather than a silent no-op.
+_HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
+    EventType.RUN_CREATED: _on_run_created,
+    EventType.PHASE_CHANGED: _on_phase_changed,
+    EventType.HOST_AGENTS_DECLARED: _on_host_agents_declared,
+    EventType.RUN_MODE_SET: _on_run_mode_set,
+    EventType.ENVELOPE_SET: _on_envelope_set,
+    EventType.CONTEXT_SET: _on_context_set,
+    EventType.FACT_ESTABLISHED: _on_fact_established,
+    EventType.BRIEF_RENDERED: _on_brief_rendered,
+    EventType.AGENT_SPAWNED: _on_agent_spawned,
+    EventType.AGENT_DISPATCHED: _on_agent_dispatched,
+    EventType.AGENT_STATUS: _on_agent_status,
+    EventType.TURN_RECORDED: _on_turn_recorded,
+    EventType.FINDING_ADDED: _on_finding_added,
+    EventType.DIRECTIVE_ISSUED: _on_directive_issued,
+    EventType.DRIFT_ASSESSED: _on_drift_assessed,
+    EventType.MESSAGE_SENT: _on_message_sent,
+    EventType.MESSAGE_DELIVERED: _on_message_delivered,
+    EventType.TASK_PROPOSED: _on_task_proposed,
+    EventType.TASK_DECIDED: _on_task_decided_or_task_updated,
+    EventType.TASK_UPDATED: _on_task_decided_or_task_updated,
+    EventType.CRITERION_VERIFIED: _on_criterion_verified,
+    EventType.REPORT_WRITTEN: _on_report_written,
+    EventType.CHECKPOINT_RECORDED: _on_checkpoint_recorded,
+    EventType.LESSON_LEARNED: _on_lesson_learned,
+    EventType.ARTIFACT_WRITTEN: _on_artifact_written,
+    EventType.NOTE: _on_note,
+    EventType.RUN_ENDED: _on_run_ended,
+}
+
+
+def _apply(state: RunState, event: Event) -> RunState:
+    """Apply one event to the accumulating state, in place."""
+    handler = _HANDLERS.get(event.type)
+    if handler is not None:
+        handler(state, event)
     else:
-        # No branch for this type. Record it rather than drop it, so an event
+        # No handler for this type. Record it rather than drop it, so an event
         # type added later -- or misspelled -- is visible in the folded state.
         # A type read off disk arrives as UNKNOWN carrying its own name, which
         # is the name worth reporting.
-        name = str(p.get(UNRECOGNISED_TYPE_KEY) or t)
+        name = str(event.payload.get(UNRECOGNISED_TYPE_KEY) or event.type)
         if name not in state.unhandled_events:
             state.unhandled_events.append(name)
 

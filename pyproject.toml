@@ -60,7 +60,7 @@ target-version = "py311"   # matches requires-python
 #   PLR2004 (magic values)      86 findings, almost all thresholds read from policy
 #   PLC0415 (import not at top) 86 findings, and lazy imports here are deliberate
 #                               -- `providers/bedrock.py` depends on being one
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S", "BLE", "TRY004"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S", "BLE", "TRY004", "C901"]
 # `BLE` and `TRY004` were added when finding Q-Q2 was closed. Both cost *zero*
 # new findings: every broad `except` in this codebase already carried a
 # `# noqa: BLE001` written for a rule nobody had enabled, so turning the rule on
@@ -68,9 +68,22 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S", "BLE", "TRY004"]
 # is in what happens next -- a broad `except` added from here on is flagged, and
 # has to be suppressed on purpose.
 #
-# `C901` is deliberately still off: it would add 16 findings, and those are
-# finding Q-A2, whose complexity lives in `store/events.py`, `core/journal.py`
-# and `core/phases.py` rather than anywhere this batch touches.
+# `C901` was turned on when Q-A2 closed. The bound is **15**, not ruff's default
+# of 10, and the number is chosen rather than inherited:
+#
+#   * The functions this project actually suffered from were 46, 27, 25, 21 and
+#     two at 17 -- the fold, the journal builder, the report renderer, the
+#     episode renderer, the MCP registrations, and the record search. A gate at
+#     15 means none of them can come back.
+#   * Nine functions sit between 11 and 13. Driving those to 10 is a different
+#     piece of work with much less to show for it, and gating on a number the
+#     codebase does not meet would mean a tolerated baseline -- which criterion
+#     4 of the assessment rejects.
+#
+# Lower it when those nine are dealt with. Do not raise it.
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 # `assert` is what a test is made of, and a subprocess in a test is the test.

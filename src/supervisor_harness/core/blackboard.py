@@ -14,6 +14,7 @@ whole conversation replays from the event log.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..models import (
@@ -200,6 +201,77 @@ class Blackboard:
         ]
 
 
+def _from_the_brief(agent: AgentSpec, relevant: Callable[[str], bool]) -> list[str]:
+    """What the agent was already told to do."""
+    out: list[str] = []
+    for objective in agent.objectives:
+        if relevant(objective):
+            out.append(f"Your brief already says: {objective}")
+    if agent.scope.paths and relevant(" ".join(agent.scope.paths)):
+        out.append(f"Your scope is: {', '.join(agent.scope.paths)}")
+    if agent.scope.out_of_scope and relevant(" ".join(agent.scope.out_of_scope)):
+        out.append(f"Explicitly out of scope: {', '.join(agent.scope.out_of_scope)}")
+    return out
+
+
+def _from_harness_facts(state: RunState, relevant: Callable[[str], bool]) -> list[str]:
+    """What the harness itself established: the baseline, the restatement."""
+    out: list[str] = []
+    for key, value in state.facts.items():
+        if relevant(f"{key} {value}"):
+            out.append(f"Established for this run -- {key}: {value}")
+    return out
+
+
+def _from_agents_facts(state: RunState, relevant: Callable[[str], bool]) -> list[str]:
+    """What other agents established, including where two of them disagree.
+
+    Most of what the record can usefully answer with. Before agents could
+    establish anything, a question that matched neither the harness's own
+    facts nor a finding fell through to nothing."""
+    out: list[str] = []
+    contested = contested_keys(state.established)
+    for key in sorted({f.key for f in state.established}):
+        claims = [f for f in state.established if f.key == key]
+        if not relevant(key + " " + " ".join(c.statement for c in claims)):
+            continue
+        if key in contested:
+            out.append(
+                f"Agents disagree about {key} -- "
+                + "; ".join(f"{c.role or c.agent_id} says {c.statement}" for c in claims)
+            )
+        else:
+            first = claims[0]
+            out.append(
+                f"{first.role or first.agent_id} established -- {key}: {first.statement}"
+            )
+    return out
+
+
+def _from_the_task(
+    agent: AgentSpec, state: RunState, relevant: Callable[[str], bool]
+) -> list[str]:
+    """What this agent's own definition of done demands."""
+    out: list[str] = []
+    task = state.tasks.get(agent.task_id or "")
+    if task is not None:
+        for crit in task.dod:
+            if relevant(crit.statement):
+                out.append(f"The definition of done requires: {crit.statement}")
+    return out
+
+
+def _from_other_findings(
+    agent: AgentSpec, state: RunState, relevant: Callable[[str], bool]
+) -> list[str]:
+    """What another agent has already reported."""
+    out: list[str] = []
+    for finding in state.findings:
+        if finding.agent_id != agent.id and relevant(f"{finding.title} {finding.detail}"):
+            out.append(f"Another agent already found: {finding.title}")
+    return out
+
+
 def answer_from_record(question: Message, agent: AgentSpec, state: RunState) -> list[str]:
     """What the run's own record says that bears on this question.
 
@@ -223,50 +295,16 @@ def answer_from_record(question: Message, agent: AgentSpec, state: RunState) -> 
     def relevant(text: str) -> bool:
         return bool(asked & tokens(text))
 
-    out: list[str] = []
-
-    for objective in agent.objectives:
-        if relevant(objective):
-            out.append(f"Your brief already says: {objective}")
-    if agent.scope.paths and relevant(" ".join(agent.scope.paths)):
-        out.append(f"Your scope is: {', '.join(agent.scope.paths)}")
-    if agent.scope.out_of_scope and relevant(" ".join(agent.scope.out_of_scope)):
-        out.append(f"Explicitly out of scope: {', '.join(agent.scope.out_of_scope)}")
-
-    for key, value in state.facts.items():
-        if relevant(f"{key} {value}"):
-            out.append(f"Established for this run -- {key}: {value}")
-
-    # What other agents established. This is most of what the record can
-    # usefully answer with: before agents could establish anything, `facts` held
-    # the baseline commit and the planner's restatement, and a question that
-    # matched neither fell through to the findings or to nothing.
-    contested = contested_keys(state.established)
-    for key in sorted({f.key for f in state.established}):
-        claims = [f for f in state.established if f.key == key]
-        if not relevant(key + " " + " ".join(c.statement for c in claims)):
-            continue
-        if key in contested:
-            out.append(
-                f"Agents disagree about {key} -- "
-                + "; ".join(f"{c.role or c.agent_id} says {c.statement}" for c in claims)
-            )
-        else:
-            first = claims[0]
-            out.append(
-                f"{first.role or first.agent_id} established -- {key}: {first.statement}"
-            )
-
-    task = state.tasks.get(agent.task_id or "")
-    if task is not None:
-        for crit in task.dod:
-            if relevant(crit.statement):
-                out.append(f"The definition of done requires: {crit.statement}")
-
-    for finding in state.findings:
-        if finding.agent_id != agent.id and relevant(f"{finding.title} {finding.detail}"):
-            out.append(f"Another agent already found: {finding.title}")
-
+    # One function per source the record can answer from. This was a single
+    # body with a cyclomatic complexity of 17 (finding Q-A2); each source is
+    # an independent search, and the cap applies to the answer as a whole.
+    out: list[str] = [
+        *_from_the_brief(agent, relevant),
+        *_from_harness_facts(state, relevant),
+        *_from_agents_facts(state, relevant),
+        *_from_the_task(agent, state, relevant),
+        *_from_other_findings(agent, state, relevant),
+    ]
     return out[:6]
 
 

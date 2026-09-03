@@ -981,19 +981,29 @@ def _display(text: str) -> str:
     return text.replace('\\"', '"').replace("\\n", " ").strip()
 
 
-def final_report_markdown(state: RunState) -> str:
-    """The document handed back to the user at the end of a run."""
-    lines: list[str] = [f"# Supervised run: {state.prompt}", ""]
+def _report_header(state: RunState) -> list[str]:
+    """Identity, mode and what the run cost."""
+    lines: list[str] = []
     lines.append(f"- Run `{state.id}` -- {state.phase.value}")
     lines.append(f"- Mode: {state.mode.value}, backend: {state.backend.value}, host: {state.host}")
     usage = state.total_usage()
     if usage.total_tokens:
         lines.append(f"- Tokens: {usage.input_tokens} in / {usage.output_tokens} out")
     lines.append("")
+    return lines
 
+
+def _report_summary(state: RunState) -> list[str]:
+    """The synthesis stage's own account of what it found."""
+    lines: list[str] = []
     if state.report and state.report.summary:
         lines += ["## Summary", "", state.report.summary, ""]
+    return lines
 
+
+def _report_verification(state: RunState) -> list[str]:
+    """Every task's definition of done, and what was actually proven."""
+    lines: list[str] = []
     tasks = [t for t in state.tasks.values() if t.status not in
              (TaskStatus.PROPOSED, TaskStatus.REJECTED, TaskStatus.DEFERRED)]
     if tasks:
@@ -1018,7 +1028,12 @@ def final_report_markdown(state: RunState) -> str:
                     if len(evidence) > 1:
                         lines.append(f"      ({len(evidence) - 1} more line(s) in the event log)")
             lines.append("")
+    return lines
 
+
+def _report_findings(state: RunState) -> list[str]:
+    """What the analysis lenses found, worst first."""
+    lines: list[str] = []
     if state.findings:
         lines += ["## Findings", ""]
         for finding in rank_findings(state.findings)[:25]:
@@ -1033,7 +1048,15 @@ def final_report_markdown(state: RunState) -> str:
             if finding.recommendation:
                 lines.append(f"    - recommended: {_display(finding.recommendation)}")
         lines.append("")
+    return lines
 
+
+def _report_reconciliation(state: RunState) -> list[str]:
+    """Finding by finding: closed here, attempted, or still open.
+
+    The section that makes a run answerable. A summary that omits it reads
+    as though everything was dealt with."""
+    lines: list[str] = []
     rows = reconcile_findings(state)
     if rows:
         lines += ["## Findings reconciliation", ""]
@@ -1054,17 +1077,32 @@ def final_report_markdown(state: RunState) -> str:
         lines.append("")
         lines.append("Full mapping, finding by finding: `artifacts/reconciliation.md`.")
         lines.append("")
+    return lines
 
+
+def _report_conflicts(state: RunState) -> list[str]:
+    """Where two lenses disagreed and the disagreement was kept."""
+    lines: list[str] = []
     if state.report and state.report.conflicts:
         lines += ["## Disagreements between lenses", ""]
         lines += [f"- {c}" for c in state.report.conflicts]
         lines.append("")
+    return lines
 
+
+def _report_open_questions(state: RunState) -> list[str]:
+    """What the run could not settle."""
+    lines: list[str] = []
     if state.report and state.report.open_questions:
         lines += ["## Open questions", ""]
         lines += [f"- {q}" for q in state.report.open_questions]
         lines.append("")
+    return lines
 
+
+def _report_checkpoints(state: RunState) -> list[str]:
+    """The quality gate's verdict on each iteration."""
+    lines: list[str] = []
     if state.checkpoints:
         cp = state.checkpoints[-1]
         lines += [
@@ -1080,7 +1118,12 @@ def final_report_markdown(state: RunState) -> str:
         for gap in cp.gaps:
             lines.append(f"- Gap: {gap}")
         lines.append("")
+    return lines
 
+
+def _report_lessons(state: RunState) -> list[str]:
+    """What this run taught the harness, for the next one."""
+    lines: list[str] = []
     if state.lessons:
         lines += ["## Lessons recorded for future runs", ""]
         for lesson in state.lessons:
@@ -1088,5 +1131,28 @@ def final_report_markdown(state: RunState) -> str:
             if lesson.how_to_apply:
                 lines.append(f"    - {lesson.how_to_apply}")
         lines.append("")
+    return lines
 
+
+def final_report_markdown(state: RunState) -> str:
+    """The document handed back to the user at the end of a run.
+
+    One function per section. They were a single 75-statement body with a
+    cyclomatic complexity of 25 (finding Q-A2), and every section is an
+    independent "include this if the run produced any" -- so the shape the
+    document already had is the shape the code now has.
+    """
+    lines: list[str] = [f"# Supervised run: {state.prompt}", ""]
+    for section in (
+        _report_header,
+        _report_summary,
+        _report_verification,
+        _report_findings,
+        _report_reconciliation,
+        _report_conflicts,
+        _report_open_questions,
+        _report_checkpoints,
+        _report_lessons,
+    ):
+        lines += section(state)
     return "\n".join(lines).strip() + "\n"
