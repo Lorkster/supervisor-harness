@@ -51,7 +51,54 @@ def _emit(data: Any, as_json: bool) -> None:
         print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
+def _print_packets(response: SupervisorResponse) -> None:
+    for packet in response.packets:
+        target = f" via {packet.host_agent_type}" if packet.host_agent_type else ""
+        print(f"\n  packet {packet.agent_id} ({packet.kind}){target}")
+        print(f"    {packet.title}  [{packet.model}, {packet.turns_remaining} turn(s) left]")
+
+
+def _print_proposed_tasks(response: SupervisorResponse) -> None:
+    """The approval prompt: everything the user needs in order to decide.
+
+    Deliberately verbose. This is the one screen where a task is accepted or
+    rejected, and a definition of done the user did not read is one they did not
+    agree to.
+    """
+    if not response.tasks:
+        return
+    print(f"\n  {len(response.tasks)} task(s) proposed:")
+    for task in response.tasks:
+        print(f"\n  - {task['id']}  {task['title']}  "
+              f"(risk {task['risk']}, effort {task['effort']})")
+        print(f"      action:     {task['action']}")
+        print(f"      motivation: {task['motivation']}")
+        print("      definition of done:")
+        for crit in task["definition_of_done"]:
+            flag = "required" if crit["mandatory"] else "optional"
+            print(f"        [{crit['method']}, {flag}] {crit['statement']}")
+            if crit.get("command"):
+                print(f"            $ {crit['command']}")
+        for note in response.task_notes.get(task["id"], []):
+            print(f"      note: {note}")
+
+
+def _print_directive(response: SupervisorResponse) -> None:
+    if not response.directive:
+        return
+    directive = response.directive
+    print(f"\n  directive: {directive['kind']} -- {directive['rationale']}")
+    for correction in directive.get("corrections", []):
+        print(f"    - {correction}")
+
+
 def _print_response(response: SupervisorResponse, as_json: bool) -> None:
+    """Render one supervisor response for a human, section by section.
+
+    Each section is its own function because each is independent: the response
+    carries packets, or proposed tasks, or a directive, in any combination, and
+    a reader looking for one of them should not have to step over the others.
+    """
     if as_json:
         _emit(response.to_dict(), True)
         return
@@ -60,32 +107,9 @@ def _print_response(response: SupervisorResponse, as_json: bool) -> None:
     if response.message:
         print(f"  {response.message}")
 
-    for packet in response.packets:
-        target = f" via {packet.host_agent_type}" if packet.host_agent_type else ""
-        print(f"\n  packet {packet.agent_id} ({packet.kind}){target}")
-        print(f"    {packet.title}  [{packet.model}, {packet.turns_remaining} turn(s) left]")
-
-    if response.tasks:
-        print(f"\n  {len(response.tasks)} task(s) proposed:")
-        for task in response.tasks:
-            print(f"\n  - {task['id']}  {task['title']}  "
-                  f"(risk {task['risk']}, effort {task['effort']})")
-            print(f"      action:     {task['action']}")
-            print(f"      motivation: {task['motivation']}")
-            print("      definition of done:")
-            for crit in task["definition_of_done"]:
-                flag = "required" if crit["mandatory"] else "optional"
-                print(f"        [{crit['method']}, {flag}] {crit['statement']}")
-                if crit.get("command"):
-                    print(f"            $ {crit['command']}")
-            for note in response.task_notes.get(task["id"], []):
-                print(f"      note: {note}")
-
-    if response.directive:
-        d = response.directive
-        print(f"\n  directive: {d['kind']} -- {d['rationale']}")
-        for correction in d.get("corrections", []):
-            print(f"    - {correction}")
+    _print_packets(response)
+    _print_proposed_tasks(response)
+    _print_directive(response)
 
     if response.action == "complete":
         print()
@@ -412,60 +436,75 @@ def _render_globs(patterns: list[str]) -> str:
     return ", ".join(patterns)
 
 
-def cmd_status(args: argparse.Namespace) -> int:
-    sup = _supervisor(args)
-    run_id = args.run_id or sup.store.latest_run_id()
-    if not run_id:
-        print("No runs recorded yet.", file=sys.stderr)
-        return 1
-
-    status = sup.status(run_id)
-    if args.json:
-        _emit(status, True)
-        return 0
-
+def _status_header(status: dict[str, Any]) -> None:
     print(f"run {status['run_id']}  [{status['phase']}]  mode={status['mode']} "
           f"backend={status['backend']}")
     print(f"  {status['prompt']}")
     print(f"  updated {status['updated_at']}")
 
+
+def _status_envelope(status: dict[str, Any]) -> None:
+    """What this run may modify, and whether that grant has expired.
+
+    Printed even when there is none, because "no envelope" and "an envelope you
+    have forgotten about" look identical otherwise.
+    """
     envelope = status.get("envelope")
     if envelope is None:
         print("  envelope: none established (bounded only by the unconditional floor)")
-    else:
-        print(f"  envelope [{envelope['source']}]: may modify "
-              f"{_render_globs(envelope['paths'])}")
-        if envelope["forbidden_paths"]:
-            print(f"            never: {_render_globs(envelope['forbidden_paths'])}")
-        if status.get("envelope_stale"):
-            print(f"            STALE: {status['envelope_stale']}")
-            print("            re-grant with: supervisor approve --renew-envelope")
+        return
+    print(f"  envelope [{envelope['source']}]: may modify "
+          f"{_render_globs(envelope['paths'])}")
+    if envelope["forbidden_paths"]:
+        print(f"            never: {_render_globs(envelope['forbidden_paths'])}")
+    if status.get("envelope_stale"):
+        print(f"            STALE: {status['envelope_stale']}")
+        print("            re-grant with: supervisor approve --renew-envelope")
 
-    if status["agents"]:
-        print("\n  agents")
-        for agent in status["agents"]:
-            drift = f" drift {agent['drift']:.2f}" if agent["drift"] is not None else ""
-            print(f"    {agent['id']}  {agent['role']:<16} {agent['status']:<8} "
-                  f"turns {agent['turns']}{drift}  [{agent['model']}]")
 
-    if status["tasks"]:
-        print("\n  tasks")
-        for task in status["tasks"]:
-            mark = "done" if task["satisfied"] else "open"
-            print(f"    {task['id']}  {task['status']:<22} dod {task['dod']:<6} {mark}  "
-                  f"{task['title']}")
+def _status_agents(status: dict[str, Any]) -> None:
+    if not status["agents"]:
+        return
+    print("\n  agents")
+    for agent in status["agents"]:
+        drift = f" drift {agent['drift']:.2f}" if agent["drift"] is not None else ""
+        print(f"    {agent['id']}  {agent['role']:<16} {agent['status']:<8} "
+              f"turns {agent['turns']}{drift}  [{agent['model']}]")
 
+
+def _status_tasks(status: dict[str, Any]) -> None:
+    if not status["tasks"]:
+        return
+    print("\n  tasks")
+    for task in status["tasks"]:
+        mark = "done" if task["satisfied"] else "open"
+        print(f"    {task['id']}  {task['status']:<22} dod {task['dod']:<6} {mark}  "
+              f"{task['title']}")
+
+
+def _status_checkpoints(status: dict[str, Any]) -> None:
     for checkpoint in status["checkpoints"]:
         print(f"\n  checkpoint {checkpoint['iteration']}: "
               f"{'passed' if checkpoint['passed'] else 'not passed'} "
               f"(quality {checkpoint['quality']}, scope {checkpoint['scope_fidelity']}, "
               f"completeness {checkpoint['completeness']})")
 
-    if status["artifacts"]:
-        print("\n  artifacts")
-        for artifact in status["artifacts"]:
-            print(f"    {artifact['kind']:<14} {artifact['path']}")
 
+def _status_artifacts(status: dict[str, Any]) -> None:
+    if not status["artifacts"]:
+        return
+    print("\n  artifacts")
+    for artifact in status["artifacts"]:
+        print(f"    {artifact['kind']:<14} {artifact['path']}")
+
+
+def _status_established(status: dict[str, Any]) -> None:
+    """What the run's agents established, and where two of them disagreed.
+
+    The contested marker is the point: a disagreement is kept rather than
+    resolved by write order, so it has to be visible here or it is not kept at
+    all as far as a user is concerned.
+    """
     if status.get("established"):
         print("\n  established by this run's agents")
         contested = set(status.get("contested_facts") or [])
@@ -478,12 +517,36 @@ def cmd_status(args: argparse.Namespace) -> int:
         for question in status["open_questions"]:
             print(f"    {question}")
 
+
+def _status_footer(status: dict[str, Any]) -> None:
     print(f"\n  findings {status['findings']}  lessons {status['lessons']}")
     if status["unhandled_events"]:
         print(f"  unhandled event types: {', '.join(status['unhandled_events'])}"
               " (in the log, but nothing projects them)")
     if status["error"]:
         print(f"  error: {status['error']}")
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    sup = _supervisor(args)
+    run_id = args.run_id or sup.store.latest_run_id()
+    if not run_id:
+        print("No runs recorded yet.", file=sys.stderr)
+        return 1
+
+    status = sup.status(run_id)
+    if args.json:
+        _emit(status, True)
+        return 0
+
+    _status_header(status)
+    _status_envelope(status)
+    _status_agents(status)
+    _status_tasks(status)
+    _status_checkpoints(status)
+    _status_artifacts(status)
+    _status_established(status)
+    _status_footer(status)
     return 0
 
 
@@ -749,32 +812,8 @@ def cmd_mcp(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="supervisor",
-        description="Supervised multi-agent execution with verified definitions of done.",
-    )
-    parser.add_argument("--version", action="version", version=f"supervisor-harness {__version__}")
-    parser.add_argument("-w", "--workspace", default=".", help="workspace root (default: cwd)")
-    parser.add_argument("--json", action="store_true", help="machine-readable output")
-    parser.add_argument("--debug", action="store_true",
-                        help="let an unexpected failure raise, with its traceback")
-
-    # The same flags again, accepted after the subcommand. argparse only looks
-    # for top-level options before the subcommand, so `supervisor start x --json`
-    # was a usage error -- including in the form the README documented.
-    # SUPPRESS keeps the subparser copies from overwriting the top-level values
-    # with their own defaults when they are not given.
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
-                        help="machine-readable output")
-    common.add_argument("-w", "--workspace", default=argparse.SUPPRESS,
-                        help="workspace root (default: cwd)")
-    common.add_argument("--debug", action="store_true", default=argparse.SUPPRESS,
-                        help="let an unexpected failure raise, with its traceback")
-
-    sub = parser.add_subparsers(dest="command", required=True)
-
+def _add_run_commands(sub: Any, common: argparse.ArgumentParser) -> None:
+    """The commands that drive a run: set one going and answer it."""
     p = sub.add_parser("init", parents=[common],
                        help="install host integrations and an example config")
     p.add_argument("--host", choices=["claude", "cursor", "both"], default="",
@@ -849,6 +888,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="which run (default: the most recent one in this store)")
     p.set_defaults(func=cmd_resume)
 
+
+def _add_read_commands(sub: Any, common: argparse.ArgumentParser) -> None:
+    """The commands that read a run back without changing it."""
     p = sub.add_parser("status", parents=[common], help="show a run in detail")
     p.add_argument("run_id", nargs="?", default="",
                    help="which run (default: the most recent one in this store)")
@@ -897,6 +939,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("providers", parents=[common], help="show model routing and provider health")
     p.set_defaults(func=cmd_providers)
 
+
+def _add_store_commands(sub: Any, common: argparse.ArgumentParser) -> None:
+    """The commands that maintain the store rather than any one run."""
     p = sub.add_parser("reindex", parents=[common],
                        help="rebuild the SQLite index from the event logs")
     p.set_defaults(func=cmd_reindex)
@@ -922,6 +967,39 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("mcp", parents=[common], help="run the MCP server on stdio")
     p.set_defaults(func=cmd_mcp)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="supervisor",
+        description="Supervised multi-agent execution with verified definitions of done.",
+    )
+    parser.add_argument("--version", action="version", version=f"supervisor-harness {__version__}")
+    parser.add_argument("-w", "--workspace", default=".", help="workspace root (default: cwd)")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--debug", action="store_true",
+                        help="let an unexpected failure raise, with its traceback")
+
+    # The same flags again, accepted after the subcommand. argparse only looks
+    # for top-level options before the subcommand, so `supervisor start x --json`
+    # was a usage error -- including in the form the README documented.
+    # SUPPRESS keeps the subparser copies from overwriting the top-level values
+    # with their own defaults when they are not given.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="machine-readable output")
+    common.add_argument("-w", "--workspace", default=argparse.SUPPRESS,
+                        help="workspace root (default: cwd)")
+    common.add_argument("--debug", action="store_true", default=argparse.SUPPRESS,
+                        help="let an unexpected failure raise, with its traceback")
+
+    sub = parser.add_subparsers(dest="command", required=True)
+    # Grouped by what a reader is looking for. `build_parser` was 85 flat
+    # statements, and someone adding a command had to scan all of them to
+    # find where a similar one is defined.
+    _add_run_commands(sub, common)
+    _add_read_commands(sub, common)
+    _add_store_commands(sub, common)
 
     return parser
 

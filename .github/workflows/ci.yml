@@ -156,13 +156,14 @@ jobs:
       # A floor, not a target. It fails if a change drops coverage, which is the
       # property worth having -- the number itself is far less interesting than
       # the direction. 82 when first measured, 86 after batch 4b-2 closed Q-C3,
-      # Q-C4 and Q-C5, and 88 after 4b-3 took mcp_server.py from 0% to 95%.
+      # Q-C4 and Q-C5, 88 after 4b-3 took mcp_server.py from 0% to 95%, and 92
+      # after 4b-5 took cli.py from 42% to 80%.
       #
       # The headroom is deliberate: the measured figure drifts by a few
       # hundredths between runs, because which lines the fake provider's canned
       # answers reach depends on the ids generated for that run.
       - name: Coverage floor
-        run: python -m pytest -q --cov=supervisor_harness --cov-report=term:skip-covered --cov-fail-under=88
+        run: python -m pytest -q --cov=supervisor_harness --cov-report=term:skip-covered --cov-fail-under=92
 
       # docs/reasoning-control-plane.md explains the design by pointing at the
       # code that implements it, by file and line. That is the useful form and
