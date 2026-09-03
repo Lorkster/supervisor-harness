@@ -123,7 +123,7 @@ jobs:
   # Separate from the matrix: this compares two checkouts, so it needs the full
   # history, and running it eight times would say the same thing eight times.
   lint:
-    name: Lint (no new findings)
+    name: Lint, types and coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
