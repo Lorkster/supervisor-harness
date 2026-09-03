@@ -56,7 +56,7 @@ and none of them can rot quietly.
 
 | what | how | gate |
 | --- | --- | --- |
-| Coverage | `pytest --cov=supervisor_harness --cov-fail-under=82` | a **floor**; fails if it drops |
+| Coverage | `pytest --cov=supervisor_harness --cov-fail-under=86` | a **floor**; fails if it drops |
 | Types | `mypy` (config in `pyproject.toml`) | **zero**, from the start |
 | Lint | `tools/ruff_diff.py`, now against a configured rule set | **no new** (file, rule) pairs |
 | Architecture | `tests/test_architecture.py` — criteria 1 and 3, executed | zero cycles |
@@ -165,23 +165,45 @@ the thing itself is not tested at all.
 absolute gap in the codebase. The other user-facing boundary.
 *Criterion 10. Cost: medium.*
 
-**Q-C3 · The HTTP providers are barely tested.**
-`openrouter` 26%, `ollama` 27%, `anthropic` 30% — request building, response
-mapping, error translation and retryability all largely unexercised. The
-contrast is instructive: `providers/bedrock.py`, written in the previous batch
-to the current bar, is at **93%** with 13 sabotage-checked behaviours. The older
-three predate that bar.
-*Criteria 8, 9. Cost: low — `test_bedrock_provider.py` is a template.*
+**Q-C3 · The HTTP providers were barely tested. — CLOSED (4b-2)**
+`openrouter` 26% → **92%**, `ollama` 27% → **92%**, `anthropic` 30% → **89%**.
+`tests/test_http_providers.py` uses `httpx.MockTransport`, so no test opens a
+socket, and asserts the two things a provider is for: what reaches the wire (the
+schema instruction, the sampling knobs, `response_format`, Ollama's `think:
+false`) and what comes back (text, reasoning, model, and **usage**, which is what
+every budget and ceiling in the harness is measured in).
 
-**Q-C4 · Three modules between 57% and 71%:** `agents/registry.py` 57%,
-`providers/router.py` 67%, `host/detect.py` 71%.
-*Criterion 8. Cost: low.*
+One environment trap, the same one the Bedrock batch hit with `AWS_REGION`:
+`api_key=""` falls back to `os.environ`, so parametrising over *constructed*
+providers built them at collection time, before any fixture could clear
+anything. The test then passed or failed according to whether the developer had
+a key exported — and it found exactly that on the machine it was written on. The
+providers are now built inside the test.
 
-**Q-C5 · `core/tools.py` is 79%, and the gap is in the fence.** 65 missing
-statements concentrated in the workspace-walking and scope-refusal paths. This
-module is the deterministic guardrail the whole design rests on, so it should be
-the best-covered file in the repository rather than the fifth-worst.
-*Criteria 8, 10. Cost: low. **Prioritise above its size.***
+**Q-C4 · Three modules between 57% and 71%. — CLOSED (4b-2)**
+`agents/registry.py` 57% → **97%**, `providers/router.py` 67% → **95%**,
+`host/detect.py` 71% → **92%**, in `tests/test_discovery_and_routing.py`.
+
+Two of these read the world outside the test and both are now neutralised rather
+than tolerated: `detect_host` scores the ambient environment, and this suite is
+routinely run *inside* one of the hosts it detects; `discover_host_agent_files`
+reads `~/.claude/agents`, so a developer's own definitions would otherwise
+appear in the results. Either would pass on the machine it was written on and
+fail in CI.
+
+**Q-C5 · `core/tools.py` was 79%. — CLOSED (4b-2)** Now **94%**.
+
+The shape of the gap was the finding. The fence's *decisions* —
+`_scope_refusal`, the floor, the executable allow-list — were thoroughly covered
+by `test_hardening.py`. What was uncovered was **the tools that consult it**:
+`_walk`, `list_files`, `read_file`, `search`, `write_file`, `run_command` and the
+`call` dispatcher accounted for 60 of the 65 unreached lines. The module knew
+what to forbid, and nothing checked what it did when it allowed.
+
+That distinction matters beyond arithmetic. A truncation that silently drops
+results, a window returning the wrong lines, or a dispatcher crossing two wires
+would pass every refusal test in the suite — the fence is not consulted
+differently, it simply guards an operation that answers wrongly.
 
 **Q-C6 · The suite has never been audited for vacuous tests as a whole.**
 The sabotage check has been applied to each new batch since it was adopted, and
@@ -237,7 +259,33 @@ Teardown is a fixture's job rather than something three dozen inline call sites
 should each remember.
 
 **Q-Q4 · The lint gate compared different rule sets across a configuration
-change.** Described above. **Closed in this batch.**
+change.** Described above. **Closed in the 4a batch.**
+
+**Q-Q5 · `policy.command_timeout_seconds` did not bound anything. — CLOSED
+(4b-2)**
+
+Found by writing the test for it, which is the only way it could have been
+found: the old test would have asserted `"timed out" in output`, and that was
+already true.
+
+`Toolbox.run_command` ran commands with `shell=True`. The timeout kills the
+*shell*; on Windows `cmd /c` is a different process from the program it
+launched, which keeps running and holds the pipes open, so `subprocess.run`
+blocks until the program finishes and only then reports the timeout. Measured: a
+20-second sleep under a **1-second** timeout returned `TimeoutExpired` after
+**20.1 seconds**, and after 1.0 without the shell. An agent could hold a run open
+for as long as it liked while the harness reported that it had stopped it.
+
+The fix is the one `dod.verify_command` already used: tokenise with
+`shell_split`, resolve the executable on PATH, and run with `shell=False`. The
+shell was buying nothing — every unquoted metacharacter and glob is refused
+before this point, for every agent, so the command is a program and its
+arguments. `Toolbox.run_command` was simply the odd one out of the two places
+this codebase runs a fenced command.
+
+The regression test asserts **elapsed time**, not the message, because the
+message was already right. It runs in 1.05s against a 15s bound, stable across
+8 concurrent suites.
 
 ### Types
 
@@ -290,7 +338,7 @@ Ordered by value per unit of churn, not by finding number.
 | batch | closes | why here |
 | --- | --- | --- |
 | ~~**4b-1**~~ | ~~Q-Q3, Q-A1, Q-Q2~~ | **Done.** Q-Q3 needed a design decision after all — *which* object closes a shared store — and Q-Q2 was better answered by enabling the rules than by deleting the directives. |
-| **4b-2** | Q-C5, Q-C3, Q-C4 | Coverage where it is cheapest and matters most: the fence first, then the providers using `test_bedrock_provider.py` as the template, then the three mid-range modules. Raises the floor. |
+| ~~**4b-2**~~ | ~~Q-C5, Q-C3, Q-C4~~ | **Done.** Coverage 82.3% → **87.0%**, floor raised to 86. Found and fixed a real defect on the way — see Q-Q5. |
 | **4b-3** | Q-C1 | `mcp_server.py` from 0%. Its own batch because testing a protocol boundary needs a harness of its own, and it is the most serious finding. |
 | **4b-4** | Q-Q1 | The 88 lint findings, mechanically, once the files have stopped moving. Stage the gate to zero **per rule** as each reaches zero — turning the whole set on at once makes every pre-existing finding a gate failure. |
 | **4b-5** | Q-A3, Q-C2 | `cli.py`: complexity and coverage together, since both mean touching the same functions. |

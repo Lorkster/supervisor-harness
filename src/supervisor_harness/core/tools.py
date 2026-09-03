@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -674,9 +675,36 @@ class Toolbox:
         tree_refusal = tree_wide_git(command)
         if tree_refusal is not None:
             return ToolResult("run_command", False, tree_refusal)
+        # Tokenised and run without a shell, exactly as `dod.verify_command`
+        # already runs a criterion's command. Two reasons, and the second is a
+        # defect rather than tidiness:
+        #
+        # The shell bought nothing. Every unquoted metacharacter and glob is
+        # refused above, for every agent, so by this point the command is a
+        # program and its arguments -- which is what `shell_split` calls "the
+        # whole of its meaning".
+        #
+        # And `shell=True` made `command_timeout_seconds` not a bound. The
+        # timeout kills the *shell*; on Windows `cmd /c` is a different process
+        # from the program it launched, which keeps running and holds the pipes,
+        # so `subprocess.run` blocks until the program finishes and only then
+        # reports the timeout. Measured: a 20-second sleep under a 1-second
+        # timeout returned TimeoutExpired after 20.1 seconds, and after 1.0
+        # without the shell. An agent could hold a run open for as long as it
+        # liked while the harness reported that it had stopped it.
+        argv = shell_split(command)
+        executable = shutil.which(argv[0]) if argv else None
+        if executable is None:
+            return ToolResult(
+                "run_command", False,
+                f"could not run {command!r}: {executable_name(argv[0]) if argv else command!r} "
+                "is not on PATH",
+            )
+        argv[0] = executable
+
         try:
-            completed = subprocess.run(  # noqa: S602 - explicitly enabled by policy
-                command, shell=True, cwd=str(self.workspace),
+            completed = subprocess.run(  # noqa: S603 - tokenised, no shell, allow-listed
+                argv, shell=False, cwd=str(self.workspace),
                 capture_output=True, text=True,
                 timeout=self.policy.command_timeout_seconds,
             )
