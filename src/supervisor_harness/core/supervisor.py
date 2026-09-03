@@ -33,7 +33,6 @@ from __future__ import annotations
 import asyncio
 import traceback
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,21 +40,14 @@ from ..agents.brief import (
     render_directive,
 )
 from ..agents.registry import AgentRegistry
-from ..agents.roles import ROLES_BY_ID
-from ..config import KNOWN_STAGES, HarnessConfig, Policy, load_config
+from ..config import HarnessConfig, Policy, load_config
 from ..contracts import (
     CHECKPOINT_SCHEMA,
-    DRIFT_SCHEMA,
     LESSONS_SCHEMA,
     PLANNING_SCHEMA,
     SYNTHESIS_SCHEMA,
     parse_checkpoint,
-    parse_drift,
-    parse_established,
-    parse_findings,
     parse_lessons,
-    parse_messages,
-    parse_status,
     parse_tasks,
     parse_tool_calls,
 )
@@ -64,17 +56,14 @@ from ..ids import now_iso
 from ..models import (
     ACTIVE_AGENT_STATUSES,
     BASELINE_FACT,
-    SUPERVISOR,
     AgentKind,
     AgentSpec,
     AgentStatus,
     AgentTurn,
     Backend,
-    Budget,
     Checkpoint,
     CriterionStatus,
     Decision,
-    Directive,
     DirectiveKind,
     DoDCriterion,
     DriftAssessment,
@@ -82,7 +71,6 @@ from ..models import (
     Phase,
     RunMode,
     RunState,
-    Scope,
     ScopeEnvelope,
     TaskDecision,
     TaskStatus,
@@ -94,24 +82,17 @@ from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import phases
 from .baseline import git_baseline
-from .blackboard import (
-    Blackboard,
-    answer_from_record,
-)
 from .dod import verify_criterion
 from .drift import (
-    TurnContext,
-    assess_heuristically,
-    decide_directive,
-    merge_assessments,
     should_escalate,
-    status_after,
 )
 from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
 from .journal import RunJournal
+from .lifecycle import Lifecycle
 from .packets import Packets
 from .reporting import Reporting
 from .responses import SupervisorResponse
+from .supervision import Supervision
 from .tools import Toolbox, render_results
 
 # Stage agents are ordinary agents so that planning, synthesis, the checkpoint
@@ -120,25 +101,12 @@ from .tools import Toolbox, render_results
 # reading without answering is its own kind of drift, so rounds are capped.
 MAX_TOOL_ROUNDS = 6
 
-#: How many of an agent's questions the supervisor answers in one directive.
-#: A directive an agent cannot read is not an answer, and an agent asking more
-#: than this per turn has a briefing problem rather than a question.
-MAX_QUESTIONS_PER_TURN = 3
-
 #: Bounds on what one turn's tool history carries back into the next round.
 #: Results accumulate across a turn now, so each block is capped rather than the
 #: whole history being thrown away -- the rounds are already bounded by
 #: MAX_TOOL_ROUNDS, so the total is too.
 TOOL_ECHO_CHARS = 4000
 TOOL_RESULT_CHARS = 8000
-
-STAGE_ROLES = {
-    "planner": ("planning", PLANNING_SCHEMA),
-    "synthesizer": ("synthesis", SYNTHESIS_SCHEMA),
-    "checkpointer": ("verification", CHECKPOINT_SCHEMA),
-    "improver": ("improvement", LESSONS_SCHEMA),
-}
-
 
 
 
@@ -169,6 +137,11 @@ class Supervisor:
         # is what made them separable at all -- see docs/quality-assessment.md.
         self.reporting = Reporting(self.config, self.store)
         self.packets = Packets(self.config, self.store, self.workspace, self.host)
+        self.lifecycle = Lifecycle(self.config, self.router)
+        self.supervision = Supervision(
+            self.config, self.store, self.router,
+            self.packets, self.reporting, self.lifecycle,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -273,7 +246,7 @@ class Supervisor:
                 detail={"error": "already_settled", "status": str(agent.status)},
             )
 
-        await self._abandon_agent(
+        await self.lifecycle._abandon_agent(
             session, agent, reason.strip() or "the host reported it as gone"
         )
         return await self._advance(session)
@@ -295,6 +268,10 @@ class Supervisor:
 
     def explain(self, run_id: str, agent_id: str = "") -> RunJournal:
         return self.reporting.explain(run_id, agent_id)
+
+    async def supervise_with_model(self, run_id: str, agent_id: str) -> dict[str, Any]:
+        """Public API: `supervisor drift` and the MCP tool of the same name."""
+        return await self.supervision.supervise_with_model(run_id, agent_id)
 
     async def _advance(self, session: RunSession) -> SupervisorResponse:
         """Move the run forward until it needs something from outside."""
@@ -351,14 +328,14 @@ class Supervisor:
         system, user = phases.planning_prompt(state, registry, lenses)
         stage = "planning"
 
-        if self._delegated(stage):
-            agent = await self._stage_agent(session, "planner", stage)
+        if self.lifecycle._delegated(stage):
+            agent = await self.lifecycle._stage_agent(session, "planner", stage)
             if agent is None:
                 # Planning was abandoned. The lenses the harness derives itself
                 # are a poorer plan than a model's, but they are a plan, and the
                 # findings are what the run is for: it continues on them.
                 await session.anote("planning abandoned; continuing on the derived lens plan")
-                self._spawn(session, fallback)
+                self.lifecycle._spawn(session, fallback)
                 self._transition(session, Phase.ANALYZING)
                 return None
             # The phase stays CREATED until the plan actually lands. It used to
@@ -383,7 +360,7 @@ class Supervisor:
                 packets=[packet],
             )
 
-        plan = await self._call(stage, system, user, PLANNING_SCHEMA)
+        plan = await self.supervision._call(stage, system, user, PLANNING_SCHEMA)
         self._apply_plan(session, plan, fallback, registry)
         return None
 
@@ -436,7 +413,7 @@ class Supervisor:
                 "spawned; keeping the running fleet rather than adding to it"
             )
         else:
-            self._spawn(session, specs)
+            self.lifecycle._spawn(session, specs)
 
         if state.phase is not Phase.ANALYZING:
             self._transition(session, Phase.ANALYZING)
@@ -450,10 +427,10 @@ class Supervisor:
         if not analysts:
             registry = self.packets._registry_for(session, None)
             lenses = phases.plan_lenses(state, self.config)
-            self._spawn(session, phases.build_analysis_agents(state, self.config, registry, lenses))
+            self.lifecycle._spawn(session, phases.build_analysis_agents(state, self.config, registry, lenses))
             analysts = [a for a in state.agents.values() if a.kind is AgentKind.ANALYSIS]
 
-        pending = await self._reap_unreported(
+        pending = await self.lifecycle._reap_unreported(
             session, [a for a in analysts if a.status in ACTIVE_AGENT_STATUSES]
         )
         if not pending:
@@ -482,7 +459,7 @@ class Supervisor:
         stage = "synthesis"
         system, user = phases.synthesis_prompt(state, state.mode)
 
-        if self._delegated(stage):
+        if self.lifecycle._delegated(stage):
             # Checked before ``_stage_agent`` rather than after it, which is what
             # made this dead code. ``_stage_agent`` only ever returns an agent in
             # ACTIVE_AGENT_STATUSES, so ``agent.status is DONE`` could not hold
@@ -502,7 +479,7 @@ class Supervisor:
                 return self.reporting._error(
                     session, "synthesis agent finished without producing tasks"
                 )
-            agent = await self._stage_agent(session, "synthesizer", stage)
+            agent = await self.lifecycle._stage_agent(session, "synthesizer", stage)
             if agent is None:
                 # Nothing downstream exists without synthesis: no report, no
                 # tasks. The findings stay on the log, and the run says why it
@@ -521,7 +498,7 @@ class Supervisor:
                 packets=[packet],
             )
 
-        data = await self._call(stage, system, user, SYNTHESIS_SCHEMA)
+        data = await self.supervision._call(stage, system, user, SYNTHESIS_SCHEMA)
         self._apply_synthesis(session, data)
         return None
 
@@ -625,7 +602,7 @@ class Supervisor:
 
     async def _continue_execution(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
-        active = await self._reap_unreported(session, [
+        active = await self.lifecycle._reap_unreported(session, [
             a for a in state.agents.values()
             if a.kind is AgentKind.EXECUTION and a.status in ACTIVE_AGENT_STATUSES
         ])
@@ -659,7 +636,7 @@ class Supervisor:
                 # The state's own objects, not the ones just built: a status
                 # change reaches these, and this loop drives them for the rest
                 # of the phase.
-                active = self._spawn(session, fresh)
+                active = self.lifecycle._spawn(session, fresh)
             else:
                 self._transition(session, Phase.VERIFYING)
                 return None
@@ -686,7 +663,7 @@ class Supervisor:
         # Prove what can be proven here before asking anyone to look at it.
         self._verify_mechanically(session)
 
-        active = await self._reap_unreported(session, [
+        active = await self.lifecycle._reap_unreported(session, [
             a for a in state.agents.values()
             if a.kind is AgentKind.VERIFICATION and a.status in ACTIVE_AGENT_STATUSES
         ])
@@ -717,7 +694,7 @@ class Supervisor:
                     verifier.parent_agent_id = executor.id
                 fresh.append(verifier)
             if fresh:
-                self._spawn(session, fresh)
+                self.lifecycle._spawn(session, fresh)
                 active = fresh
             else:
                 self._settle_tasks(session)
@@ -782,8 +759,8 @@ class Supervisor:
         deterministic = phases.deterministic_checkpoint(state, self.config.policy, iteration)
         stage = "verification"
 
-        if self._delegated(stage):
-            agent = await self._stage_agent(session, "checkpointer", stage)
+        if self.lifecycle._delegated(stage):
+            agent = await self.lifecycle._stage_agent(session, "checkpointer", stage)
             if agent is None:
                 # The judged half of the checkpoint is gone, but the mechanical
                 # half was computed here and stands on its own: the run is scored
@@ -811,7 +788,7 @@ class Supervisor:
             )
 
         system, user = phases.checkpoint_prompt(state, deterministic)
-        data = await self._call(stage, system, user, CHECKPOINT_SCHEMA)
+        data = await self.supervision._call(stage, system, user, CHECKPOINT_SCHEMA)
         judged = parse_checkpoint(data, state.id, iteration)
         await self._apply_checkpoint(session, deterministic, judged)
         return None
@@ -863,7 +840,7 @@ class Supervisor:
         for agent in state.agents.values():
             if agent.kind in (AgentKind.EXECUTION, AgentKind.VERIFICATION):
                 if agent.status in ACTIVE_AGENT_STATUSES:
-                    await self._set_status(session, agent, AgentStatus.STOPPED)
+                    await self.lifecycle._set_status(session, agent, AgentStatus.STOPPED)
         return count
 
     # -- improvement ---------------------------------------------------
@@ -885,8 +862,8 @@ class Supervisor:
         if already_ran:
             return self.reporting._complete(session)
 
-        if self._delegated(stage):
-            agent = await self._stage_agent(session, "improver", stage)
+        if self.lifecycle._delegated(stage):
+            agent = await self.lifecycle._stage_agent(session, "improver", stage)
             if agent is None:
                 # Same rule as a failed learning pass: never end a run badly over
                 # the lessons it did not get to write down.
@@ -904,7 +881,7 @@ class Supervisor:
 
         system, user = phases.lessons_prompt(state, checkpoint)
         try:
-            data = await self._call(stage, system, user, LESSONS_SCHEMA)
+            data = await self.supervision._call(stage, system, user, LESSONS_SCHEMA)
         except Exception as exc:  # noqa: BLE001 - never fail a run over the learning pass
             await session.anote(f"improvement stage skipped: {exc}")
             return self.reporting._complete(session)
@@ -974,22 +951,22 @@ class Supervisor:
             # agent whose whole job is judgement produced no turn event at all:
             # its reasoning, self-assessment, blocked_on and usage reached
             # nothing, and it was the only agent in a run with no drift score.
-            await self._assess_drift(session, agent, await self._record_turn(session, agent, payload))
+            await self.supervision._assess_drift(session, agent, await self.supervision._record_turn(session, agent, payload))
             return await self._report_verification(session, agent, payload)
 
-        turn = await self._record_turn(session, agent, payload)
-        directive = await self._supervise(session, agent, turn)
+        turn = await self.supervision._record_turn(session, agent, payload)
+        directive = await self.supervision._supervise(session, agent, turn)
 
         # The same second opinion the autonomous loop takes. Skipped only when
         # the drift stage is itself host-routed, since the harness cannot then
         # run it without asking the host for another round trip.
-        if not self._delegated("drift") and should_escalate(
+        if not self.lifecycle._delegated("drift") and should_escalate(
             session.state.drift.get(agent.id, DriftAssessment()),
             self.config.policy,
             max(0, turn.seq - 1),
         ):
             try:
-                await self.supervise_with_model(session.state.id, agent.id)
+                await self.supervision.supervise_with_model(session.state.id, agent.id)
             except Exception:  # noqa: BLE001 - a failed second opinion is not fatal
                 pass
 
@@ -998,7 +975,7 @@ class Supervisor:
         ):
             self._mark_task_awaiting_verification(session, agent, payload)
 
-        return self._after_directive(session, agent, directive)
+        return self.supervision._after_directive(session, agent, directive)
 
     @staticmethod
     def _stale_report_reason(state: RunState, agent: AgentSpec) -> str | None:
@@ -1027,306 +1004,12 @@ class Supervisor:
             )
         return None
 
-    async def _record_turn(
-        self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
-    ) -> AgentTurn:
-        state = session.state
-        seq = state.turn_counts.get(agent.id, 0) + 1
-        lens = agent.role
 
-        turn = AgentTurn(
-            run_id=state.id,
-            agent_id=agent.id,
-            seq=seq,
-            reasoning=str(payload.get("reasoning", "")),
-            output=str(payload.get("output", "")),
-            findings=parse_findings(payload, agent.id, lens),
-            artifacts=[str(a) for a in (payload.get("artifacts") or [])],
-            files_touched=[
-                str(f) for f in (payload.get("files_touched") or payload.get("files_examined") or [])
-            ],
-            messages=parse_messages(payload, state.id, agent.id),
-            claimed_status=parse_status(payload.get("status")),
-            self_assessment=str(payload.get("self_assessment", "")),
-            blocked_on=str(payload.get("blocked_on", "")),
-            open_questions=[
-                str(q).strip() for q in (payload.get("open_questions") or []) if str(q).strip()
-            ],
-            usage=self.reporting._usage_from(payload),
-        )
 
-        # Only analysis agents establish facts for the run. An execution agent
-        # reports what it changed, which its turn and its findings already
-        # carry; a verifier writing into the record it is judging against is the
-        # conflict of interest batch 7 was about, in a different costume.
-        established = (
-            parse_established(payload, agent)
-            if agent.kind is AgentKind.ANALYSIS else []
-        )
 
-        # One batch, one lock acquisition, one fsync. This was an `emit` per
-        # event -- the turn, then every finding on it, then every message it
-        # routed -- and each of those takes the log's advisory lock and syncs to
-        # disk while the event loop waits. A turn carrying eight findings paid
-        # for nine of them, and parallel autonomous agents queue behind each
-        # other for every one.
-        events: list[tuple[EventType, dict[str, Any], str]] = [
-            (EventType.TURN_RECORDED, {"turn": to_jsonable(turn)}, agent.id)
-        ]
-        events += [
-            (EventType.FINDING_ADDED, {"finding": to_jsonable(finding)}, agent.id)
-            for finding in turn.findings
-        ]
-        events += [
-            (EventType.FACT_ESTABLISHED, {"fact": to_jsonable(fact)}, agent.id)
-            for fact in established
-        ]
-        events += self._message_events(session, turn)
-        await session.aemit_many(events)
-        return turn
 
-    def _message_events(
-        self, session: RunSession, turn: AgentTurn
-    ) -> list[tuple[EventType, dict[str, Any], str]]:
-        """The MESSAGE_SENT events this turn routes, ready to batch.
 
-        Routing is a pure decision over run state; the blackboard holds no
-        per-run memory any more, so a fresh one is equivalent to a cached one,
-        and deciding before emitting rather than while emitting is what lets the
-        whole turn go to disk under one lock.
-        """
-        board = Blackboard(session.state.id)
-        out: list[tuple[EventType, dict[str, Any], str]] = []
-        for message in turn.messages:
-            routing = board.route(message, session.state)
-            out.append((
-                EventType.MESSAGE_SENT,
-                {"message": to_jsonable(routing.message), "deliver_to": routing.deliver_to,
-                 "escalated": routing.escalate},
-                turn.agent_id,
-            ))
-        return out
 
-    async def _answer_questions(
-        self, session: RunSession, agent: AgentSpec, directive: Directive
-    ) -> Directive:
-        """Answer this agent's questions to the supervisor, from the run's record.
-
-        ``Blackboard.route`` has always accepted a message addressed to the
-        supervisor, flagged it, and stored it -- and nothing ever read it. An
-        agent could ask, and the question went nowhere: `supervisor_inbox` had no
-        caller and `DirectiveKind.ANSWER` was constructed by no code path, while
-        sitting in ``CONTINUATION_DIRECTIVES`` waiting to be. The agent's only
-        other options were to guess or to escalate, and escalating ends it.
-
-        What the supervisor answers with is the run's own record --
-        :func:`answer_from_record` -- because that is the whole of what it knows.
-        A question the record does not cover is said to be uncovered rather than
-        guessed at; the agent keeps working and is told to record the uncertainty
-        where the checkpoint will see it.
-
-        The answer never displaces a correction. It changes the directive's
-        *kind* only when the assessment said CONTINUE, which is the case where a
-        pending question is the most useful thing to address; otherwise it rides
-        along in the corrections, so a drifting agent is still corrected and
-        still gets its answer.
-        """
-        questions = Blackboard.questions_for_supervisor(agent.id, session.state)
-        if not questions:
-            return directive
-
-        answered: list[str] = []
-        for question in questions[:MAX_QUESTIONS_PER_TURN]:
-            found = answer_from_record(question, agent, session.state)
-            asked = question.subject or question.content[:120]
-            if found:
-                answered.append(f"On your question ({asked}): " + " ".join(found))
-            else:
-                answered.append(
-                    f"On your question ({asked}): the run's record does not cover it. "
-                    "Proceed on your stated scope and put what you could not "
-                    "establish in self_assessment."
-                )
-                await session.anote(
-                    "an agent asked something the run's record could not answer",
-                    actor=agent.id,
-                    question=asked,
-                )
-
-        # Marked answered so the next turn does not answer them again.
-        await session.aemit(
-            EventType.MESSAGE_DELIVERED,
-            {"message_ids": [q.id for q in questions[:MAX_QUESTIONS_PER_TURN]],
-             "agent_id": SUPERVISOR},
-        )
-
-        directive.corrections = [*answered, *directive.corrections]
-        if directive.kind is DirectiveKind.CONTINUE:
-            directive.kind = DirectiveKind.ANSWER
-            directive.rationale = (
-                "Answered from the run's own record. " + (directive.rationale or "")
-            ).strip()
-        return directive
-
-    async def _assess_drift(
-        self, session: RunSession, agent: AgentSpec, turn: AgentTurn
-    ) -> DriftAssessment:
-        """Score one turn against the brief the agent was given, and record it.
-
-        Separate from :meth:`_supervise` because a verification turn wants this
-        half and not the other. A verifier is settled by its own verdict, so
-        issuing it a directive would compute an instruction nothing acts on --
-        the pattern this codebase keeps finding and removing. It still gets
-        assessed: a verifier judging things outside the task it was handed is
-        exactly the drift worth catching, and it was the one agent in a run with
-        no assessment at all.
-        """
-        state = session.state
-        turns_used = state.turn_counts.get(agent.id, 0)
-        ctx = TurnContext(
-            agent=agent,
-            turn=turn,
-            previous_turns=self.packets._previous_turns(session, agent.id, before=turn.id),
-            brief=state.briefs.get(agent.id) or agent.brief,
-            task_prompt=state.prompt,
-            turn_index=max(0, turns_used - 1),
-            # The run records the workspace it was created against; this
-            # process's own may be a resumed cwd that the agents never saw.
-            workspace=str(state.workspace),
-        )
-        assessment = assess_heuristically(ctx)
-        # Which turn was judged. `RunState.drift` is keyed by agent, so it keeps
-        # only this agent's newest assessment; the log keeps them all, and the
-        # journal needs to know which turn each one was about.
-        assessment.turn_id = turn.id
-        await session.aemit(
-            EventType.DRIFT_ASSESSED,
-            {"agent_id": agent.id, "assessment": to_jsonable(assessment)},
-        )
-        return assessment
-
-    async def _supervise(self, session: RunSession, agent: AgentSpec, turn: AgentTurn) -> Directive:
-        """Assess the turn and issue the directive that governs the next one."""
-        state = session.state
-        turns_used = state.turn_counts.get(agent.id, 0)
-        assessment = await self._assess_drift(session, agent, turn)
-
-        inbox = Blackboard.inbox_for(agent.id, state)
-        prior_corrections = sum(
-            1 for d in state.directives
-            if d.agent_id == agent.id
-            and d.kind in (DirectiveKind.REFOCUS, DirectiveKind.NARROW, DirectiveKind.REJECT)
-        )
-        directive = decide_directive(
-            assessment, agent, turn, self.config.policy, turns_used,
-            inbox=inbox, prior_corrections=prior_corrections,
-            # What the agent has spent so far, including the turn just recorded.
-            # Without it only the turn ceiling was ever checked.
-            usage=state.usage.get(agent.id),
-        )
-        directive = await self._answer_questions(session, agent, directive)
-        # The turn this answers, so "why was this directive issued" is a lookup
-        # rather than an inference from the order events were appended in.
-        directive.turn_id = turn.id
-        await session.aemit(EventType.DIRECTIVE_ISSUED, {"directive": to_jsonable(directive)})
-        if inbox:
-            await session.aemit(
-                EventType.MESSAGE_DELIVERED,
-                {"message_ids": [m.id for m in inbox], "agent_id": agent.id},
-            )
-
-        # A terminal directive ends the agent on both backends, so the reason it
-        # ended belongs on the log rather than only in the response the host is
-        # handed.
-        status = status_after(directive)
-        if status not in ACTIVE_AGENT_STATUSES:
-            await session.anote(
-                f"agent `{agent.id}` finished ({directive.kind.value}): "
-                f"{directive.rationale or 'no rationale given'}",
-                actor=agent.id,
-            )
-        await self._set_status(session, agent, status)
-        return directive
-
-    async def supervise_with_model(
-        self, run_id: str, agent_id: str
-    ) -> dict[str, Any]:
-        """Escalate the last turn's drift assessment to the drift-stage model.
-
-        Exposed separately so the host can decide to pay for a second opinion,
-        and so autonomous runs can escalate inline.
-        """
-        session = self.store.open(run_id)
-        state = session.state
-        agent = state.agents.get(agent_id)
-        heuristic = state.drift.get(agent_id)
-        if agent is None or heuristic is None:
-            return {"error": "no assessment to escalate"}
-
-        turns = self.packets._previous_turns(session, agent_id)
-        if not turns:
-            return {"error": "no turns recorded"}
-        last = turns[-1]
-
-        system = (
-            "You supervise agents for scope drift. Decide whether the agent is still "
-            "doing the job it was briefed to do. Judge the substance, not the tone: an "
-            "agent working carefully on the wrong thing is drifting; an agent working "
-            "roughly on the right thing is not."
-        )
-        user = (
-            "# The agent's objectives\n" + "\n".join(f"- {o}" for o in agent.objectives)
-            + "\n\n# Explicitly out of scope\n"
-            + ("\n".join(f"- {o}" for o in agent.scope.out_of_scope) or "(nothing listed)")
-            + f"\n\n# The overall task\n{state.prompt}"
-            + f"\n\n# What the agent just reported\n{last.output[:4000]}"
-            + "\n\n# Mechanical signals already detected\n"
-            + ("\n".join(f"- {s.kind}: {s.detail}" for s in heuristic.signals) or "(none)")
-        )
-        data = await self._call("drift", system, user, DRIFT_SCHEMA)
-        model_view = parse_drift(data, checked_by=self.router.binding("drift").ref())
-        merged = merge_assessments(heuristic, model_view)
-        # A second opinion on the same turn, not on a new one.
-        merged.turn_id = heuristic.turn_id or last.id
-        await session.aemit(
-            EventType.DRIFT_ASSESSED,
-            {"agent_id": agent_id, "assessment": to_jsonable(merged)},
-        )
-        session.sync_index()
-        return to_jsonable(merged)
-
-    def _after_directive(
-        self, session: RunSession, agent: AgentSpec, directive: Directive
-    ) -> SupervisorResponse:
-        """Either hand the agent a continuation packet, or let the phase move on."""
-        state = session.state
-        response = SupervisorResponse(
-            run_id=state.id,
-            phase=str(state.phase),
-            action="await_reports",
-            directive=to_jsonable(directive),
-            message=directive.rationale,
-        )
-
-        if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP, DirectiveKind.ESCALATE):
-            remaining = [a for a in state.agents.values()
-                         if a.kind is agent.kind and a.status in ACTIVE_AGENT_STATUSES]
-            response.message = (
-                f"Agent `{agent.id}` finished ({directive.kind.value}). "
-                + (f"{len(remaining)} agent(s) still running."
-                   if remaining else "Call supervisor_advance to continue the run.")
-            )
-            response.detail = {"agents_remaining": len(remaining)}
-            return response
-
-        packet = self.packets._agent_packet(session, agent, directive=directive)
-        response.action = "dispatch"
-        response.packets = [packet]
-        response.message = (
-            f"Agent `{agent.id}`: {directive.kind.value}. Run the continuation packet "
-            "and report again."
-        )
-        return response
 
     def _mark_task_awaiting_verification(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
@@ -1409,7 +1092,7 @@ class Supervisor:
             )
             applied += 1
 
-        await self._set_status(session, agent, AgentStatus.DONE)
+        await self.lifecycle._set_status(session, agent, AgentStatus.DONE)
         # This used to re-fetch the task from state, because emitting replaced
         # the object the caller held and the criterion verdicts above landed on
         # the replacement. The fold updates in place now, so `task` is that
@@ -1447,7 +1130,7 @@ class Supervisor:
             ))},
             actor=agent.id,
         )
-        await self._set_status(session, agent, AgentStatus.DONE)
+        await self.lifecycle._set_status(session, agent, AgentStatus.DONE)
 
         if agent.role == "planner":
             registry = self.packets._registry_for(session, None)
@@ -1566,7 +1249,7 @@ class Supervisor:
                     traceback.format_exception(type(result), result, result.__traceback__)
                 )[-2000:],
             )
-            await self._set_status(session, agent, AgentStatus.FAILED)
+            await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
 
     async def _drive_agent(self, session: RunSession, agent: AgentSpec) -> None:
         """Run one agent to completion against its bound model.
@@ -1609,7 +1292,7 @@ class Supervisor:
 
                 try:
                     response = await self.router.complete(
-                        self._stage_for(agent),
+                        self.lifecycle._stage_for(agent),
                         CompletionRequest(
                             messages=turn_history,
                             system="You are a supervised agent. Answer only with the JSON "
@@ -1621,7 +1304,7 @@ class Supervisor:
                     )
                 except Exception as exc:  # noqa: BLE001 - one agent must not kill the run
                     await session.anote(f"agent failed: {exc}", actor=agent.id)
-                    await self._set_status(session, agent, AgentStatus.FAILED)
+                    await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
                     return
 
                 payload = response.json(required=False)
@@ -1659,19 +1342,19 @@ class Supervisor:
                 )
 
             if payload is None:
-                await self._set_status(session, agent, AgentStatus.FAILED)
+                await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
                 return
 
             if agent.kind is AgentKind.VERIFICATION:
                 # Same as the host path: the turn is recorded and assessed
                 # before the verdict is applied, so a verifier's work is visible
                 # on both backends rather than on neither.
-                await self._assess_drift(session, agent, await self._record_turn(session, agent, payload))
+                await self.supervision._assess_drift(session, agent, await self.supervision._record_turn(session, agent, payload))
                 await self._report_verification(session, agent, payload)
                 return
 
-            turn = await self._record_turn(session, agent, payload)
-            directive = await self._supervise(session, agent, turn)
+            turn = await self.supervision._record_turn(session, agent, payload)
+            directive = await self.supervision._supervise(session, agent, turn)
 
             if should_escalate(
                 session.state.drift.get(agent.id, DriftAssessment()),
@@ -1679,7 +1362,7 @@ class Supervisor:
                 turn.seq - 1,
             ):
                 try:
-                    await self.supervise_with_model(session.state.id, agent.id)
+                    await self.supervision.supervise_with_model(session.state.id, agent.id)
                 except Exception:  # noqa: BLE001 - a failed second opinion is not fatal
                     pass
 
@@ -1705,7 +1388,7 @@ class Supervisor:
             f"({turns_used}/{agent.budget.max_turns}) without a terminal directive",
             actor=agent.id,
         )
-        await self._set_status(session, agent, AgentStatus.STOPPED)
+        await self.lifecycle._set_status(session, agent, AgentStatus.STOPPED)
 
     async def run(
         self,
@@ -1722,7 +1405,7 @@ class Supervisor:
         A stage routed to the host is rejected before the run is created: there
         is no host here to execute the packet it would produce.
         """
-        delegated = self._host_routed_stages()
+        delegated = self.lifecycle._host_routed_stages()
         if delegated:
             raise ValueError(
                 "an autonomous run needs every stage routed to a model provider; "
@@ -1743,7 +1426,7 @@ class Supervisor:
                 # Nothing here runs a host packet. Advancing again would re-enter
                 # the same phase, emit the same agents and briefs, and never
                 # terminate -- so the run ends here, naming the phase and cause.
-                delegated = self._host_routed_stages()
+                delegated = self.lifecycle._host_routed_stages()
                 session = self.store.open(response.run_id)
                 return self.reporting._error(
                     session,
@@ -1759,33 +1442,9 @@ class Supervisor:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _delegated(self, stage: str) -> bool:
-        return self.router.is_host(stage)
 
-    def _host_routed_stages(self) -> list[str]:
-        """Every configured stage that resolves to the host provider."""
-        return sorted(
-            stage for stage in set(self.config.routing) | set(KNOWN_STAGES)
-            if self._delegated(stage)
-        )
 
-    def _stage_for(self, agent: AgentSpec) -> str:
-        role = ROLES_BY_ID.get(agent.role)
-        return role.stage if role else STAGE_ROLES.get(agent.role, ("default", None))[0]
 
-    async def _call(
-        self, stage: str, system: str, user: str, schema: dict[str, Any]
-    ) -> dict[str, Any]:
-        response = await self.router.complete(
-            stage,
-            CompletionRequest(
-                system=system,
-                messages=[ChatMessage("user", user)],
-                json_schema=schema,
-                max_tokens=8192,
-            ),
-        )
-        return response.json()
 
 
     def _check_resume_fidelity(self, session: RunSession) -> None:
@@ -1848,151 +1507,12 @@ class Supervisor:
             )
         )
 
-    def _ceilings(self, state: RunState, spec: AgentSpec) -> list[Ceiling | None]:
-        """Every bound above one agent, outermost first.
 
-        The run's envelope always. The task's scope when the agent exists to
-        work on a task, which is what stops a verifier being fenced more loosely
-        than the work it judges. The spawning agent's scope where one is named,
-        so authority attenuates along the chain rather than being reissued at
-        full strength at each link.
-        """
-        task = state.tasks.get(spec.task_id or "")
-        parent = state.agents.get(spec.parent_agent_id or "")
-        return [
-            Ceiling.of("run envelope", effective(state.envelope)),
-            Ceiling.of("task scope", task.scope if task is not None else None),
-            Ceiling.of(
-                f"scope of `{parent.id}`" if parent is not None else "spawner scope",
-                parent.scope if parent is not None else None,
-            ),
-        ]
 
-    def _spawn(self, session: RunSession, specs: list[AgentSpec]) -> list[AgentSpec]:
-        """Record each agent on the log, and hand back the state's own objects.
 
-        The specs passed in are built from a plan; the ones in ``RunState`` are
-        what the fold produced from the event. They used to be different objects,
-        so a caller that kept driving the list it had built was driving copies
-        that no status change would ever reach. Returning the state's own removes
-        the question.
 
-        Attenuation happens here, at the one place every agent in the run passes
-        through, rather than in each of the four builders. A builder that forgets
-        is then a builder that proposes too much, not one that grants too much --
-        which is the difference between a fence with a hole in it and a fence.
-        """
-        for spec in specs:
-            narrowed, notes = attenuate(spec.scope, self._ceilings(session.state, spec))
-            if not notes:
-                continue
-            spec.scope = narrowed
-            for text in notes:
-                session.note(text, actor=spec.id, role=spec.role, kind=str(spec.kind))
 
-        session.emit_many([
-            (EventType.AGENT_SPAWNED, {"agent": to_jsonable(spec)}, "supervisor")
-            for spec in specs
-        ])
-        return [session.state.agents[spec.id] for spec in specs]
 
-    async def _set_status(self, session: RunSession, agent: AgentSpec, status: AgentStatus) -> None:
-        if agent.status is status:
-            return
-        await session.aemit(EventType.AGENT_STATUS, {"agent_id": agent.id, "status": str(status)})
-
-    async def _abandon_agent(self, session: RunSession, agent: AgentSpec, reason: str) -> None:
-        """End an agent that will never report, naming it and the cause on the log.
-
-        The same convention budget exhaustion and escalation already follow: a
-        terminal transition is not just a status change, it is a note saying
-        which agent ended and why.
-        """
-        await session.anote(
-            f"agent `{agent.id}` abandoned: {reason}",
-            actor=agent.id,
-            role=agent.role,
-            kind=str(agent.kind),
-            task_id=agent.task_id or "",
-        )
-        await self._set_status(session, agent, AgentStatus.FAILED)
-
-    def _abandonment_reason(self, agent: AgentSpec) -> str | None:
-        """Why this agent should be given up on, or ``None`` to keep waiting."""
-        policy = self.config.policy
-        limit = policy.max_unreported_dispatches
-        if limit > 0 and agent.unreported_dispatches >= limit:
-            return (
-                f"handed {agent.unreported_dispatches} packet(s) with no report back "
-                f"({limit} allowed before the supervisor gives up)"
-            )
-
-        timeout = policy.agent_timeout_seconds
-        elapsed = _seconds_since(agent.unreported_since)
-        if timeout > 0 and elapsed is not None and elapsed >= timeout:
-            return (
-                f"no report {elapsed:.0f}s after its packet went out "
-                f"(bound {timeout:.0f}s)"
-            )
-        return None
-
-    async def _reap_unreported(
-        self, session: RunSession, agents: list[AgentSpec]
-    ) -> list[AgentSpec]:
-        """Abandon the agents that are past their bound; return the rest.
-
-        Only the host path needs this. An agent the harness drives itself either
-        answers, raises or runs out of turns, and every one of those already ends
-        it; a host agent has none of those paths, so silence is all there is.
-        """
-        if session.state.backend is Backend.AUTONOMOUS:
-            return agents
-        alive: list[AgentSpec] = []
-        for agent in agents:
-            reason = self._abandonment_reason(agent)
-            if reason is None:
-                alive.append(agent)
-            else:
-                await self._abandon_agent(session, agent, reason)
-        return alive
-
-    async def _stage_agent(
-        self, session: RunSession, role: str, stage: str
-    ) -> AgentSpec | None:
-        """Find or create the pseudo-agent that carries out a supervisory stage.
-
-        ``None`` means the stage has been given up on: either this call abandoned
-        an agent that was past its bound, or an earlier one did. A replacement is
-        deliberately not spawned -- it would put the same packet back on every
-        advance for as long as the host cannot run it, which is the loop the
-        bound exists to break. Each caller decides what its stage does without an
-        answer.
-        """
-        state = session.state
-        existing = [a for a in state.agents.values() if a.role == role]
-        for agent in existing:
-            if agent.status not in ACTIVE_AGENT_STATUSES:
-                continue
-            reason = self._abandonment_reason(agent)
-            if reason is None:
-                return agent
-            await self._abandon_agent(session, agent, reason)
-            return None
-        if any(a.status is AgentStatus.FAILED for a in existing):
-            return None
-        spec = AgentSpec(
-            run_id=state.id,
-            role=role,
-            kind=AgentKind.SYNTHESIS,
-            title=role.capitalize(),
-            brief=f"{role} stage",
-            binding=self.config.binding_for(stage),
-            backend=state.backend,
-            budget=Budget(max_turns=1),
-            scope=Scope(),
-        )
-        self._spawn(session, [spec])
-        return session.state.agents[spec.id]
 
 
 
@@ -2017,19 +1537,6 @@ class Supervisor:
 # --------------------------------------------------------------------------
 # Decision helpers
 # --------------------------------------------------------------------------
-
-
-def _seconds_since(ts: str) -> float | None:
-    """Seconds elapsed since an event timestamp, or ``None`` if it is unusable."""
-    if not ts:
-        return None
-    try:
-        when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - when).total_seconds()
 
 
 def corrections_for_task(

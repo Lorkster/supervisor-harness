@@ -263,57 +263,108 @@ The user chose **split by layer**. What that turned out to mean is worth
 recording, because the coupling was measured before anything moved rather than
 assumed.
 
-Each candidate layer was scored by what it calls outside itself:
+### The measurement, and why it was done twice
 
-| layer | methods | lines | needs | calls out |
-| --- | ---: | ---: | --- | --- |
-| reporting | 8 | 211 | `config`, `store` | **none** |
-| packets | 9 | 199 | `config`, `store`, `workspace`, `host` | **none** |
-| agents | 13 | 329 | `config`, `router`, `toolbox` | 7, all into *supervise* |
-| supervise | 11 | 455 | `config`, `router`, `store` | 12, into *agents*, *packets*, *reporting* and the phase machine |
+Each candidate layer was scored by what it calls outside itself. The first pass,
+against the undivided module:
 
-**Two layers were real and came out whole:** `core/reporting.py` and
-`core/packets.py` called *nothing* outward, which is what made lifting them safe
-rather than hopeful. `core/responses.py` followed, because `reporting` needed to
-construct a `SupervisorResponse` and importing it from the module that imports
-*it* would have been a cycle — the same shape as Q-A1, one level down.
+| layer | lines | calls out |
+| --- | ---: | --- |
+| reporting | 211 | **none** |
+| packets | 199 | **none** |
+| agents | 329 | 7, all into *supervise* |
+| supervise | 455 | 12, into *agents*, *packets*, *reporting* and the phase machine |
 
-**The other two are genuinely entangled**, and the numbers say why: `supervise`
-calls back into the phase machine (`_report_stage` drives `_advance`,
-`_apply_plan`, `_apply_synthesis`), and `agents` calls into `supervise`. Cutting
-either out requires handing it a reference to the supervisor — which is option 1
-from the table above, *"a god object by another name"*, the option this document
-rejected. It was not done, and the reason is measurement rather than fatigue.
+On that reading only the first two looked separable, and the batch stopped
+there. **Re-measuring after they were out changed the answer**, which is the
+lesson worth keeping: five of `supervise`'s twelve outward calls had been into
+`packets` and `reporting`, and once those were collaborators rather than
+siblings, the count fell to **two** — `_call` and `_set_status`.
 
-`core/supervisor.py` is **2,591 → 2,145 lines**. That is a real reduction and it
-is not the whole of what "impossible to maintain" was about. What remains is a
-phase machine and the supervision loop that answers to it, which is one
-cohesive thing with a genuinely circular call graph — not a pile of unrelated
-code that happened to share a file.
+| layer (second pass) | lines | calls out |
+| --- | ---: | --- |
+| lifecycle | 150 | **none** |
+| supervision | 294 | 2 — `_call`, `_set_status` |
+| driver | 179 | 8, into everything |
 
-**Where the remaining size actually is**, for whoever picks this up: the
-complexity is not here (finding Q-A2 — `core/supervisor.py` has 3 complexity
-findings; `store/events.py` has a 123-statement, 48-branch function). Attacking
-Q-A2 is likely worth more than forcing the last two layers apart.
+Both blockers were small enough to be given a home rather than a dependency.
+`_call` is thirteen lines wrapping the router, and moved *into* supervision,
+which owns the router; the phase machine now borrows it. `_set_status` is four
+lines and moved to `Lifecycle`, the one collaborator supervision keeps.
+
+**Coupling is not a fixed property of a module — it is a property of a module
+and its current neighbours.** Measuring once and concluding would have stopped
+this at half.
+
+### What came out
+
+`core/supervisor.py` is **2,591 → 1,652 lines**, a 36% reduction, with five
+modules beside it: `reporting` (270), `packets` (276), `lifecycle` (226),
+`supervision` (391) and `responses` (58).
+
+`responses.py` exists because `reporting` constructs a `SupervisorResponse`, and
+importing that from the module which imports *it* would have been a cycle — the
+same shape as Q-A1, one level down.
+
+### What did not come out, and why
+
+The **driver** — `_drive_agent`, `_run_agents_autonomously` — makes eight
+outward calls and is the orchestrator: it runs an agent's turns and hands each
+to supervision, the phase machine and the lifecycle in turn. Extracting it means
+handing it a reference to the supervisor, which is option 1 above, *"a god object
+by another name"*, and this document rejected that.
+
+The **phase machine** stays by definition: it is what the layers are layers of.
+`_report_stage` and `_report_verification` stay with it rather than with
+supervision, because they settle a task and drive `_advance`, `_apply_plan` and
+`_apply_synthesis`. That boundary is what let supervision come out at all —
+*supervising a turn* and *deciding what the run does next* turned out to be two
+things.
+
+**Where the remaining size actually hurts is not here.** Finding Q-A2:
+`core/supervisor.py` holds 3 complexity findings, while `store/events.py` has a
+123-statement, 48-branch function. Attacking Q-A2 is worth more than forcing the
+driver out.
 
 ### How "no behaviour change" was established
 
-Not asserted — checked. The moved methods were copied as **text**, and
-**16 of the 17 are byte-identical** to the ones they replaced, verified by
-parsing both trees and comparing source spans.
+Not asserted — checked. The methods were copied as **text**, and of the 35
+moved, **29 are byte-identical** to the ones they replaced, verified by parsing
+both trees and comparing source spans. The six that differ do so in ways that
+were each inspected line by line:
 
-The seventeenth is `status`, and the exception is recorded rather than smoothed
-over: one expression in it was 104 characters under the project's line limit and
-could not be folded in place, because it was an implicit concatenation of two
-f-strings and splitting the first across lines is a syntax error before 3.12. It
-became `_dod_summary`. Nothing in the suite asserted the string it produces, so
-`tests/test_reporting.py` was written for it and sabotage-checked two ways.
+- **Five differ by exactly one line each**, and in every case it is the same
+  mechanical change: a call that used to be `self._x(...)` is now
+  `self.packets._x(...)`, `self.reporting._x(...)` or `self.lifecycle._x(...)`.
+  Same call, same arguments.
+- **`status` differs by one expression.** It was 104 characters under the
+  project's line limit and could not be folded in place: an implicit
+  concatenation of two f-strings, where splitting the first across lines is a
+  syntax error before 3.12. It became `_dod_summary`. Nothing in the suite
+  asserted the string it produces, so `tests/test_reporting.py` was written for
+  it and sabotage-checked two ways.
+- One module-level function, `_seconds_since`, has `timezone.utc` rewritten to
+  `UTC` by ruff's `UP017` autofix as it landed in a new file. `datetime.UTC is
+  timezone.utc` is `True`, so this is the same object under a shorter name.
 
-**Two tests changed, and neither assertion did.** Both named a moved method by
-its old address (`Supervisor._outstanding_directive`, `Supervisor._previous_turns`)
-as an unbound function. One of them also had to be *widened*: it scanned
-`inspect.getsource(Supervisor)` for a reintroduced log rescan, and after the
-split that scan would have silently stopped covering the methods that moved.
+**Seven tests changed, and no assertion did.** Every one named a moved method by
+its old address — `Supervisor._spawn`, `Supervisor._record_turn`,
+`Supervisor._outstanding_directive` and so on. The rule that a changed test
+signals moved behaviour is a good one, and this is the case it does not cover:
+the function is the same function, and the byte-identity check above is what
+distinguishes the two.
+
+**Two of those tests had to be *widened* rather than repointed, and both are the
+same trap.** One scanned `inspect.getsource(Supervisor)` for a reintroduced
+full-log rescan; the other searched `vars(Supervisor)` for whatever builds a
+`TurnContext`. After the split each would have covered nothing — and the first
+would still have *passed*. The second failed loudly, which is the only reason
+the pattern was noticed at all. Both now scan every class the path is split
+across.
+
+That is the real risk of this refactor, and it is not the one the plan named: not
+that behaviour moves, but that a **structural guard scoped to a filename keeps
+passing while guarding nothing**.
 
 ### The invariant that had to survive
 
@@ -508,7 +559,7 @@ moves have a reason beyond preference.
 | 1 | **3a** — the paradigm document | Cheap, independent, overdue, and it is what a new reader currently gets wrong. **Done** — see below. |
 | 2 | **1b** — the Bedrock optional extra | Small, independent, closes issue #31 — and it lands *before* the assessment so the assessment covers the module set being kept. **Done** — see §1b. |
 | 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. **Done** — [`quality-assessment.md`](quality-assessment.md). |
-| 4 | **2 (9c)** — the split | **Done** — split by layer; see §2. Two layers came out whole, two are measurably entangled. |
+| 4 | **2 (9c)** — the split | **Done** — split by layer; see §2. Four layers out, 2,591 → 1,652 lines. |
 | 5 | **4b** — close the remaining findings in batches | Against the settled layout, so cleanup diffs are not written into `core/supervisor.py` and immediately moved again. |
 | 6 | **3b** — the diagrams | Last, unchanged: diagrams that name modules go stale the moment the modules move. |
 

@@ -136,9 +136,9 @@ cycle. `tests/test_architecture.py` now executes criteria 1 and 3 directly, so
 thing worth having before a split.
 
 **Q-A2 · Complexity is concentrated outside the module scheduled for splitting.**
-*(Confirmed by the split: `core/supervisor.py` is now 2,145 lines and still holds
-only 3 complexity findings. Splitting it did not touch the complexity, exactly as
-this finding predicted.)*
+*(Confirmed by the split: `core/supervisor.py` is now 1,652 lines and still holds
+its complexity findings. Splitting it did not touch the complexity, exactly as
+this finding predicted — the two are independent problems.)*
 The table above. `store/events.py`'s fold at 48 branches is the extreme; the
 journal builder, the final-report renderer and `cli.py`'s largest command follow.
 None of these is in `core/supervisor.py`.

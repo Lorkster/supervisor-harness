@@ -18,9 +18,11 @@ import pytest
 from supervisor_harness.config import Policy, load_config
 from supervisor_harness.core.dod import verify_command
 from supervisor_harness.core.drift import TurnContext, assess_heuristically
+from supervisor_harness.core.lifecycle import Lifecycle
 from supervisor_harness.core.packets import Packets
 from supervisor_harness.core.paths import normalise_path, path_matches
 from supervisor_harness.core.reporting import Reporting
+from supervisor_harness.core.supervision import Supervision
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.core.tools import Toolbox, available_tools
 from supervisor_harness.models import (
@@ -232,16 +234,20 @@ def test_the_turn_context_is_built_from_the_workspace_recorded_on_the_run() -> N
     ``self.workspace`` is the right answer at run *creation*, where the process's
     own workspace is the one being recorded.
     """
-    source = Path(inspect.getsourcefile(Supervisor) or "")
+    # Searched across every class the supervision path is split over. The
+    # construction moved to `Supervision` when core/supervisor.py was split by
+    # layer, and a search scoped to `Supervisor` alone found nothing -- which
+    # this assertion is here to refuse rather than pass over.
     builders = {
-        name: inspect.getsource(fn)
-        for name, fn in vars(Supervisor).items()
+        f"{owner.__name__}.{name}": inspect.getsource(fn)
+        for owner in (Supervisor, Supervision, Lifecycle, Packets, Reporting)
+        for name, fn in vars(owner).items()
         if callable(fn) and "TurnContext(" in inspect.getsource(fn)
     }
-    assert builders, f"nothing in {source.name} builds a TurnContext any more"
-    for name, body in builders.items():
-        assert "workspace=str(state.workspace)" in body, f"{source.name}:{name}"
-        assert "workspace=str(self.workspace)" not in body, f"{source.name}:{name}"
+    assert builders, "nothing in the supervision path builds a TurnContext any more"
+    for where, body in builders.items():
+        assert "workspace=str(state.workspace)" in body, where
+        assert "workspace=str(self.workspace)" not in body, where
 
 
 # --------------------------------------------------------------------------
@@ -1071,7 +1077,7 @@ async def test_a_turn_reaches_the_log_under_one_lock(tmp_path: Path) -> None:
         RunState(id="run_A", prompt="p", workspace=str(tmp_path))
     )
     agent = AgentSpec(run_id="run_A", kind=AgentKind.ANALYSIS, role="security", scope=Scope())
-    supervisor._spawn(session, [agent])
+    supervisor.lifecycle._spawn(session, [agent])
     payload = {
         "output": "found several things",
         "status": "running",
@@ -1082,7 +1088,7 @@ async def test_a_turn_reaches_the_log_under_one_lock(tmp_path: Path) -> None:
 
     eventlog.FileLock.acquire = counted
     try:
-        turn = await supervisor._record_turn(
+        turn = await supervisor.supervision._record_turn(
             session, session.state.agents[agent.id], payload
         )
     finally:
