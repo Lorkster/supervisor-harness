@@ -28,6 +28,7 @@ from ..models import (
     DirectiveKind,
     DriftAssessment,
     DriftSignal,
+    Message,
     Severity,
     Usage,
 )
@@ -378,7 +379,7 @@ def decide_directive(
     turn: AgentTurn,
     policy: Policy,
     turns_used: int,
-    inbox: list | None = None,
+    inbox: list[Message] | None = None,
     prior_corrections: int = 0,
     usage: Usage | None = None,
 ) -> Directive:

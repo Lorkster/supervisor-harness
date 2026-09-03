@@ -13,7 +13,8 @@ as a string.
 
 from __future__ import annotations
 
-from typing import Any
+from enum import Enum
+from typing import Any, TypeVar
 
 from .ids import now_iso
 from .models import (
@@ -449,7 +450,16 @@ LESSONS_SCHEMA: dict[str, Any] = {
 # --------------------------------------------------------------------------
 
 
-def _enum(value: Any, enum_cls: Any, default: Any) -> Any:
+EnumT = TypeVar("EnumT", bound=Enum)
+
+
+def _enum(value: Any, enum_cls: type[EnumT], default: EnumT) -> EnumT:
+    """Coerce a model's string to a member of ``enum_cls``, or fall back.
+
+    Generic rather than `Any`, so a caller declaring `-> AgentStatus` is
+    actually held to it: with `Any` the three parsers below type-checked
+    whatever they returned.
+    """
     try:
         return enum_cls(str(value).strip().lower())
     except (ValueError, AttributeError):

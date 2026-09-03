@@ -35,7 +35,7 @@ from ..models import (
     ScopeEnvelope,
     Usage,
 )
-from ..serde import from_jsonable, to_jsonable
+from ..serde import from_jsonable, to_dict
 
 
 class EventType(StrEnum):
@@ -499,7 +499,7 @@ def _apply_contained(state: RunState, event: Event) -> RunState:
 
 
 def event_to_dict(event: Event) -> dict[str, Any]:
-    return to_jsonable(event)
+    return to_dict(event)
 
 
 def event_from_dict(data: dict[str, Any]) -> Event:

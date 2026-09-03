@@ -20,16 +20,24 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import KNOWN_STAGES
 from .core.supervisor import Supervisor, SupervisorResponse
 from .models import Backend, RunMode
 
-try:  # MCP SDK 2.x
+if TYPE_CHECKING:
+    # Type-checked against the SDK this project supports. The runtime import
+    # below is a try/except so that an older SDK still starts, and an aliased
+    # name assigned in an `except` reads as `Any` to a type checker -- which
+    # made every `@server.tool(...)` an untyped decorator and the twelve tools
+    # under it untyped functions (finding Q-T2). The SDK itself is fully typed.
     from mcp.server.mcpserver import MCPServer as _Server
-except ModuleNotFoundError:  # pragma: no cover - SDK 1.x fallback
-    from mcp.server.fastmcp import FastMCP as _Server  # type: ignore[no-redef,attr-defined]
+else:
+    try:  # MCP SDK 2.x
+        from mcp.server.mcpserver import MCPServer as _Server
+    except ModuleNotFoundError:  # pragma: no cover - SDK 1.x fallback
+        from mcp.server.fastmcp import FastMCP as _Server
 
 
 INSTRUCTIONS = """\
@@ -105,7 +113,7 @@ def _result(response: SupervisorResponse) -> dict[str, Any]:
     return payload
 
 
-def _register_run_tools(server: Any) -> None:
+def _register_run_tools(server: _Server) -> None:
     """The tools that drive a run: start it, answer it, and decide on it."""
     @server.tool(
         description=(
@@ -252,7 +260,7 @@ def _register_run_tools(server: Any) -> None:
         return _result(await sup.resume(target))
 
 
-def _register_read_tools(server: Any) -> None:
+def _register_read_tools(server: _Server) -> None:
     """The tools that read a run back without changing it."""
     @server.tool(description="Current state of a run, or the most recent one.")
     async def supervisor_status(run_id: str = "") -> dict[str, Any]:
@@ -345,7 +353,7 @@ def _register_read_tools(server: Any) -> None:
         }
 
 
-def _register_meta_tools(server: Any) -> None:
+def _register_meta_tools(server: _Server) -> None:
     """What the harness itself is configured to do."""
     @server.tool(
         description=(
@@ -368,7 +376,7 @@ def _register_meta_tools(server: Any) -> None:
         }
 
 
-def build_server() -> Any:
+def build_server() -> _Server:
     """Construct the MCP server with the harness tools registered.
 
     Registration is grouped rather than one flat run of twelve decorated

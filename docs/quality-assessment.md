@@ -57,7 +57,7 @@ and none of them can rot quietly.
 | what | how | gate |
 | --- | --- | --- |
 | Coverage | `pytest --cov=supervisor_harness --cov-fail-under=92` | a **floor**; fails if it drops |
-| Types | `mypy` (config in `pyproject.toml`) | **zero**, from the start |
+| Types | `mypy --strict` (config in `pyproject.toml`) | **zero**, strict since Q-T2 |
 | Lint | `ruff check` against the configured rule set | **zero**, since 4b-4 |
 | Complexity | `C901`, in that rule set | **zero above 15**, since Q-A2 |
 | Architecture | `tests/test_architecture.py` — criteria 1 and 3, executed | zero cycles |
@@ -378,11 +378,31 @@ message was already right. It runs in 1.05s against a 15s bound, stable across
 (variable reuse, not a defect), `mcp_server.py:32` (SDK stub gap).
 **Closed in this batch**, so mypy could gate at zero.
 
-**Q-T2 · `--strict` costs 14 errors in 8 files.** Not adopted here; a decision
-worth taking deliberately once 4b is under way, because strict mode's value is
-mostly in *new* code and the cheapest moment to adopt it is when the files are
-being touched anyway.
-*Criterion 7. Cost: low, but it is a policy choice.*
+**Q-T2 · `mypy --strict`. — CLOSED** `strict = true` is on and at zero.
+
+It cost **25 errors**, not the 14 measured at the assessment: the refactoring
+batches added modules, and the count was never re-measured until this one. Every
+one was fixed. **No `type: ignore` holds it up** -- there are now *zero* in
+`src/`, one fewer than before this batch, which is what makes the gate worth
+having rather than a formality.
+
+What the 25 turned out to be:
+
+- **12 "untyped decorator" on the MCP tools**, which looked like an untyped
+  dependency and was not. The SDK ships `py.typed` and types `tool` properly;
+  *our* `try`/`except ImportError` alias made `_Server` an `Any`, so every
+  `@server.tool(...)` was an untyped decorator and all twelve tools under it
+  untyped functions. A `TYPE_CHECKING` branch naming the supported SDK, with
+  the runtime fallback untouched, fixed all twelve.
+- **7 "returning Any"** where a function promised a concrete type. `_enum` is
+  now generic, so the three parsers declaring `-> AgentStatus` and friends are
+  actually held to it; `serde.to_dict` names the one cast the four
+  dataclass-to-dict callers were each making implicitly.
+- **3 bare generics**, 2 re-exports (`__all__` on `core/supervisor.py`, which
+  also documents that module's surface), and a tuple of lambdas that inferred
+  as untyped.
+
+*Criterion 7.*
 
 ---
 

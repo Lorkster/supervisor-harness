@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..agents.registry import AgentRegistry
 from ..agents.roles import ROLES_BY_ID, Role, role_for_task, select_lenses
@@ -135,7 +136,7 @@ def planning_prompt(
 
 def apply_plan(
     state: RunState,
-    plan: dict,
+    plan: dict[str, Any],
     config: HarnessConfig,
     registry: AgentRegistry,
     fallback: list[AgentSpec],
@@ -311,7 +312,7 @@ def synthesis_prompt(state: RunState, mode_hint: RunMode) -> tuple[str, str]:
     return system, user
 
 
-def build_report(state: RunState, data: dict) -> Report:
+def build_report(state: RunState, data: dict[str, Any]) -> Report:
     conflicts = [str(c) for c in (data.get("conflicts") or [])]
     if not conflicts:
         conflicts = detect_contradictions(state.findings)
