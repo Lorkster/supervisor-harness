@@ -267,7 +267,7 @@ would pass every refusal test in the suite — the fence is not consulted
 differently, it simply guards an operation that answers wrongly.
 
 **Q-C6 · The suite has never been audited for vacuous tests as a whole. —
-`test_hardening.py` DONE (Q-C6a); three modules remain.**
+`test_hardening.py` (Q-C6a) and `test_store.py` (Q-C6b) DONE; two modules remain.**
 The sabotage check has been applied to each new batch since it was adopted, and
 has caught five vacuous tests. Run backwards over `test_hardening.py` — the
 oldest module, and the one holding the regressions for the defects the harness
@@ -312,8 +312,44 @@ resolution test has force only on Windows, and the symlink tests only where a
 symlink can be created. The CI matrix runs both, which is what makes them
 guarantees rather than decoration.
 
-*Criterion 9. Remaining: `test_supervision.py`, `test_store.py`, and the parts
-of `test_fold.py` that predate the bar. Per-module, as before.*
+**Q-C6b · `test_store.py`: 28 sabotages against all 20 tests, both platforms.**
+Identical results on Windows and Linux — this module has no platform-shaped
+behaviour, which is itself worth having measured rather than assumed.
+
+One weak test, and the weakness was *redundancy* rather than vacuity.
+`test_failed_sync_run_does_not_wedge_later_writes` read the recovery write back
+through the index's own connection, and a connection sees its own uncommitted
+rows — so with `sync_run`'s transaction removed entirely the test still passed,
+while its neighbour (which asserts `in_transaction is False`) went red. Every
+failure it could detect, the test above it detected first. It now reads through
+a *second* connection, which sees only what was committed, so it owns a claim
+the other one does not: the recovery write is durable, not merely visible.
+
+**One doubled guard, reported rather than fixed.** `purge(older_than_days=0)`
+deletes nothing, and two separate checks say so — the early return in `purge`
+and `older_than`'s own `max_age_days <= 0`. Remove either and the behaviour is
+unchanged, so that assertion cannot go red under a single sabotage. Same shape
+as the two locks in `_walk`; left alone for the same reason.
+
+*Criterion 9. Remaining: `test_supervision.py` and the parts of `test_fold.py`
+that predate the bar. Per-module, as before.*
+
+**Q-C7 · `RunStore.purge` — a user-facing deletion path with no test at all. —
+CLOSED (Q-C6b)**
+Not a vacuous test: no test. `supervisor delete --older-than` calls
+`RunStore.purge`, which deletes runs from disk, and neither the method nor the
+CLI command that reaches it was covered by anything — 19 uncovered statements,
+found while reading the module for the audit. Nor was `delete_run`'s tolerance
+path, where a failure to remove the derived index rows is recorded rather than
+raised because the run directory is the authoritative half.
+
+Four tests now cover what the docstrings promise: the cutoff, `keep_last` as a
+floor, the log-mtime fallback for a run whose snapshot cannot be read, and the
+deletion that survives a broken index. All four go red under a sabotage of the
+mechanism they name.
+
+*Criterion 10. Deleting a user's data is the worst place for an untested path,
+and coverage percentages did not surface it — the module was at 89%.*
 
 ### Code quality
 
@@ -490,7 +526,7 @@ Ordered by value per unit of churn, not by finding number.
 | ~~**4b-5**~~ | ~~Q-A3, Q-C2~~ | **Done.** Coverage 42% → 80%, all four complexity findings cleared, and the rendering proved unchanged by diffing 33 CLI invocations before and after. |
 | ~~Q-A2~~ | ~~done~~ | Six functions restructured, `C901` gated at 15. Nine functions between 11 and 13 remain, recorded above. |
 | ~~Q-T2~~ | ~~done~~ | `mypy --strict` at zero, with no suppression anywhere in `src/`. |
-| **Q-C6** | in progress | `test_hardening.py` audited (Q-C6a). Per-module, as the finding says; three modules remain. |
+| **Q-C6** | in progress | `test_hardening.py` (Q-C6a) and `test_store.py` (Q-C6b) audited. Two modules remain. Q-C7 was found and closed inside Q-C6b. |
 
 **Where item 2 (the split) fits.** Between 4b-1 and 4b-2. It needs the cheap
 architecture finding closed first (Q-A1, so the package graph is a DAG before

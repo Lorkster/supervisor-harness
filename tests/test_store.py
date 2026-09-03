@@ -7,7 +7,10 @@ and it never takes a run down when it fails.
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -25,6 +28,19 @@ def _user_version(path: Path) -> int:
     conn = sqlite3.connect(str(path))
     try:
         return int(conn.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _committed_run_ids(path: Path) -> list[str]:
+    """The runs a *second* connection can see — that is, only committed ones.
+
+    A connection reads back its own uncommitted writes, so asking the index's
+    own connection what it wrote proves nothing about whether the write landed.
+    """
+    conn = sqlite3.connect(str(path), timeout=5.0)
+    try:
+        return [str(row[0]) for row in conn.execute("SELECT id FROM runs ORDER BY id")]
     finally:
         conn.close()
 
@@ -135,8 +151,16 @@ def test_failed_sync_run_rolls_back_and_leaves_no_open_transaction(tmp_path: Pat
 
 
 def test_failed_sync_run_does_not_wedge_later_writes(tmp_path: Path) -> None:
-    """After a rollback the shared connection is still usable."""
-    index = RunIndex(tmp_path / "index.sqlite3")
+    """After a rollback the shared connection is usable, and its write commits.
+
+    The second half is what the Q-C6 audit added. Read back through the same
+    connection, this test was a strictly weaker copy of the one above: take the
+    transaction away entirely and it still passes, because a connection sees its
+    own uncommitted rows. Reading through a second connection sees only what was
+    committed, so the recovery write has to have actually landed.
+    """
+    path = tmp_path / "index.sqlite3"
+    index = RunIndex(path)
     try:
         broken = _state("run_A")
         broken.lessons = [object()]  # type: ignore[list-item]
@@ -144,6 +168,7 @@ def test_failed_sync_run_does_not_wedge_later_writes(tmp_path: Path) -> None:
             index.sync_run(broken, [])
         index.sync_run(_state("run_A"), [])
         assert [r["id"] for r in index.list_runs()] == ["run_A"]
+        assert _committed_run_ids(path) == ["run_A"], "the recovery write was not committed"
     finally:
         index.close()
 
@@ -259,6 +284,95 @@ def test_reindex_converges_after_a_run_is_removed_by_hand(tmp_path: Path) -> Non
     second = {r["id"] for r in store.index().list_runs()}
 
     assert first == second == {"run_B"}
+
+
+def _age(store: RunStore, run_id: str, stamp: str) -> None:
+    """Backdate a run's snapshot, which is what ``purge`` reads to age it."""
+    snapshot = store.runs_dir / run_id / "state.json"
+    data = json.loads(snapshot.read_text(encoding="utf-8"))
+    data["updated_at"] = stamp
+    snapshot.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_purge_removes_only_the_runs_past_the_cutoff(tmp_path: Path) -> None:
+    """``supervisor delete --older-than`` had no test on either side.
+
+    Found beside the Q-C6 audit rather than by it, and worth the same weight:
+    `purge` deletes runs, it is reachable from the CLI, and neither it nor the
+    command that calls it was covered by anything at all. A retention policy is
+    the last place to learn that from a user.
+    """
+    store = RunStore(tmp_path / ".supervisor")
+    for run_id in ("run_A", "run_B", "run_C"):
+        store.create(_state(run_id))
+    _age(store, "run_A", "2020-01-01T00:00:00Z")
+    _age(store, "run_B", "2020-01-01T00:00:00Z")
+
+    assert store.purge(older_than_days=180) == ["run_B", "run_A"], "newest first"
+    assert store.list_run_ids() == ["run_C"]
+    assert not (store.runs_dir / "run_A").exists()
+
+
+def test_purge_keeps_the_most_recent_runs_however_old_they_are(tmp_path: Path) -> None:
+    """``keep_last`` is a floor: a retention policy that can empty the store is not one."""
+    store = RunStore(tmp_path / ".supervisor")
+    for run_id in ("run_A", "run_B", "run_C"):
+        store.create(_state(run_id))
+        _age(store, run_id, "2020-01-01T00:00:00Z")
+
+    assert store.purge(older_than_days=180, keep_last=2) == ["run_A"]
+    assert store.list_run_ids() == ["run_C", "run_B"]
+
+    # And a cutoff of zero or less deletes nothing, however old the runs are.
+    assert store.purge(older_than_days=0) == []
+    assert store.purge(older_than_days=-1) == []
+    assert store.list_run_ids() == ["run_C", "run_B"]
+
+
+def test_purge_ages_a_run_with_no_readable_snapshot_by_its_log(tmp_path: Path) -> None:
+    """An unreadable snapshot must make a run neither immortal nor expired.
+
+    The stamp comes from ``state.json``; when that cannot be read the log's
+    mtime stands in, so such a run is still aged by something real rather than
+    skipped forever or deleted on a blank date.
+    """
+    store = RunStore(tmp_path / ".supervisor")
+    for run_id in ("run_A", "run_B"):
+        store.create(_state(run_id))
+    (store.runs_dir / "run_A" / "state.json").write_text("{ not json", encoding="utf-8")
+    (store.runs_dir / "run_B" / "state.json").unlink()
+
+    assert store.purge(older_than_days=180) == [], "a fresh log is not expired"
+
+    old = (datetime.now(UTC) - timedelta(days=400)).timestamp()
+    for run_id in ("run_A", "run_B"):
+        os.utime(store.runs_dir / run_id / "events.jsonl", (old, old))
+
+    assert store.purge(older_than_days=180) == ["run_B", "run_A"]
+    assert store.list_run_ids() == []
+
+
+def test_a_run_is_still_deleted_when_its_index_rows_cannot_be(tmp_path: Path) -> None:
+    """The log goes first, and a derived row left behind is recorded, not raised.
+
+    The order is the point: dying between the two leaves a stale index row,
+    which ``reindex`` removes — where the other order would leave a run the
+    index has forgotten and the disk still holds, which is harder to notice.
+    """
+    store = RunStore(tmp_path / ".supervisor")
+    store.create(_state("run_A"))
+
+    class BrokenIndex:
+        def delete_run(self, run_id: str) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+    store.index = lambda: BrokenIndex()  # type: ignore[assignment,method-assign]
+
+    assert store.delete_run("run_A") is True
+    assert not (store.runs_dir / "run_A").exists()
+    assert store.snapshot_error is not None
+    assert "run_A" in store.snapshot_error
+    assert "database is locked" in store.snapshot_error
 
 
 def test_a_lesson_keeps_the_run_that_learned_it(tmp_path: Path) -> None:
