@@ -158,12 +158,13 @@ jobs:
       - name: Types
         run: python -m mypy
 
-      # A floor, not a target. 82.2% when first measured; this fails if a change
-      # drops it, which is the property worth having -- the number itself is far
-      # less interesting than the direction. The gaps are findings Q-C1..Q-C4 in
-      # docs/quality-assessment.md, and closing them raises this floor.
+      # A floor, not a target. It fails if a change drops coverage, which is the
+      # property worth having -- the number itself is far less interesting than
+      # the direction. 82 when first measured; raised to 86 when batch 4b-2
+      # closed Q-C3, Q-C4 and Q-C5 and took it to 87.0. Raise it again as the
+      # remaining findings close; the one still open is Q-C1, mcp_server.py at 0%.
       - name: Coverage floor
-        run: python -m pytest -q --cov=supervisor_harness --cov-report=term:skip-covered --cov-fail-under=82
+        run: python -m pytest -q --cov=supervisor_harness --cov-report=term:skip-covered --cov-fail-under=86
 
       # docs/reasoning-control-plane.md explains the design by pointing at the
       # code that implements it, by file and line. That is the useful form and
