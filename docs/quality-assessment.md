@@ -56,7 +56,7 @@ and none of them can rot quietly.
 
 | what | how | gate |
 | --- | --- | --- |
-| Coverage | `pytest --cov=supervisor_harness --cov-fail-under=86` | a **floor**; fails if it drops |
+| Coverage | `pytest --cov=supervisor_harness --cov-fail-under=88` | a **floor**; fails if it drops |
 | Types | `mypy` (config in `pyproject.toml`) | **zero**, from the start |
 | Lint | `tools/ruff_diff.py`, now against a configured rule set | **no new** (file, rule) pairs |
 | Architecture | `tests/test_architecture.py` — criteria 1 and 3, executed | zero cycles |
@@ -155,11 +155,31 @@ It is also a boundary users touch directly.
 Baseline: **82.25%**, 1,032 of 5,813 statements missing, 335 tests, 2.9
 assertions per test. *(After 4b-1: 347 tests.)*
 
-**Q-C1 · `mcp_server.py` is 0% covered.** 101 statements, none executed by any
-test. This is the boundary Claude Code and Cursor actually talk to — the packets,
-the tool surface, the delegation handoff. Everything behind it is well tested;
-the thing itself is not tested at all.
-*Criterion 10. Cost: medium. **This is the most serious finding here.***
+**Q-C1 · `mcp_server.py` was 0% covered. — CLOSED (4b-3)** Now **95%**.
+
+`tests/test_mcp_server.py` calls through `server.call_tool(name, arguments)` --
+the entry the host uses -- rather than reaching for the closures inside
+`build_server()`. That is the difference between testing this module and testing
+the functions it happens to contain: registration, schema generation and
+argument coercion are most of what it *does*, and calling the closures directly
+skips all three.
+
+A whole run is then driven end to end through the tool surface, following the
+loop `INSTRUCTIONS` documents to hosts: start, report each packet, advance,
+approve, complete.
+
+What that reached which nothing else did: every tool being registered at all and
+carrying a schema the SDK will render; `next_step` guidance on each result;
+`_as_dict` accepting a JSON string or JSON embedded in prose, because hosts send
+those whatever the schema says; an unusable `mode` degrading to `auto` rather
+than raising; the `${workspaceFolder}` template a host passes through
+unexpanded; the read-only tools defaulting to the latest run; and `main()`,
+which the `supervisor-mcp` console script points at and which CI's entry-point
+step does not exercise -- it runs `supervisor --help`, not this one.
+
+Five statements remain uncovered: `if __name__ == "__main__"`, and four lines
+inside `supervisor_check_drift`'s model path, which needs a drift stage routed
+off `host`.
 
 **Q-C2 · `cli.py` is 42% covered** — 339 missing statements, the largest
 absolute gap in the codebase. The other user-facing boundary.
@@ -339,7 +359,7 @@ Ordered by value per unit of churn, not by finding number.
 | --- | --- | --- |
 | ~~**4b-1**~~ | ~~Q-Q3, Q-A1, Q-Q2~~ | **Done.** Q-Q3 needed a design decision after all — *which* object closes a shared store — and Q-Q2 was better answered by enabling the rules than by deleting the directives. |
 | ~~**4b-2**~~ | ~~Q-C5, Q-C3, Q-C4~~ | **Done.** Coverage 82.3% → **87.0%**, floor raised to 86. Found and fixed a real defect on the way — see Q-Q5. |
-| **4b-3** | Q-C1 | `mcp_server.py` from 0%. Its own batch because testing a protocol boundary needs a harness of its own, and it is the most serious finding. |
+| ~~**4b-3**~~ | ~~Q-C1~~ | **Done.** 0% → 95%, driven through `call_tool` rather than the closures. Coverage 87.0% → **88.8%**, floor raised to 88. |
 | **4b-4** | Q-Q1 | The 88 lint findings, mechanically, once the files have stopped moving. Stage the gate to zero **per rule** as each reaches zero — turning the whole set on at once makes every pre-existing finding a gate failure. |
 | **4b-5** | Q-A3, Q-C2 | `cli.py`: complexity and coverage together, since both mean touching the same functions. |
 | **later** | Q-A2, Q-C6, Q-T2 | Q-A2 is real refactoring and should follow item 2 so the two do not collide. Q-C6 is best done per-module alongside the batches above rather than as a sweep. Q-T2 is a policy choice, cheapest while files are being touched. |
