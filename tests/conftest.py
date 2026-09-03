@@ -349,6 +349,36 @@ def _criterion_ids(text: str) -> list[str]:
     return re.findall(r"`(dod_[A-Z0-9]+)`", text)
 
 
+@pytest.fixture(autouse=True)
+def _close_run_indexes(monkeypatch: pytest.MonkeyPatch):
+    """Close every SQLite connection a test opens, at the end of that test.
+
+    Most tests build a `RunStore` inline rather than through a fixture, and a
+    store holds its index connection open until something closes it. Nothing
+    did, so a suite run leaked one connection per store -- 90 of them, reported
+    only under `-W always` because ResourceWarning is ignored by default.
+
+    The product side of that is finding Q-Q3 (`RunStore.close`, and the
+    supervisor closing a store it created). This is the test side: teardown is
+    the fixture's job, not something each of three dozen call sites should have
+    to remember. It also exercises `close` being idempotent, since stores that
+    closed themselves are closed again here.
+    """
+    from supervisor_harness.store.index import RunIndex
+
+    opened: list[RunIndex] = []
+    original = RunIndex.__init__
+
+    def spy(self: RunIndex, path: Path) -> None:
+        original(self, path)
+        opened.append(self)
+
+    monkeypatch.setattr(RunIndex, "__init__", spy)
+    yield
+    for index in opened:
+        index.close()
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     (tmp_path / "src" / "auth").mkdir(parents=True)

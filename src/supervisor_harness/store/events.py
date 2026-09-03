@@ -96,7 +96,10 @@ class Event:
 # --------------------------------------------------------------------------
 
 
-def _apply(state: RunState, event: Event) -> RunState:  # noqa: C901 - a dispatch table by nature
+# A dispatch table by nature, and the longest function in the codebase: 123
+# statements across 48 branches. Recorded as finding Q-A2 rather than
+# suppressed -- see docs/quality-assessment.md.
+def _apply(state: RunState, event: Event) -> RunState:
     p = event.payload
     t = event.type
 

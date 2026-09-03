@@ -12,8 +12,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..core.baseline import BASELINE_FACT
 from ..models import (
+    BASELINE_FACT,
     AgentSpec,
     Directive,
     DoDCriterion,

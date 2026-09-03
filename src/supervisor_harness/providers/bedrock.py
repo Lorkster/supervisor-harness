@@ -178,9 +178,7 @@ class BedrockProvider(Provider):
             raise
         # Deliberately broad: the exception hierarchy here belongs to the SDK,
         # and an unrecognised one must still reach the router as a ProviderError
-        # rather than escaping as itself and killing the run. The rest of this
-        # package writes `# noqa: BLE001` on the same pattern, which is inert
-        # (BLE001 is not enabled) and would be a *new* finding in a new file.
+        # rather than escaping as itself and killing the run.
         except Exception as exc:
             raise self._as_provider_error(exc) from exc
 

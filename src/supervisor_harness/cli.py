@@ -548,38 +548,38 @@ def cmd_drift(args: argparse.Namespace) -> int:
 
 def cmd_events(args: argparse.Namespace) -> int:
     """Print a run's event log -- the only place the diagnostic notes live."""
-    store = RunStore.discover(Path(args.workspace).resolve())
-    run_id = args.run_id or store.latest_run_id()
-    if not run_id:
-        print("No runs recorded yet.", file=sys.stderr)
-        return 1
-    # Membership rather than a path probe: the id comes from the command line
-    # and is about to be joined onto the runs directory.
-    if run_id not in store.list_run_ids():
-        print(f"error: no such run: {run_id}", file=sys.stderr)
-        return 2
+    with RunStore.discover(Path(args.workspace).resolve()) as store:
+        run_id = args.run_id or store.latest_run_id()
+        if not run_id:
+            print("No runs recorded yet.", file=sys.stderr)
+            return 1
+        # Membership rather than a path probe: the id comes from the command line
+        # and is about to be joined onto the runs directory.
+        if run_id not in store.list_run_ids():
+            print(f"error: no such run: {run_id}", file=sys.stderr)
+            return 2
 
-    wanted = args.type.strip().lower()
-    if wanted and wanted not in _EVENT_TYPES:
-        print(f"error: unknown event type '{args.type}' -- choose one of "
-              f"{', '.join(sorted(_EVENT_TYPES))}", file=sys.stderr)
-        return 2
+        wanted = args.type.strip().lower()
+        if wanted and wanted not in _EVENT_TYPES:
+            print(f"error: unknown event type '{args.type}' -- choose one of "
+                  f"{', '.join(sorted(_EVENT_TYPES))}", file=sys.stderr)
+            return 2
 
-    events = [
-        event for event in store.log(run_id).read_all()
-        if event.seq > args.since and (not wanted or str(event.type) == wanted)
-    ]
+        events = [
+            event for event in store.log(run_id).read_all()
+            if event.seq > args.since and (not wanted or str(event.type) == wanted)
+        ]
 
-    if args.json:
-        _emit({"run_id": run_id, "events": [event_to_dict(e) for e in events]}, True)
+        if args.json:
+            _emit({"run_id": run_id, "events": [event_to_dict(e) for e in events]}, True)
+            return 0
+        if not events:
+            print("No matching events.")
+            return 0
+        for event in events:
+            print(f"{event.seq:>5}  {event.ts}  {_event_type_label(event):<18} {event.actor:<22} "
+                  f"{_event_summary(event)}")
         return 0
-    if not events:
-        print("No matching events.")
-        return 0
-    for event in events:
-        print(f"{event.seq:>5}  {event.ts}  {_event_type_label(event):<18} {event.actor:<22} "
-              f"{_event_summary(event)}")
-    return 0
 
 
 _EVENT_TYPES = {str(t) for t in EventType}
@@ -609,45 +609,45 @@ def _event_summary(event: Event) -> str:
 
 
 def cmd_runs(args: argparse.Namespace) -> int:
-    store = RunStore.discover(Path(args.workspace).resolve())
-    store.reindex()
-    runs = store.index().list_runs(args.limit)
-    if args.json:
-        _emit({"runs": runs}, True)
+    with RunStore.discover(Path(args.workspace).resolve()) as store:
+        store.reindex()
+        runs = store.index().list_runs(args.limit)
+        if args.json:
+            _emit({"runs": runs}, True)
+            return 0
+        if not runs:
+            print("No runs recorded yet.")
+            return 0
+        for run in runs:
+            print(f"{run['id']}  {run['phase']:<18} findings {run['findings']:<4} "
+                  f"tasks {run['tasks_verified']}/{run['tasks']:<4} {run['prompt'][:60]}")
         return 0
-    if not runs:
-        print("No runs recorded yet.")
-        return 0
-    for run in runs:
-        print(f"{run['id']}  {run['phase']:<18} findings {run['findings']:<4} "
-              f"tasks {run['tasks_verified']}/{run['tasks']:<4} {run['prompt'][:60]}")
-    return 0
 
 
 def cmd_lessons(args: argparse.Namespace) -> int:
     workspace = str(Path(args.workspace).resolve())
-    store = RunStore.discover(Path(args.workspace).resolve())
-    lessons = (
-        store.lessons_for([args.target], args.limit, workspace=workspace)
-        if args.target else store.lessons()
-    )
-    if args.json:
-        from .serde import to_jsonable
+    with RunStore.discover(Path(args.workspace).resolve()) as store:
+        lessons = (
+            store.lessons_for([args.target], args.limit, workspace=workspace)
+            if args.target else store.lessons()
+        )
+        if args.json:
+            from .serde import to_jsonable
 
-        _emit({"lessons": [to_jsonable(le) for le in lessons]}, True)
+            _emit({"lessons": [to_jsonable(le) for le in lessons]}, True)
+            return 0
+        if not lessons:
+            print("No lessons recorded yet. They accumulate as runs complete.")
+            return 0
+        for lesson in sorted(lessons, key=lambda le: (le.occurrences, le.confidence), reverse=True):
+            origin = lesson.origin_label(workspace)
+            print(f"\n[{lesson.category}] -> {lesson.target}  "
+                  f"(seen {lesson.occurrences}x, confidence {lesson.confidence:.2f}, "
+                  f"learned {'here' if origin == 'here' else 'in ' + origin})")
+            print(f"  {lesson.statement}")
+            if lesson.how_to_apply:
+                print(f"  apply: {lesson.how_to_apply}")
         return 0
-    if not lessons:
-        print("No lessons recorded yet. They accumulate as runs complete.")
-        return 0
-    for lesson in sorted(lessons, key=lambda le: (le.occurrences, le.confidence), reverse=True):
-        origin = lesson.origin_label(workspace)
-        print(f"\n[{lesson.category}] -> {lesson.target}  "
-              f"(seen {lesson.occurrences}x, confidence {lesson.confidence:.2f}, "
-              f"learned {'here' if origin == 'here' else 'in ' + origin})")
-        print(f"  {lesson.statement}")
-        if lesson.how_to_apply:
-            print(f"  apply: {lesson.how_to_apply}")
-    return 0
 
 
 def cmd_providers(args: argparse.Namespace) -> int:
@@ -694,40 +694,40 @@ def cmd_providers(args: argparse.Namespace) -> int:
 
 
 def cmd_reindex(args: argparse.Namespace) -> int:
-    store = RunStore.discover(Path(args.workspace).resolve())
-    count = store.reindex()
-    print(f"Reindexed {count} run(s) into {store.root / 'index.sqlite3'}")
-    return 0
+    with RunStore.discover(Path(args.workspace).resolve()) as store:
+        count = store.reindex()
+        print(f"Reindexed {count} run(s) into {store.root / 'index.sqlite3'}")
+        return 0
 
 
 def cmd_delete(args: argparse.Namespace) -> int:
     """Remove one run, or every run past a cutoff."""
-    store = RunStore.discover(Path(args.workspace).resolve())
+    with RunStore.discover(Path(args.workspace).resolve()) as store:
 
-    if args.older_than is not None:
-        gone = store.purge(older_than_days=args.older_than, keep_last=args.keep_last)
-        if not gone:
-            print(f"No runs older than {args.older_than} day(s).")
+        if args.older_than is not None:
+            gone = store.purge(older_than_days=args.older_than, keep_last=args.keep_last)
+            if not gone:
+                print(f"No runs older than {args.older_than} day(s).")
+                return 0
+            print(f"Deleted {len(gone)} run(s): {', '.join(gone)}")
             return 0
-        print(f"Deleted {len(gone)} run(s): {', '.join(gone)}")
-        return 0
 
-    if not args.run:
-        print("Name a run, or pass --older-than DAYS.", file=sys.stderr)
-        return 2
-    if not store.delete_run(args.run):
-        print(f"No such run: {args.run}", file=sys.stderr)
-        return 1
-    print(f"Deleted {args.run} and its rows in the index.")
-    return 0
+        if not args.run:
+            print("Name a run, or pass --older-than DAYS.", file=sys.stderr)
+            return 2
+        if not store.delete_run(args.run):
+            print(f"No such run: {args.run}", file=sys.stderr)
+            return 1
+        print(f"Deleted {args.run} and its rows in the index.")
+        return 0
 
 
 def cmd_prune_lessons(args: argparse.Namespace) -> int:
     """Drop lessons past the age cap from the shared library."""
-    store = RunStore.discover(Path(args.workspace).resolve())
-    dropped = store.prune_lessons(max_age_days=args.older_than)
-    print(f"Dropped {dropped} lesson(s) older than {args.older_than} day(s).")
-    return 0
+    with RunStore.discover(Path(args.workspace).resolve()) as store:
+        dropped = store.prune_lessons(max_age_days=args.older_than)
+        print(f"Dropped {dropped} lesson(s) older than {args.older_than} day(s).")
+        return 0
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
@@ -928,7 +928,9 @@ def main(argv: list[str] | None = None) -> int:
             raise
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    except Exception as exc:  # noqa: BLE001 - the CLI reports, it does not traceback
+    # The CLI reports; it does not traceback at a user. (No BLE001 directive is
+    # needed: the handler uses the exception, so the rule does not fire.)
+    except Exception as exc:
         if args.debug:
             raise
         print(f"error: {exc}\n(re-run with --debug for a traceback)", file=sys.stderr)

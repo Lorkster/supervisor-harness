@@ -69,6 +69,7 @@ from ..host.detect import HostInfo, detect_host
 from ..ids import now_iso
 from ..models import (
     ACTIVE_AGENT_STATUSES,
+    BASELINE_FACT,
     SUPERVISOR,
     AgentKind,
     AgentSpec,
@@ -100,7 +101,7 @@ from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import phases
-from .baseline import BASELINE_FACT, git_baseline
+from .baseline import git_baseline
 from .blackboard import (
     Blackboard,
     answer_from_record,
@@ -214,6 +215,10 @@ class Supervisor:
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.config = config or load_config(self.workspace)
+        # Own what you made: a store passed in belongs to the caller and is not
+        # ours to close, but one constructed here has no other owner and would
+        # otherwise hold its index connection until the process ended.
+        self._owns_store = store is None
         self.store = store or RunStore.discover(self.workspace)
         self.host = host or detect_host(self.workspace)
         self.router = router or ModelRouter(self.config, host_name=self.host.name)
@@ -2451,6 +2456,8 @@ class Supervisor:
 
     async def aclose(self) -> None:
         await self.router.aclose()
+        if self._owns_store:
+            self.store.close()
 
 
 # --------------------------------------------------------------------------
