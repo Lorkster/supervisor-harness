@@ -11,7 +11,9 @@ from __future__ import annotations
 import inspect
 import json
 import os
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -672,12 +674,32 @@ def test_a_criterion_naming_a_runner_that_is_not_installed_says_so(
 
 
 def test_reads_cannot_escape_the_workspace(tmp_path: Path) -> None:
-    (tmp_path / "inside.txt").write_text("secret", encoding="utf-8")
-    box = Toolbox(tmp_path, Policy())
+    """The escape must name a file that exists, or the refusal proves nothing.
+
+    This asserted only that reading ``../../../etc/passwd`` was not ``ok``, and
+    that held whether or not ``_resolve`` contained anything: under pytest's
+    ``tmp_path`` those three levels land on ``/tmp/etc/passwd``, and on the
+    Windows temp directory's parent, neither of which exists. The read was
+    refused for not existing, and the fence was never asked. Measured with the
+    containment removed, on both platforms, by the Q-C6 audit.
+
+    So the escape below is a file this test creates, and the refusal is read for
+    *why* it refused rather than only that it did.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "inside.txt").write_text("ordinary\n", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("SUPERSECRET-canary-value\n", encoding="utf-8")
+
+    box = Toolbox(workspace, Policy())
     agent = AgentSpec(id="a", kind=AgentKind.ANALYSIS, scope=Scope())
 
     assert box.call("read_file", {"path": "inside.txt"}, agent).ok
-    assert not box.call("read_file", {"path": "../../../etc/passwd"}, agent).ok
+    for escape in ("../outside.txt", "../../../etc/passwd"):
+        result = box.call("read_file", {"path": escape}, agent)
+        assert not result.ok, escape
+        assert "outside the workspace" in result.output, escape
+        assert "SUPERSECRET" not in result.output, escape
 
 
 # --------------------------------------------------------------------------
@@ -951,6 +973,11 @@ def test_search_does_not_read_through_a_symlinked_directory(tmp_path: Path) -> N
     never walked at all. The ``resolve()`` check exists because that behaviour is
     not something to depend on -- ``**`` and symlinks changed in 3.13, and the
     walk should be correct regardless of which way it goes.
+
+    Confirmed by the Q-C6 audit, which also found that nothing else reached that
+    check either. The test below hands the walk the shape directly, so the
+    ``resolve()`` lock is exercised on every platform rather than only where a
+    future ``rglob`` might produce it.
     """
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -969,6 +996,48 @@ def test_search_does_not_read_through_a_symlinked_directory(tmp_path: Path) -> N
     agent = AgentSpec(id="a", kind=AgentKind.ANALYSIS, scope=Scope())
 
     assert "SUPERSECRET" not in box.call("search", {"pattern": "SUPERSECRET"}, agent).output
+
+
+def test_the_walk_keeps_only_files_that_resolve_inside_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_walk``'s second lock, exercised where a symlink cannot reach it.
+
+    The walk skips a symlinked file, and then resolves whatever is left and asks
+    whether it is still underneath the workspace. Nothing exercised that second
+    check: reaching it needs a file under a symlinked *directory*, and ``rglob``
+    does not descend through one -- and on Windows both symlink tests skip for
+    want of the privilege, so the whole containment went untested there.
+
+    The walk is handed the shape directly instead, which is what the check is
+    for: a walk that yields a path outside the workspace, for whatever reason a
+    later ``rglob`` gives it, must not put that file within reach.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "ordinary.txt").write_text("nothing to see\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("SUPERSECRET-canary-value\n", encoding="utf-8")
+
+    box = Toolbox(workspace, Policy())
+    real_rglob = Path.rglob
+
+    def rglob(self: Path, *args: Any, **kwargs: Any) -> Iterator[Path]:
+        yield from real_rglob(self, *args, **kwargs)
+        yield secret
+
+    monkeypatch.setattr(Path, "rglob", rglob)
+
+    walked = [p.name for p in box._walk()]
+    assert "ordinary.txt" in walked
+    assert "secret.txt" not in walked, "the walk kept a file outside the workspace"
+
+    agent = AgentSpec(id="a", kind=AgentKind.ANALYSIS, scope=Scope())
+    found = box.call("search", {"pattern": "SUPERSECRET"}, agent)
+    assert "SUPERSECRET" not in found.output, found.output
+    assert "secret.txt" not in box.call("list_files", {}, agent).output
 
 
 def test_an_artifact_name_cannot_escape_the_run_directory(tmp_path: Path) -> None:

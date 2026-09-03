@@ -266,12 +266,54 @@ results, a window returning the wrong lines, or a dispatcher crossing two wires
 would pass every refusal test in the suite — the fence is not consulted
 differently, it simply guards an operation that answers wrongly.
 
-**Q-C6 · The suite has never been audited for vacuous tests as a whole.**
+**Q-C6 · The suite has never been audited for vacuous tests as a whole. —
+`test_hardening.py` DONE (Q-C6a); three modules remain.**
 The sabotage check has been applied to each new batch since it was adopted, and
-has caught five vacuous tests. It has never been run backwards over the tests
-that predate it. Unknown, not bad — but unknown.
-*Criterion 9. Cost: high; do it per-module alongside the other findings rather
-than as a sweep.*
+has caught five vacuous tests. Run backwards over `test_hardening.py` — the
+oldest module, and the one holding the regressions for the defects the harness
+found in itself — it found one more, and one mechanism no test reached at all.
+
+**43 sabotages against all 37 tests, on Windows and on Linux.** Each disables
+one named mechanism and runs one test alone. Both platforms, because they
+disagree about which of these tests can run: the two symlink tests skip on
+Windows for want of `SeCreateSymbolicLinkPrivilege`, and a path that escapes on
+one platform need not exist on the other. A one-platform audit would have missed
+both findings below — and would have reported the symlink tests as *surviving*
+their sabotage, which is what a skipped test looks like from the outside.
+
+**One vacuous test, and it was vacuous on both platforms.**
+`test_reads_cannot_escape_the_workspace` asserted that reading
+`../../../etc/passwd` was refused. Under pytest's `tmp_path` those three levels
+land on `/tmp/etc/passwd`, and on the parent of the Windows temp directory —
+neither of which exists. With the containment check deleted from `Toolbox._resolve`
+the read was still refused, for not existing, and the assertion passed over it.
+The fence could have been removed entirely without that test noticing. It now
+escapes to a file the test creates, and asserts *why* the read was refused
+rather than only that it was; red under sabotage on both platforms.
+
+**One check that no test reached.** `Toolbox._walk` resolves every file it
+yields and drops anything landing outside the workspace. The symlinked-directory
+test states in its own docstring that it passes with that check reverted —
+`rglob` does not descend through a directory link, so the file is never walked
+— and nothing else reached the check either. On Windows, where both symlink
+tests skip, the walk's containment was untested outright. A new test hands the
+walk that shape directly and goes red on both platforms when the check goes.
+
+**One false alarm, which is the standing cost of this method.**
+`test_search_does_not_read_through_a_symlink` survived the removal of its
+symlink skip — not because it is hollow but because the resolve check catches
+the same file. With both locks off it goes red. Two locks on one door, which is
+what the walk's docstring says they are; only the second is load-bearing for
+that shape.
+
+**And two tests that are platform-conditional by design**, both correct and
+both worth naming because they look vacuous from one side: the `.cmd` shim
+resolution test has force only on Windows, and the symlink tests only where a
+symlink can be created. The CI matrix runs both, which is what makes them
+guarantees rather than decoration.
+
+*Criterion 9. Remaining: `test_supervision.py`, `test_store.py`, and the parts
+of `test_fold.py` that predate the bar. Per-module, as before.*
 
 ### Code quality
 
@@ -447,8 +489,8 @@ Ordered by value per unit of churn, not by finding number.
 | ~~**4b-4**~~ | ~~Q-Q1~~ | **Done.** All of them to zero in one batch, so the per-rule staging the plan allowed for was not needed. `ruff check` now gates at zero and `ruff_diff.py` is gone. |
 | ~~**4b-5**~~ | ~~Q-A3, Q-C2~~ | **Done.** Coverage 42% → 80%, all four complexity findings cleared, and the rendering proved unchanged by diffing 33 CLI invocations before and after. |
 | ~~Q-A2~~ | ~~done~~ | Six functions restructured, `C901` gated at 15. Nine functions between 11 and 13 remain, recorded above. |
-"
-    "| **later** | Q-C6, Q-T2 | Q-C6 is best done per-module rather than as a sweep. Q-T2 is a policy choice, cheapest while files are being touched. |
+| ~~Q-T2~~ | ~~done~~ | `mypy --strict` at zero, with no suppression anywhere in `src/`. |
+| **Q-C6** | in progress | `test_hardening.py` audited (Q-C6a). Per-module, as the finding says; three modules remain. |
 
 **Where item 2 (the split) fits.** Between 4b-1 and 4b-2. It needs the cheap
 architecture finding closed first (Q-A1, so the package graph is a DAG before
