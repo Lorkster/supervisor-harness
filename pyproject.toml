@@ -53,7 +53,17 @@ target-version = "py311"   # matches requires-python
 #   PLR2004 (magic values)      86 findings, almost all thresholds read from policy
 #   PLC0415 (import not at top) 86 findings, and lazy imports here are deliberate
 #                               -- `providers/bedrock.py` depends on being one
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S", "BLE", "TRY004"]
+# `BLE` and `TRY004` were added when finding Q-Q2 was closed. Both cost *zero*
+# new findings: every broad `except` in this codebase already carried a
+# `# noqa: BLE001` written for a rule nobody had enabled, so turning the rule on
+# made 14 existing directives mean something instead of deleting them. The value
+# is in what happens next -- a broad `except` added from here on is flagged, and
+# has to be suppressed on purpose.
+#
+# `C901` is deliberately still off: it would add 16 findings, and those are
+# finding Q-A2, whose complexity lives in `store/events.py`, `core/journal.py`
+# and `core/phases.py` rather than anywhere this batch touches.
 
 [tool.ruff.lint.per-file-ignores]
 # `assert` is what a test is made of, and a subprocess in a test is the test.

@@ -59,6 +59,7 @@ and none of them can rot quietly.
 | Coverage | `pytest --cov=supervisor_harness --cov-fail-under=82` | a **floor**; fails if it drops |
 | Types | `mypy` (config in `pyproject.toml`) | **zero**, from the start |
 | Lint | `tools/ruff_diff.py`, now against a configured rule set | **no new** (file, rule) pairs |
+| Architecture | `tests/test_architecture.py` — criteria 1 and 3, executed | zero cycles |
 | Doc references | `tools/check_doc_refs.py` | zero |
 
 Two notes on what changed in the instruments themselves:
@@ -117,12 +118,21 @@ functions above are a separate and arguably more valuable piece of work.
 
 ### Architecture
 
-**Q-A1 · A package cycle between `core` and `agents`.**
-`core` imports `agents.registry`, `agents.roles` and `agents.brief`; `agents`
-imports back into `core` in exactly one place — `agents/brief.py:15`, for the
-constant `BASELINE_FACT` from `core.baseline`. One constant creates the cycle.
-Moving it (to `models`, or to a constants module) breaks it outright.
-*Criterion 1. Cost: trivial.*
+**Q-A1 · A package cycle between `core` and `agents`. — CLOSED (4b-1)**
+`core` imported `agents.registry`, `agents.roles` and `agents.brief`; `agents`
+imported back into `core` in exactly one place, for the constant
+`BASELINE_FACT`. One constant made the cycle.
+
+`BASELINE_FACT` now lives in `models`, beside the `RunState.facts` dict it keys.
+That is its right home independently of the cycle: `core.baseline` writes the
+value and `agents.brief` reads it, so a constant owned by either package makes
+the other import across a boundary.
+
+A re-export from `core.baseline` was tried first and dropped — it left an unused
+import for the linter and kept alive the exact import path that caused the
+cycle. `tests/test_architecture.py` now executes criteria 1 and 3 directly, so
+**item 2 cannot reintroduce a cycle while moving imports around**, which is the
+thing worth having before a split.
 
 **Q-A2 · Complexity is concentrated outside the module scheduled for splitting.**
 The table above. `store/events.py`'s fold at 48 branches is the extreme; the
@@ -139,7 +149,7 @@ It is also a boundary users touch directly.
 ### Testing and coverage
 
 Baseline: **82.25%**, 1,032 of 5,813 statements missing, 335 tests, 2.9
-assertions per test.
+assertions per test. *(After 4b-1: 347 tests.)*
 
 **Q-C1 · `mcp_server.py` is 0% covered.** 101 statements, none executed by any
 test. This is the boundary Claude Code and Cursor actually talk to — the packets,
@@ -184,22 +194,43 @@ measurement — see below. Breakdown: 45 `E501`, 17 `RUF100`, 6 `UP037`, 3
 `SIM105`, 3 `S105`, 2 each of `S110`/`UP017`/`RUF022`, and seven singles.
 *Criterion 4. Cost: low, and largely mechanical.*
 
-**Q-Q2 · 17 of those 88 are `# noqa` directives for rules that were never
-enabled** — `E402`, `S602`, `S603`, `S608`, `C901`, `BLE001`. They read as
-diligence and suppress nothing. Enabling `S` in this batch makes some of them
-meaningful; the rest should be deleted or their rules turned on.
-*Criterion 5. Cost: trivial.*
+**Q-Q2 · 17 `# noqa` directives for rules that were never enabled — CLOSED
+(4b-1).** `E402`, `S602`, `S603`, `S608`, `C901`, `BLE001`: they read as
+diligence and suppressed nothing.
 
-**Q-Q3 · SQLite connections are never closed.** `RunIndex.close()` exists at
-`store/index.py:118` and **nothing in the codebase calls it** — not `RunStore`,
-which has no close method at all, not `cli.py`, not `mcp_server.py`. A suite run
-under `-W always` reports **90 unclosed connections**. Invisible by default,
-which is why it has survived; the new coverage job surfaces them, since
-pytest-cov enables the warning.
+Resolved by **turning the rules on rather than deleting the directives**, which
+was the better half of the choice this document offered. `BLE` and `TRY004` cost
+**zero** new findings — every broad `except` already carried its directive — so
+enabling them converted 14 inert comments into real suppressions, and a broad
+`except` added from here on is flagged and has to be suppressed deliberately.
 
-The consequence is worst on Windows, where an open handle blocks deleting the
-file — and this is the platform the harness is developed on.
-*Criterion 6. Cost: low. **A real defect, not a style finding.***
+The remaining three were genuinely stale and were deleted: `S608` no longer
+fires on the interpolation it guarded, and two `BLE001` directives sat on
+handlers that *use* their exception, which the rule does not flag. `C901` stays
+off — its 16 findings are Q-A2.
+
+Net: RUF100 17 → 0, and the total moved 88 → 74 → **71**, the middle number being
+main re-measured under the widened rule set.
+
+**Q-Q3 · SQLite connections were never closed. — CLOSED (4b-1)**
+`RunIndex.close()` existed and nothing called it; `RunStore` had no close at
+all. A suite run under `-W always` reported **90 unclosed connections** — now
+**0**.
+
+The rule the fix follows is **own what you made**. `RunStore` gained `close()`
+and context-manager support; the six CLI commands that build a store use `with`;
+and `Supervisor` closes its store **only when it constructed one itself**. That
+last condition is the whole of the design: closing unconditionally would be a
+use-after-close bug for every caller that shares a store, which is most of this
+test suite and any embedder running two runs against one store.
+
+`close()` is idempotent and non-terminal — the store reopens on the next
+`index()` call. A store is a handle on a directory, not on a connection, and a
+terminal close would push a lifetime onto callers who have no interest in one.
+
+Test-side, an autouse fixture in `conftest.py` closes every index a test opened.
+Teardown is a fixture's job rather than something three dozen inline call sites
+should each remember.
 
 **Q-Q4 · The lint gate compared different rule sets across a configuration
 change.** Described above. **Closed in this batch.**
@@ -254,7 +285,7 @@ Ordered by value per unit of churn, not by finding number.
 
 | batch | closes | why here |
 | --- | --- | --- |
-| **4b-1** | Q-Q3, Q-A1, Q-Q2 | The three cheap, self-contained ones. Q-Q3 is a real resource leak; Q-A1 is a one-constant move; Q-Q2 is deletion. Nothing here needs a design decision. |
+| ~~**4b-1**~~ | ~~Q-Q3, Q-A1, Q-Q2~~ | **Done.** Q-Q3 needed a design decision after all — *which* object closes a shared store — and Q-Q2 was better answered by enabling the rules than by deleting the directives. |
 | **4b-2** | Q-C5, Q-C3, Q-C4 | Coverage where it is cheapest and matters most: the fence first, then the providers using `test_bedrock_provider.py` as the template, then the three mid-range modules. Raises the floor. |
 | **4b-3** | Q-C1 | `mcp_server.py` from 0%. Its own batch because testing a protocol boundary needs a harness of its own, and it is the most serious finding. |
 | **4b-4** | Q-Q1 | The 88 lint findings, mechanically, once the files have stopped moving. Stage the gate to zero **per rule** as each reaches zero — turning the whole set on at once makes every pre-existing finding a gate failure. |

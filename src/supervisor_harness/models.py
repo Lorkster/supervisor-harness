@@ -13,6 +13,14 @@ from typing import Any
 
 from .ids import new_id, now_iso
 
+# The key the harness publishes the run's baseline commit under in
+# :attr:`RunState.facts`. It lives here rather than beside the code that
+# computes the value: `core.baseline` writes it and `agents.brief` reads it, and
+# a constant owned by either package makes the other import across a package
+# boundary. It did, and that single import was the whole of the `core` <->
+# `agents` cycle (finding Q-A1 in docs/quality-assessment.md).
+BASELINE_FACT = "baseline commit"
+
 # --------------------------------------------------------------------------
 # Enumerations
 # --------------------------------------------------------------------------
@@ -698,6 +706,12 @@ class RunState:
     # measured against it, and a generic charter scores quite differently.
     briefs: dict[str, str] = field(default_factory=dict)
     shared_context: str = ""
+    # Keyed by plain strings, one of which the harness itself writes:
+    # :data:`BASELINE_FACT`. That key lives here, beside the dict it keys,
+    # rather than beside the code that computes the value -- `agents.brief`
+    # reads it and `core.baseline` writes it, and a constant owned by either
+    # one makes the other import across a package boundary. It did: this was
+    # the whole of the `core` <-> `agents` cycle (finding Q-A1).
     facts: dict[str, str] = field(default_factory=dict)
     # What the run's agents established, in the order they established it.
     # A list rather than a dict keyed by ``key``: two agents may claim the same

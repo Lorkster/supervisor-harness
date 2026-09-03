@@ -28,10 +28,11 @@ from supervisor_harness.agents.brief import (
 )
 from supervisor_harness.agents.roles import ROLES_BY_ID
 from supervisor_harness.config import Policy
-from supervisor_harness.core.baseline import BASELINE_FACT, git_baseline
+from supervisor_harness.core.baseline import git_baseline
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.core.tools import Toolbox, tree_wide_git
 from supervisor_harness.models import (
+    BASELINE_FACT,
     AgentKind,
     AgentSpec,
     DoDCriterion,

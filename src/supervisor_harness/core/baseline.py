@@ -25,9 +25,10 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-# The key this is published under in ``RunState.facts``. Briefs read it from
-# there, so nothing has to be threaded through the phase functions.
-BASELINE_FACT = "baseline commit"
+# The key this module's value is published under is :data:`models.BASELINE_FACT`,
+# and it is defined there rather than here on purpose: `agents.brief` reads it
+# too, and importing it from `core` was the whole of the `core` <-> `agents`
+# package cycle (finding Q-A1). Import it from ``models``.
 
 # The harness's own run directory, written inside the workspace.
 STORE_DIRECTORY = ".supervisor"

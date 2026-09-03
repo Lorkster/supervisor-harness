@@ -90,6 +90,7 @@ class RunIndex:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._closed = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(path), timeout=15.0)
         self._conn.row_factory = sqlite3.Row
@@ -100,7 +101,7 @@ class RunIndex:
         """Bring the file to :data:`SCHEMA_VERSION`, or refuse to open it."""
         found = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
         if found > SCHEMA_VERSION:
-            self._conn.close()
+            self.close()
             raise IndexSchemaError(
                 f"{self.path} was written by schema version {found}; this release "
                 f"understands {SCHEMA_VERSION}. Upgrade, or delete the file with its "
@@ -111,12 +112,28 @@ class RunIndex:
             # than migrated; `CREATE TABLE IF NOT EXISTS` would leave stale columns.
             with self._conn:
                 for table in _ALL_TABLES:
-                    self._conn.execute(f"DROP TABLE IF EXISTS {table}")  # noqa: S608 - fixed table names
+                    # Interpolated, but `_ALL_TABLES` is a module constant --
+                    # no part of this name comes from a run or a model.
+                    self._conn.execute(f"DROP TABLE IF EXISTS {table}")
         with self._conn:
             self._conn.executescript(SCHEMA)
 
     def close(self) -> None:
+        """Release the connection. Safe to call more than once.
+
+        Idempotent because the callers that matter are teardown paths --
+        ``RunStore.close``, a context manager's ``__exit__``, a test fixture --
+        and a close that raises on the second call turns tidy-up into a new
+        failure mode.
+        """
+        if self._closed:
+            return
+        self._closed = True
         self._conn.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     # -- projection --------------------------------------------------------
 

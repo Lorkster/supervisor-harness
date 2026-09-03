@@ -447,6 +447,30 @@ class RunStore:
             self._index = RunIndex(self.root / "index.sqlite3")
         return self._index
 
+    def close(self) -> None:
+        """Release the SQLite connection the index holds, if one is open.
+
+        The store stays usable: :meth:`index` opens a fresh connection on the
+        next call. That is deliberate -- a store is a handle on a directory, not
+        on a connection, and making ``close`` terminal would turn a tidy-up into
+        a lifetime the callers have to track.
+
+        Nothing called this before, and nothing called ``RunIndex.close``
+        either, so every connection this store ever opened was released only
+        when the process ended. Invisible by default -- ``ResourceWarning`` is
+        ignored unless asked for -- and worst on Windows, where an open handle
+        blocks deleting the file the connection is on.
+        """
+        if self._index is not None:
+            self._index.close()
+            self._index = None
+
+    def __enter__(self) -> RunStore:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     def reindex(self, run_ids: list[str] | None = None) -> int:
         """Rebuild the SQLite projection from the authoritative logs.
 
