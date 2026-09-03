@@ -56,7 +56,7 @@ and none of them can rot quietly.
 
 | what | how | gate |
 | --- | --- | --- |
-| Coverage | `pytest --cov=supervisor_harness --cov-fail-under=88` | a **floor**; fails if it drops |
+| Coverage | `pytest --cov=supervisor_harness --cov-fail-under=92` | a **floor**; fails if it drops |
 | Types | `mypy` (config in `pyproject.toml`) | **zero**, from the start |
 | Lint | `ruff check` against the configured rule set | **zero**, since 4b-4 |
 | Architecture | `tests/test_architecture.py` — criteria 1 and 3, executed | zero cycles |
@@ -149,11 +149,18 @@ journal builder, the final-report renderer and `cli.py`'s largest command follow
 None of these is in `core/supervisor.py`.
 *Criterion 2. Cost: medium, and it is real refactoring rather than moving.*
 
-**Q-A3 · `cli.py` is the second-largest module and the least tested of the
-large ones** — 939 lines, 582 statements, **42%** covered, four complexity
-findings including a 19-branch `cmd_status` and an 85-statement function.
-It is also a boundary users touch directly.
-*Criteria 2, 3, 10. Cost: medium.*
+**Q-A3 · `cli.py`'s complexity. — CLOSED (4b-5)** All four findings are gone;
+`ruff check --select C901,PLR0912,PLR0915` is clean on the file.
+
+`cmd_status` (19 branches) and `_print_response` (12) were each a sequence of
+independent "print this section if the run has one" blocks, so each section
+became its own function. `build_parser`'s 85 flat statements are now grouped by
+what a reader is looking for — the commands that drive a run, the ones that read
+one back, the ones that maintain the store.
+
+The file grew from 939 to about 1,030 lines doing it. That is the expected trade
+and this document's criterion 2 anticipates it: *a module's size is a smell, a
+function's complexity is the defect.*
 
 ### Testing and coverage
 
@@ -186,9 +193,17 @@ Five statements remain uncovered: `if __name__ == "__main__"`, and four lines
 inside `supervisor_check_drift`'s model path, which needs a drift stage routed
 off `host`.
 
-**Q-C2 · `cli.py` is 42% covered** — 339 missing statements, the largest
-absolute gap in the codebase. The other user-facing boundary.
-*Criterion 10. Cost: medium.*
+**Q-C2 · `cli.py` was 42% covered. — CLOSED (4b-5)** Now **80%**, and the
+project total went 88.9% → **92.9%** with the floor raised to 92.
+
+`tests/test_cli_commands.py` drives a whole run **through the CLI itself** —
+`start`, `report`, `advance`, `approve` — rather than through the Supervisor API
+with the CLI pointed at the leftovers. `cmd_report`'s stdin handling,
+`cmd_approve`'s decision parsing and `_print_response`'s rendering only run on
+that path.
+
+They were written **before** the Q-A3 refactor in the same batch, deliberately:
+42% is not enough protection to reshape a 19-branch function behind.
 
 **Q-C3 · The HTTP providers were barely tested. — CLOSED (4b-2)**
 `openrouter` 26% → **92%**, `ollama` 27% → **92%**, `anthropic` 30% → **89%**.
@@ -389,7 +404,7 @@ Ordered by value per unit of churn, not by finding number.
 | ~~**4b-2**~~ | ~~Q-C5, Q-C3, Q-C4~~ | **Done.** Coverage 82.3% → **87.0%**, floor raised to 86. Found and fixed a real defect on the way — see Q-Q5. |
 | ~~**4b-3**~~ | ~~Q-C1~~ | **Done.** 0% → 95%, driven through `call_tool` rather than the closures. Coverage 87.0% → **88.8%**, floor raised to 88. |
 | ~~**4b-4**~~ | ~~Q-Q1~~ | **Done.** All of them to zero in one batch, so the per-rule staging the plan allowed for was not needed. `ruff check` now gates at zero and `ruff_diff.py` is gone. |
-| **4b-5** | Q-A3, Q-C2 | `cli.py`: complexity and coverage together, since both mean touching the same functions. |
+| ~~**4b-5**~~ | ~~Q-A3, Q-C2~~ | **Done.** Coverage 42% → 80%, all four complexity findings cleared, and the rendering proved unchanged by diffing 33 CLI invocations before and after. |
 | **later** | Q-A2, Q-C6, Q-T2 | Q-A2 is real refactoring and should follow item 2 so the two do not collide. Q-C6 is best done per-module alongside the batches above rather than as a sweep. Q-T2 is a policy choice, cheapest while files are being touched. |
 
 **Where item 2 (the split) fits.** Between 4b-1 and 4b-2. It needs the cheap
