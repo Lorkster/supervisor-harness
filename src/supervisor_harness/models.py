@@ -39,10 +39,14 @@ class Phase(StrEnum):
     IMPROVING = "improving"
     COMPLETE = "complete"
     FAILED = "failed"
-    ABORTED = "aborted"
 
 
-TERMINAL_PHASES = {Phase.COMPLETE, Phase.FAILED, Phase.ABORTED}
+#: A run in one of these is over. `ABORTED` sat here too, from the first commit
+#: to the documentation audit that found it: declared, treated as terminal, and
+#: set by nothing anywhere. A phase no code can enter is a phase every reader of
+#: this enum has to rule out by hand -- and `tests/test_architecture.py` now
+#: refuses a repeat.
+TERMINAL_PHASES = {Phase.COMPLETE, Phase.FAILED}
 
 
 class RunMode(StrEnum):

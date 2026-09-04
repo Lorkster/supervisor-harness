@@ -195,17 +195,24 @@ supervisor resume                      # picks up where it stopped
 
 ### Contributing checks
 
+The five CI runs, in the order they are cheapest to fix:
+
 ```bash
-python -m pytest -q
-python -m ruff check .
+python -m ruff check .                                    # lint, and complexity
+python -m mypy                                            # strict, zero errors
+python tools/check_doc_refs.py                            # the docs still describe this code
+python -m pytest -q                                       # the suite, on 3.11-3.14 × two OSes
+python -m pytest -q --cov=supervisor_harness --cov-fail-under=92   # the floor
 ```
 
-The second is the lint gate CI runs, and it is a gate at **zero**. It was not
-always: ruff went unconfigured until the rule set was chosen by measurement, and
-the 67 findings that set produced were tolerated by a by-(file, rule) diff until
-they were driven to zero. Widening the set later means taking the new rule to
-zero in the same change rather than reintroducing a baseline — a permanent
-backlog is not a standard.
+Each is a gate at its target rather than at a tolerated baseline: zero lint
+findings, zero type errors, zero stale documentation references, and a coverage
+floor that only ever rises. Lint was not always one — ruff went unconfigured
+until the rule set was chosen by measurement, and the 67 findings that set
+produced were tolerated by a by-(file, rule) diff until they were driven to
+zero. Widening the set later means taking the new rule to zero in the same
+change rather than reintroducing a baseline — a permanent backlog is not a
+standard.
 
 Both `ruff` and `mypy` are pinned to a minor range for that reason: when a check
 gates at zero, a new release that adds a rule turns an unrelated pull request
@@ -224,15 +231,18 @@ shorthand for something the CLI will not tell you itself.
 | `report RUN AGENT` | hand back one agent's result | `-i/--input` a JSON file, or `-` for stdin (the default) |
 | `advance [RUN]` | move a run to its next phase once its packets are reported | — |
 | `abandon AGENT [RUN]` | give up on an agent that will never report | `--reason`, recorded on the run's log |
-| `approve [RUN]` | decide on proposed tasks | `--all`, or `--task ID[:approve\|reject\|defer]`, repeatable |
+| `approve [RUN]` | decide on proposed tasks | `--all`, or `--task ID[:approve\|reject\|defer]`, repeatable; `--renew-envelope` to re-grant a scope envelope that has gone stale |
 | `resume [RUN]` | continue an interrupted run from its event log | — |
 | `status [RUN]` | show one run in detail: phase, agents, drift, criteria | — |
+| `explain [RUN]` | how the run got here: every turn, its drift signals, and the directive each one drew | `-a/--agent` one agent, `--width COLS` |
 | `drift AGENT [RUN]` | ask the drift model for a second opinion on one agent's last turn | — |
 | `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
 | `runs` | list recent runs in this store | `-n/--limit` (default 20) |
 | `lessons` | show what previous runs taught the harness | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit` |
 | `providers` | show stage routing and whether each provider answers | — |
 | `reindex` | rebuild `index.sqlite3` from the event logs | — |
+| `delete [RUN]` | **remove runs from disk** and their rows from the index | a run id, or `--older-than DAYS`; `--keep-last N` never deletes the N most recent (default 5) |
+| `prune-lessons` | drop lessons the library has not seen for a while | `--older-than DAYS` (default 180) |
 | `mcp` | run the MCP server on stdio; `.mcp.json` starts the same server through the `supervisor-mcp` entry point | — |
 
 Every command also takes `-w/--workspace`, `--json` and `--debug`, before or
@@ -557,6 +567,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `supervisor_status` / `supervisor_runs` | Inspect runs |
 | `supervisor_resume` | Continue an interrupted run |
 | `supervisor_check_drift` | Second opinion on an agent that looks off-brief |
+| `supervisor_explain` | The decision journal: every turn, its signals, and the directive it drew |
 | `supervisor_lessons` | What previous runs taught the harness |
 | `supervisor_providers` | Stage routing and provider health |
 
@@ -569,20 +580,37 @@ src/supervisor_harness/
   models.py        domain types; everything persisted is here
   contracts.py     JSON schemas every stage answers in, and their parsers
   config.py        layered config, per-stage routing, policy
-  store/           event log, fold, snapshots, SQLite projection
-  providers/       openrouter, ollama, anthropic, host delegation, routing
+  serde.py         dataclasses to JSON and back
+  ids.py           identifiers, timestamps, ages
+  store/           event log, fold, snapshots, SQLite projection, redaction
+  providers/       openrouter, ollama, anthropic, bedrock, host delegation, routing
   agents/          roles and lens selection, host-agent discovery, briefs
+  host/            which host is driving, and what it can spawn
+  integrations/    the files `supervisor init` writes into a project
   core/
     supervisor.py  the state machine driving a run
+    lifecycle.py   an agent's life: spawned, attenuated, statused, abandoned
+    packets.py     briefs, work packets, and the directive carried into the next turn
+    supervision.py recording a turn, assessing it, answering it
+    reporting.py   status, artifacts, the final report and the reconciliation
+    responses.py   the packet and response types the protocol hands back
     phases.py      prompts and pure transformations per phase
     drift.py       heuristics, escalation, the directive ladder
     dod.py         criteria validation, quality bars, verification
+    envelope.py    the run's scope grant, and attenuation down the delegation chain
     blackboard.py  shared context, message routing, contradiction detection
+    journal.py     the decision journal `supervisor explain` renders
     tools.py       sandboxed workspace tools for autonomous agents
+    paths.py       path normalisation and scope matching
     baseline.py    the commit a run measures its whole-repository checks against
   mcp_server.py    MCP surface
   cli.py           command line
 ```
+
+That listing is checked in CI (`tools/check_doc_refs.py`): a module added or
+moved without touching it fails the build. It described the pre-split package
+for four batches before anyone noticed, which is the argument for the check
+rather than for more care.
 
 ---
 
@@ -612,11 +640,12 @@ memory.
 | | |
 | --- | --- |
 | [`docs/reasoning-control-plane.md`](docs/reasoning-control-plane.md) | **What the harness is.** The four dimensions of the design, each pointing at the code that implements it, and what each one deliberately does not do. |
+| [`docs/architecture.md`](docs/architecture.md) | **How a run works, drawn.** The phase machine including its failure paths, what is written where and what survives a crash, where the two backends diverge, and how the fence narrows. |
 | [`docs/protocol.md`](docs/protocol.md) | The wire protocol between the harness and the host. |
 | [`docs/shared-context-spec.md`](docs/shared-context-spec.md) | Shared semantic context in full: the design, its decided choices, and its open ones. |
-| [`docs/quality-assessment.md`](docs/quality-assessment.md) | The standard this codebase is held to, what it measures against it, and the findings still open. |
+| [`docs/quality-assessment.md`](docs/quality-assessment.md) | The standard this codebase is held to, what it measured against it, and the disposition of every finding. |
 | [`docs/remediation-plan.md`](docs/remediation-plan.md) | The history — what a review of this codebase found, what was fixed, and why each call was made. |
-| [`docs/next-three.md`](docs/next-three.md) | What is scheduled next, and what has already been decided. |
+| [`docs/next-three.md`](docs/next-three.md) | The plan those two documents were written under, and the record of what it decided. |
 
 Documents that cite code by line number are checked in CI
 (`tools/check_doc_refs.py`), so a reference that stops pointing at what it

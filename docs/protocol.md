@@ -34,6 +34,10 @@ created ──▶ analyzing ──▶ synthesizing ──▶ awaiting_approval �
 Every transition is an event on the run's log. A run can be resumed at any phase,
 in a different process or a later session, by replaying that log.
 
+The happy path is above; the paths that are not — abandonment, remediation,
+envelope renewal, and where each loop is bounded — are drawn in
+[`architecture.md`](architecture.md#the-phase-machine).
+
 ---
 
 ## The loop

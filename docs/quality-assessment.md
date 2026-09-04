@@ -8,6 +8,15 @@ This is the assessment, not the work. It says what the criteria are, what was
 measured against them, what was found, and in what order the findings should be
 closed. The work is item **4b**, and it is expected to take several batches.
 
+> **Every finding in this document is closed.** Seventeen: the fifteen this
+> assessment opened with, plus two found while closing them — `Q-Q5`, a real
+> defect in the command timeout, and `Q-C7`, a deletion path with no tests.
+> `Q-C6` was the last to close.
+>
+> The criteria below are still the standard — they are what CI gates on — so
+> this stays a live document. What changed is that its findings section is now
+> a record of what was fixed rather than a queue.
+
 Findings carry ids (`Q-A1`, `Q-C2`, …) so a commit can say `Closes: Q-C1` and be
 reconciled against this document, the way `remediation-plan.md` already works.
 
@@ -109,9 +118,9 @@ was unfounded and should not be repeated:
 | --- | --- |
 | `core/supervisor.py` coverage | **94%** (59 of 952 statements missing) |
 | its complexity findings | **3**, worst `_drive_agent` at 14 |
-| `store/events.py:99` | **123 statements, 48 branches** — the worst function in the codebase |
-| `core/journal.py:130` | complexity **26**, 86 statements |
-| `core/phases.py:980` | complexity **25**, 75 statements |
+| `store/events.py` | **123 statements, 48 branches** — the worst function in the codebase |
+| `core/journal.py` | complexity **26**, 86 statements |
+| `core/phases.py` | complexity **25**, 75 statements |
 
 So the split is a **file-size fix, not a complexity fix**. That does not overturn
 the decision — the stated reason was the maintainability of a 2,584-line class,
@@ -528,9 +537,9 @@ message was already right. It runs in 1.05s against a 15s bound, stable across
 
 ### Types
 
-**Q-T1 · Three type errors.** `serde.py:80` (a genuine narrowing bug —
-`is_dataclass` admits instances as well as classes), `store/events.py:248`
-(variable reuse, not a defect), `mcp_server.py:32` (SDK stub gap).
+**Q-T1 · Three type errors.** `serde.py` (a genuine narrowing bug —
+`is_dataclass` admits instances as well as classes), `store/events.py`
+(variable reuse, not a defect), `mcp_server.py` (SDK stub gap).
 **Closed in this batch**, so mypy could gate at zero.
 
 **Q-T2 · `mypy --strict`. — CLOSED** `strict = true` is on and at zero.

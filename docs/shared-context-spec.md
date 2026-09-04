@@ -39,8 +39,8 @@ Verified against `main` at the time of writing:
 `state.facts` is written in exactly two places in the whole codebase:
 
 ```
-supervisor.py:251   facts[BASELINE_FACT]   the git commit the run started from
-supervisor.py:528   facts["restated goal"] the planning model's restatement
+supervisor.py   facts[BASELINE_FACT]   the git commit the run started from
+supervisor.py   facts["restated goal"] the planning model's restatement
 ```
 
 Both keys are the harness's own. **No schema anywhere lets an agent contribute
@@ -76,9 +76,9 @@ Three concrete symptoms, all verified:
    drift scoring.
 
 3. **`open_questions` is collected and discarded.** Every analysis agent is
-   asked for it (`contracts.py:159`). `AgentTurn` has no field for it,
+   asked for it (`contracts.py`). `AgentTurn` has no field for it,
    `supervisor.py` never mentions it, and `build_report` reads `open_questions`
-   only from the *synthesis* payload (`phases.py:317`). An analysis agent's open
+   only from the *synthesis* payload (`phases.py`). An analysis agent's open
    questions go nowhere — the same shape as the dead paths batch 9b removed,
    and a wasted prompt slot in every analysis brief.
 
