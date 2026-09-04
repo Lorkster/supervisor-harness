@@ -379,14 +379,20 @@ def test_a_snapshot_written_before_the_watermark_existed_reads_as_stale(
 
 
 def test_the_fold_records_the_position_it_reached() -> None:
-    """A rejected event still advances the mark: it will be rejected every time."""
+    """A rejected event still advances the mark: it will be rejected every time.
+
+    The rejected event is *last* deliberately. It used to sit in the middle, and
+    the good event after it carried the mark to 3 whether or not a rejection
+    held it back -- so the sentence above was not the property under test. Found
+    by the Q-C6 audit, by holding the mark back and watching this stay green.
+    """
     state = fold([
         _event(EventType.NOTE, seq=1),
-        _event(EventType.PHASE_CHANGED, {"phase": "not_a_phase"}, seq=2),
-        _event(EventType.NOTE, seq=3),
+        _event(EventType.NOTE, seq=2),
+        _event(EventType.PHASE_CHANGED, {"phase": "not_a_phase"}, seq=3),
     ])
 
-    assert state.last_seq == 3
+    assert state.last_seq == 3, "the rejected event did not advance the mark"
     assert len(state.rejected_events) == 1
 
 
@@ -397,9 +403,21 @@ def test_concurrent_snapshot_writers_never_leave_a_partial_file(tmp_path: Path) 
     processes reporting at once wrote into one file and renamed it twice, and the
     survivor held an interleaving of both. Every read below must see a whole,
     parseable snapshot -- never a half-written one.
+
+    The read is the file itself, not ``load_state``. ``load_state`` *tolerates*
+    an unparseable snapshot -- that is its job, and the test above proves it --
+    so calling it here asserted nothing: a torn file was silently refolded from
+    the log and the loop carried on. Found by the Q-C6 audit.
+
+    This is a demonstration, and a demonstration of a race is probabilistic: with
+    the shared name restored it catches the interleaving in some runs and not
+    others, on both platforms, and raising the round count did not help. The
+    test below asserts the property that makes the interleaving impossible, and
+    that one cannot be flaky.
     """
     store = _store(tmp_path)
     store.log("run_A").append(Event(run_id="run_A", type=EventType.NOTE))
+    snapshot = store.runs_dir / "run_A" / "state.json"
     big = "x" * 200_000  # large enough that a partial write would be visible
     errors: list[BaseException] = []
     start = threading.Barrier(6)
@@ -409,7 +427,13 @@ def test_concurrent_snapshot_writers_never_leave_a_partial_file(tmp_path: Path) 
             start.wait(timeout=5.0)
             for _ in range(10):
                 store.save_snapshot(RunState(id="run_A", prompt=f"{big}{n}", last_seq=1))
-                store.load_state("run_A")  # must always parse
+                try:
+                    raw = snapshot.read_text(encoding="utf-8")
+                except OSError:
+                    # Windows denies a read racing a replace. Not damage: the
+                    # rename is the atomic step, and a denied read saw nothing.
+                    continue
+                json.loads(raw)  # whatever it did see has to be a whole document
         except BaseException as exc:  # noqa: BLE001 - re-raised through the assertion
             errors.append(exc)
 
@@ -423,6 +447,36 @@ def test_concurrent_snapshot_writers_never_leave_a_partial_file(tmp_path: Path) 
     assert store.load_state("run_A").prompt.startswith(big)
     leftovers = list((store.runs_dir / "run_A").glob(".state-*.tmp"))
     assert leftovers == [], f"temporary files left behind: {leftovers}"
+
+
+def test_each_snapshot_write_uses_a_temporary_file_of_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What makes the interleaving above impossible, asserted without a race.
+
+    The concurrency test is the demonstration, and it can only ever be a
+    probabilistic one. The property underneath it is not: two writes must never
+    name the same temporary file, which is a fact about a single process and is
+    checkable directly. The rename is intercepted to see the name each write
+    actually used.
+    """
+    store = _store(tmp_path)
+    store.log("run_A").append(Event(run_id="run_A", type=EventType.NOTE))
+
+    used: list[str] = []
+    real_replace = Path.replace
+
+    def record(self: Path, target: str | Path) -> Path:
+        used.append(self.name)
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", record)
+    for i in range(3):
+        assert store.save_snapshot(RunState(id="run_A", prompt=f"p{i}", last_seq=1))
+
+    assert len(used) == 3
+    assert len(set(used)) == 3, f"two writes shared a temporary file: {used}"
+    assert "state.json" not in used, "the snapshot was written in place"
 
 
 def test_a_snapshot_that_cannot_be_written_does_not_end_the_run(
