@@ -429,6 +429,38 @@ def test_a_result_that_is_neither_object_nor_string_is_rejected() -> None:
     assert mcp_server._as_dict({"a": 1}) == {"a": 1}
 
 
+def test_build_server_omits_version_for_a_server_class_that_lacks_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SDK 1.x's FastMCP has no `version` constructor argument; only MCPServer
+    (2.x) does. `build_server` always passed one, so any host that resolved
+    the SDK-1.x fallback import crashed with `TypeError: FastMCP.__init__()
+    got an unexpected keyword argument 'version'` before this could register a
+    single tool. Simulated here because this suite runs against whichever SDK
+    is installed, and cannot assume both are.
+    """
+    received: dict[str, Any] = {}
+
+    class FakeFastMCP:
+        def __init__(self, **kwargs: Any) -> None:
+            if "version" in kwargs:
+                raise TypeError(
+                    "FastMCP.__init__() got an unexpected keyword argument 'version'"
+                )
+            received.update(kwargs)
+
+        def tool(self, **_: Any) -> Any:
+            return lambda fn: fn
+
+    monkeypatch.setattr(mcp_server, "_Server", FakeFastMCP)
+    monkeypatch.setattr(mcp_server, "_SERVER_TAKES_VERSION", False)
+
+    mcp_server.build_server()
+
+    assert "version" not in received
+    assert received["name"] == "supervisor-harness"
+
+
 def test_main_serves_the_built_server_over_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
     """`supervisor-mcp` is a console script and nothing else calls it.
 

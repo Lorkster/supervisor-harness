@@ -33,11 +33,21 @@ if TYPE_CHECKING:
     # made every `@server.tool(...)` an untyped decorator and the twelve tools
     # under it untyped functions (finding Q-T2). The SDK itself is fully typed.
     from mcp.server.mcpserver import MCPServer as _Server
+
+    _SERVER_TAKES_VERSION = True
 else:
     try:  # MCP SDK 2.x
         from mcp.server.mcpserver import MCPServer as _Server
+
+        _SERVER_TAKES_VERSION = True
     except ModuleNotFoundError:  # pragma: no cover - SDK 1.x fallback
         from mcp.server.fastmcp import FastMCP as _Server
+
+        # SDK 1.x's FastMCP never grew a `version` constructor argument --
+        # only MCPServer (2.x) accepts one. Passing it here raised
+        # `TypeError: FastMCP.__init__() got an unexpected keyword argument
+        # 'version'` on every host that resolved to this fallback.
+        _SERVER_TAKES_VERSION = False
 
 
 INSTRUCTIONS = """\
@@ -385,11 +395,10 @@ def build_server() -> _Server:
     in it is trivial.
     """
     """Construct the MCP server with the harness tools registered."""
-    server = _Server(
-        name="supervisor-harness",
-        instructions=INSTRUCTIONS,
-        version="0.1.0",
-    )
+    kwargs: dict[str, Any] = {"name": "supervisor-harness", "instructions": INSTRUCTIONS}
+    if _SERVER_TAKES_VERSION:
+        kwargs["version"] = "0.1.0"
+    server = _Server(**kwargs)
     _register_run_tools(server)
     _register_read_tools(server)
     _register_meta_tools(server)
