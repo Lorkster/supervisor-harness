@@ -267,8 +267,9 @@ would pass every refusal test in the suite — the fence is not consulted
 differently, it simply guards an operation that answers wrongly.
 
 **Q-C6 · The suite has never been audited for vacuous tests as a whole. —
-`test_hardening.py` (Q-C6a), `test_store.py` (Q-C6b) and `test_supervision.py`
-(Q-C6c) DONE; `test_fold.py` remains.**
+CLOSED.** Four modules, 159 sabotages, both platforms: `test_hardening.py`
+(Q-C6a), `test_store.py` (Q-C6b), `test_supervision.py` (Q-C6c) and
+`test_fold.py` (Q-C6d).
 The sabotage check has been applied to each new batch since it was adopted, and
 has caught five vacuous tests. Run backwards over `test_hardening.py` — the
 oldest module, and the one holding the regressions for the defects the harness
@@ -368,7 +369,47 @@ using an own finding that did not match the question, so the assertion held
 whether or not the exclusion existed. That is the whole failure mode in one
 line: the input has to be able to produce the wrong answer.
 
-*Criterion 9. Remaining: the parts of `test_fold.py` that predate the bar.*
+**Q-C6d · `test_fold.py`: 34 sabotages against all 33 tests, both platforms.**
+Two tests whose input could not distinguish the property they named.
+
+`test_the_fold_records_the_position_it_reached` opens with "a rejected event
+still advances the mark" — and put the rejected event in the *middle*, so the
+good event after it carried the watermark to 3 whether or not a rejection held
+it back. Holding the mark back on rejection left the test green. The rejected
+event is now last.
+
+`test_concurrent_snapshot_writers_never_leave_a_partial_file` called
+`load_state` in its writer loop, with the comment "must always parse".
+`load_state` cannot fail on an unparseable snapshot — tolerating one is its job,
+and the test two above proves it — so a torn file was silently refolded from the
+log and the loop carried on. It now reads `state.json` itself and parses it,
+which is what the comment claimed.
+
+That test is a demonstration of a race, so its verdict is probabilistic: with
+the shared temporary name restored it caught the interleaving in some runs and
+not others, on both platforms, and raising the round count made it worse rather
+than better. The property that makes the interleaving impossible is not
+probabilistic — no two writes may name the same temporary file — so that is now
+asserted directly beside it, by intercepting the rename. Five sabotage runs,
+five reds.
+
+**A finding about the method, not the code.** The driver that applies these
+sabotages was reporting a false green. CPython validates a cached `.pyc` against
+its source's *(mtime, size)*, and two different sabotages of one file that
+shrink it by the same number of bytes within the same second are
+indistinguishable to that check — `events.py` minus a handler entry and
+`events.py` with one statement replaced by `pass` are both exactly 31 bytes
+shorter. The second ran under the first one's bytecode.
+
+All four sweeps were re-run with bytecode purged and `PYTHONDONTWRITEBYTECODE`
+set. **No finding reported in Q-C6a–c was an artifact and no red flipped**;
+three results inside this module's own sweep changed, two of them mine to
+misread. Worth recording because it is the failure mode this whole finding is
+about, one level up: a check that cannot fail is worth nothing, and that
+includes the check being used to find checks that cannot fail.
+
+*Criterion 9. Closed: four modules audited, and the method's own soundness
+established the hard way.*
 
 **Q-C7 · `RunStore.purge` — a user-facing deletion path with no test at all. —
 CLOSED (Q-C6b)**
@@ -562,7 +603,7 @@ Ordered by value per unit of churn, not by finding number.
 | ~~**4b-5**~~ | ~~Q-A3, Q-C2~~ | **Done.** Coverage 42% → 80%, all four complexity findings cleared, and the rendering proved unchanged by diffing 33 CLI invocations before and after. |
 | ~~Q-A2~~ | ~~done~~ | Six functions restructured, `C901` gated at 15. Nine functions between 11 and 13 remain, recorded above. |
 | ~~Q-T2~~ | ~~done~~ | `mypy --strict` at zero, with no suppression anywhere in `src/`. |
-| **Q-C6** | in progress | `test_hardening.py` (Q-C6a), `test_store.py` (Q-C6b) and `test_supervision.py` (Q-C6c) audited; `test_fold.py` remains. Q-C7 was found and closed inside Q-C6b. |
+| ~~Q-C6~~ | ~~done~~ | Four modules, 159 sabotages, Windows and Linux. Five weak tests, three unreached mechanisms, one untested subsystem (Q-C7), and a false green in the driver itself. |
 
 **Where item 2 (the split) fits.** Between 4b-1 and 4b-2. It needs the cheap
 architecture finding closed first (Q-A1, so the package graph is a DAG before
