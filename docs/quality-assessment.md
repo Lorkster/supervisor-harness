@@ -267,7 +267,8 @@ would pass every refusal test in the suite — the fence is not consulted
 differently, it simply guards an operation that answers wrongly.
 
 **Q-C6 · The suite has never been audited for vacuous tests as a whole. —
-`test_hardening.py` (Q-C6a) and `test_store.py` (Q-C6b) DONE; two modules remain.**
+`test_hardening.py` (Q-C6a), `test_store.py` (Q-C6b) and `test_supervision.py`
+(Q-C6c) DONE; `test_fold.py` remains.**
 The sabotage check has been applied to each new batch since it was adopted, and
 has caught five vacuous tests. Run backwards over `test_hardening.py` — the
 oldest module, and the one holding the regressions for the defects the harness
@@ -331,8 +332,43 @@ and `older_than`'s own `max_age_days <= 0`. Remove either and the behaviour is
 unchanged, so that assertion cannot go red under a single sabotage. Same shape
 as the two locks in `_walk`; left alone for the same reason.
 
-*Criterion 9. Remaining: `test_supervision.py` and the parts of `test_fold.py`
-that predate the bar. Per-module, as before.*
+**Q-C6c · `test_supervision.py`: 54 sabotages against all 44 tests, both
+platforms.** Identical results again, and the largest module audited so far.
+
+**One test that did not reach the mechanism it is named for.**
+`test_completion_claim_is_refused_when_coverage_is_thin` asserts that an agent
+claiming DONE on a thin turn is not accepted. A turn that thin scores **0.825**
+against a `drift_threshold` of 0.45, so `decide_directive` returns REFOCUS from
+the drift branch and never reads `claimed_status` at all: the completion check
+could be hard-wired to accept and `is not ACCEPT` still held. Not vacuous — it
+goes red when the drift branch goes — but it was proving something other than
+what it claimed, and the completion branch it is named for was reached by no
+assertion anywhere.
+
+It now says which branch answered it, and a second test reaches the other one:
+below the threshold, where nothing is due a correction, one of two objectives
+covered with three quarters of the budget spent gives DEEPEN — and the same turn
+covering both gives ACCEPT, which is what makes it a coverage bar rather than a
+refusal to believe an agent at all.
+
+**Two promises nothing exercised.** `answer_from_record` names five sources for
+what the supervisor can tell an agent; the tests reached the brief and the
+nothing-matched path. The approved definition of done and other agents' findings
+— by the docstring's own account most of what the record can usefully answer
+with — could both have stopped answering silently. Covered now, including that
+an agent is never handed its own finding back as news.
+
+Not a separate finding, unlike Q-C7: this is two unexercised branches inside a
+function the module already tests, not a subsystem with no tests at all.
+
+**And the check caught a vacuous assertion written during the audit itself** —
+the third time in three batches that it has caught same-day work rather than old
+work. The peer-findings test asserted that an agent is not told its own finding,
+using an own finding that did not match the question, so the assertion held
+whether or not the exclusion existed. That is the whole failure mode in one
+line: the input has to be able to produce the wrong answer.
+
+*Criterion 9. Remaining: the parts of `test_fold.py` that predate the bar.*
 
 **Q-C7 · `RunStore.purge` — a user-facing deletion path with no test at all. —
 CLOSED (Q-C6b)**
@@ -526,7 +562,7 @@ Ordered by value per unit of churn, not by finding number.
 | ~~**4b-5**~~ | ~~Q-A3, Q-C2~~ | **Done.** Coverage 42% → 80%, all four complexity findings cleared, and the rendering proved unchanged by diffing 33 CLI invocations before and after. |
 | ~~Q-A2~~ | ~~done~~ | Six functions restructured, `C901` gated at 15. Nine functions between 11 and 13 remain, recorded above. |
 | ~~Q-T2~~ | ~~done~~ | `mypy --strict` at zero, with no suppression anywhere in `src/`. |
-| **Q-C6** | in progress | `test_hardening.py` (Q-C6a) and `test_store.py` (Q-C6b) audited. Two modules remain. Q-C7 was found and closed inside Q-C6b. |
+| **Q-C6** | in progress | `test_hardening.py` (Q-C6a), `test_store.py` (Q-C6b) and `test_supervision.py` (Q-C6c) audited; `test_fold.py` remains. Q-C7 was found and closed inside Q-C6b. |
 
 **Where item 2 (the split) fits.** Between 4b-1 and 4b-2. It needs the cheap
 architecture finding closed first (Q-A1, so the package graph is a DAG before

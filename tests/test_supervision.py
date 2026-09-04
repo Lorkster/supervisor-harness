@@ -179,12 +179,66 @@ def test_an_agent_inside_every_ceiling_is_not_stopped() -> None:
 
 
 def test_completion_claim_is_refused_when_coverage_is_thin() -> None:
-    """An agent cannot close itself out by asserting it is done."""
+    """An agent cannot close itself out by asserting it is done.
+
+    Which mechanism refuses it is asserted too, because it is not the one this
+    test's name suggests: a turn this thin scores 0.825, and the drift branch
+    answers it before the completion claim is read at all. Measured by the Q-C6
+    audit -- with the completion check hard-wired to accept, `is not ACCEPT`
+    still held, so the claim-specific path was never reached from here. The test
+    below reaches it.
+    """
     agent = _agent()
     turn = AgentTurn(output="Looks fine to me overall.", claimed_status=AgentStatus.DONE)
-    directive = decide_directive(_assess(agent, turn, index=2), agent, turn, Policy(), 3)
+    assessment = _assess(agent, turn, index=2)
+    directive = decide_directive(assessment, agent, turn, Policy(), 3)
 
-    assert directive.kind is not DirectiveKind.ACCEPT
+    assert assessment.score > Policy().drift_threshold
+    assert directive.kind is DirectiveKind.REFOCUS
+
+
+def test_a_done_claim_too_quiet_to_be_drift_is_still_read() -> None:
+    """The path the test above cannot reach: nothing to correct, and not done.
+
+    Below ``drift_threshold`` no correction is due, so the only thing between "I
+    am done" and ACCEPT is whether the objectives were actually covered. One of
+    two addressed with three quarters of the budget spent is a shortfall worth a
+    turn, not a finished agent -- and the same turn covering both is accepted,
+    which is what makes this a coverage bar rather than a refusal to believe an
+    agent at all.
+    """
+    agent = _agent()
+    covered_one = (
+        "I identify the trust boundaries here: untrusted input crosses at the "
+        "unauthenticated POST handler in src/auth/login.py:34, where the credential "
+        "pair arrives straight from the network with no counter in front of it."
+    )
+    shallow = AgentTurn(
+        output=covered_one,
+        findings=[Finding(title="Login endpoint is unthrottled", severity=Severity.HIGH)],
+        files_touched=["src/auth/login.py"],
+        claimed_status=AgentStatus.DONE,
+    )
+    assessment = _assess(agent, shallow, index=2)
+    directive = decide_directive(assessment, agent, shallow, Policy(), 3)
+
+    assert assessment.score < Policy().drift_threshold, "no correction is due"
+    assert [s.kind for s in assessment.signals] == ["objective_coverage"]
+    assert directive.kind is DirectiveKind.DEEPEN
+    assert directive.corrections, "an agent told to go deeper must be told where"
+
+    thorough = AgentTurn(
+        output=(
+            covered_one + " I also check authentication and authorisation failure "
+            "modes -- guard.py:18 fails closed on a provider error, and the counter "
+            "is never consulted on that path."
+        ),
+        findings=[Finding(title="Login endpoint is unthrottled", severity=Severity.HIGH)],
+        files_touched=["src/auth/login.py"],
+        claimed_status=AgentStatus.DONE,
+    )
+    accepted = decide_directive(_assess(agent, thorough, index=2), agent, thorough, Policy(), 3)
+    assert accepted.kind is DirectiveKind.ACCEPT
 
 
 async def test_drift_correction_happens_inside_a_live_run(
@@ -1075,6 +1129,52 @@ async def test_a_question_to_the_supervisor_is_answered_from_the_run_record(
     # Answered once: the next turn does not answer the same question again.
     second = await supervisor.supervision._supervise(session, live, turn)
     assert second.kind is not DirectiveKind.ANSWER
+
+
+def test_the_record_answers_from_the_task_and_from_other_agents_too() -> None:
+    """Four sources are promised; two of them were never exercised.
+
+    `answer_from_record` names the brief, the harness's own facts, what other
+    agents established, the approved definition of done and other agents'
+    findings. The tests reached the first of those and the nothing-matched path,
+    so the last two could have stopped answering and only a reader of the
+    docstring would have known. Found beside the Q-C6 audit.
+    """
+    from supervisor_harness.core.blackboard import answer_from_record
+
+    state = RunState(prompt=PROMPT)
+    task = ExecutionTask(
+        id="tsk_1",
+        title="Add a limiter",
+        dod=[DoDCriterion(statement="The limiter keys on the account, not the address",
+                          method=VerifyMethod.INSPECTION, expect="src/auth/login.py: account")],
+    )
+    state.tasks[task.id] = task
+    state.findings = [
+        Finding(agent_id="agt_other", lens="technical",
+                title="The limiter counter is per-process", detail="Not shared across workers"),
+        # Deliberately about the same subject as the question below: an own
+        # finding that matched nothing would be dropped for irrelevance, and
+        # the exclusion this asserts would never be reached.
+        Finding(agent_id="agt_1", lens="security",
+                title="The limiter counter is read before the login check",
+                detail="Reported by this agent, on the same subject"),
+    ]
+    agent = _agent(id="agt_1", task_id="tsk_1", objectives=["Trace the login handler"])
+
+    from_task = answer_from_record(_question("agt_1", "should the limiter key on the account?"),
+                                   agent, state)
+    assert any("The definition of done requires" in a and "account" in a for a in from_task), \
+        from_task
+
+    from_peer = answer_from_record(_question("agt_1", "is the limiter counter shared?"),
+                                   agent, state)
+    assert any("Another agent already found" in a for a in from_peer), from_peer
+    assert not any("read before the login check" in a for a in from_peer), \
+        "an agent is not told what it found itself"
+
+    assert answer_from_record(_question("agt_1", "which kubernetes namespace hosts staging?"),
+                              agent, state) == []
 
 
 async def test_a_question_the_record_cannot_answer_is_not_invented(
