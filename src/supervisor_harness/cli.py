@@ -166,19 +166,14 @@ def cmd_init(args: argparse.Namespace) -> int:
         _copy(INTEGRATIONS / "cursor" / "supervise.md", cmd_dir / "supervise.md",
               args.force, written, workspace)
 
-    mcp_path = workspace / ".mcp.json"
-    template = json.loads((INTEGRATIONS / "mcp.json").read_text(encoding="utf-8"))
-    existing: dict[str, Any] = {}
-    if mcp_path.exists():
-        try:
-            existing = json.loads(mcp_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing = {}
-    servers = existing.setdefault("mcpServers", {})
-    if "supervisor" not in servers or args.force:
-        servers["supervisor"] = template["mcpServers"]["supervisor"]
-        mcp_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-        written.append(".mcp.json")
+    # Each host reads its own file. Claude Code takes `.mcp.json` at the
+    # repository root; Cursor's documented project location is
+    # `.cursor/mcp.json`, and its CLI picks up the same servers as its editor.
+    # Writing only the first left a Cursor install carrying the rule that tells
+    # it to drive this MCP server, with no server registered to drive.
+    _register_mcp(workspace / ".mcp.json", args.force, written, workspace)
+    if "cursor" in targets or host.name == "cursor":
+        _register_mcp(workspace / ".cursor" / "mcp.json", args.force, written, workspace)
 
     if args.json:
         _emit({"workspace": str(workspace), "host": host.name, "written": written}, True)
@@ -197,6 +192,34 @@ def cmd_init(args: argparse.Namespace) -> int:
         "'supervise' a task, or run `supervisor run \"...\"` for an autonomous run."
     )
     return 0
+
+
+def _register_mcp(path: Path, force: bool, written: list[str], root: Path) -> None:
+    """Add the `supervisor` server to one MCP config file, keeping the rest.
+
+    Merged rather than written over: the file is the user's, and it usually
+    already names servers that have nothing to do with this one. An entry that
+    is already there is left alone unless ``--force`` says otherwise, so
+    re-running `init` cannot quietly revert a command someone edited.
+
+    A file that will not parse is left exactly as it is. Overwriting it would
+    lose whatever the user had, which is a worse outcome than an unregistered
+    server they can add by hand.
+    """
+    template = json.loads((INTEGRATIONS / "mcp.json").read_text(encoding="utf-8"))
+    existing: dict[str, Any] = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return
+    servers = existing.setdefault("mcpServers", {})
+    if "supervisor" in servers and not force:
+        return
+    servers["supervisor"] = template["mcpServers"]["supervisor"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    written.append(path.relative_to(root).as_posix())
 
 
 def _copy(src: Path, dst: Path, force: bool, written: list[str], root: Path) -> None:

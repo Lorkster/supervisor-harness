@@ -10,7 +10,7 @@ name: CI
 #
 # Both operating systems are therefore load-bearing here, not belt and braces:
 # Linux is where those two can be proven at all, and Windows is where the harness
-# is actually developed. See docs/remediation-plan.md.
+# is actually developed. See docs/history/self-review.md.
 
 on:
   push:

@@ -1,7 +1,7 @@
 # Shared semantic context — specification
 
 The last open dimension of the control-plane assessment in
-`docs/remediation-plan.md`. Recorded there as wanting "a design pass that ends
+[`history/self-review.md`](history/self-review.md). Recorded there as wanting "a design pass that ends
 in a written spec before any code, the way the envelope got one". This is that
 spec.
 

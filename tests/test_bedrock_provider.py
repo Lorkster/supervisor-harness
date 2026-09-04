@@ -1,6 +1,6 @@
 """Autonomous Bedrock: the optional extra, and what must hold without it.
 
-Item 1b. The decision recorded in `docs/next-three.md` was an **optional extra**
+Item 1b. The decision recorded in `docs/history/development-plan.md` was an **optional extra**
 rather than an always-on dependency, which creates two install shapes and
 therefore two things to test:
 
@@ -515,3 +515,57 @@ def _httpx_request() -> Any:
     import httpx
 
     return httpx.Request("POST", "https://bedrock-runtime.eu-west-1.amazonaws.com/")
+
+
+@needs_the_extra
+def test_an_ambient_aws_profile_does_not_break_bedrock_token_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The setup this provider is most likely to meet, which it used to refuse.
+
+    Claude Code's own Bedrock mode can authenticate with a token in the
+    environment, and `AsyncAnthropicBedrock` reads `AWS_BEARER_TOKEN_BEDROCK` as
+    its `api_key`. It then refuses to be handed AWS credentials as well:
+
+        Cannot specify both `api_key` and AWS credentials (`aws_access_key`,
+        `aws_secret_key`, `aws_session_token`, `aws_profile`)
+
+    This provider used to fill `aws_profile` in from the ambient `AWS_PROFILE`,
+    which every corporate AWS machine sets -- so a token and a profile together,
+    the ordinary state of a laptop set up for both, could not construct a client
+    at all. Measured before the fix: `ValueError` from the SDK constructor.
+
+    Inferring it bought nothing: the SDK resolves the whole credential chain,
+    `AWS_PROFILE` included, when nothing is passed.
+    """
+    monkeypatch.setenv("AWS_REGION", REGION)
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "token-from-the-environment")
+    monkeypatch.setenv("AWS_PROFILE", "corp-sso")
+
+    client = BedrockProvider()._bedrock()
+
+    assert client.api_key == "token-from-the-environment"
+    assert REGION in str(client.base_url)
+    assert BedrockProvider().describe().get("profile") is None, (
+        "a profile nobody configured should not be reported as configuration"
+    )
+
+
+@needs_the_extra
+def test_a_configured_profile_is_still_passed_to_the_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fix drops the *inference*, not the setting.
+
+    A profile written in a trusted config file is a deliberate choice and still
+    reaches the SDK -- including when that makes the SDK object to a token being
+    set as well, which is a conflict the user can see and resolve in the file
+    they wrote.
+    """
+    monkeypatch.setenv("AWS_REGION", REGION)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    provider = BedrockProvider(profile="named-profile")
+
+    assert provider.describe()["profile"] == "named-profile"
+    assert provider._bedrock() is not None

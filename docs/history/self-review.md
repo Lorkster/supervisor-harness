@@ -1,4 +1,19 @@
-# Remediation plan — the 37 open findings
+# The self-review, and how its findings were closed
+
+*Ran 2026-08; closed over the batches this document schedules. See the banner.*
+
+> ## A closed record — not a current plan
+>
+> This document is kept for the reasoning it carries, not for the work it
+> schedules: **everything in it is done**. It is written in the present tense of
+> the day it was written, and it is left that way on purpose — a record that is
+> quietly edited to match what happened later stops being evidence of what was
+> believed at the time, which is most of what makes it worth keeping.
+>
+> For what is true now, read [`../reasoning-control-plane.md`](../reasoning-control-plane.md)
+> (what the harness is), [`../architecture.md`](../architecture.md) (how a run
+> works) and [`../quality-assessment.md`](../quality-assessment.md) (the standard
+> it is held to).
 
 A working document, meant to be picked up by a session that was not present when
 it was written. It says what is still open, in what order it should be closed,
@@ -661,7 +676,7 @@ different one.
 ## The framing
 
 > **The definition of the paradigm now lives in
-> [`reasoning-control-plane.md`](reasoning-control-plane.md).** Read that for
+> [`reasoning-control-plane.md`](../reasoning-control-plane.md).** Read that for
 > what the harness *is*, and where each of the four dimensions lands in the
 > code today — all four are closed.
 >
@@ -1462,7 +1477,7 @@ defect behind it.
 
 # What comes after this document
 
-`docs/next-three.md` carries the next three pieces of work -- Bedrock support
+`docs/history/development-plan.md` carries the next three pieces of work -- Bedrock support
 (issue #31), 9c, and documentation (issue #30) -- with what has been verified
 about each, what is still only a reading, and the two decisions that must be
 made before any code is written.

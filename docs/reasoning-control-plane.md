@@ -35,6 +35,46 @@ declines something it does, this document says so.
 All four dimensions are implemented. What follows is what each one means, how
 the harness does it, where the code is, and what it deliberately does not do.
 
+The shape of the claim, before the detail — what sits outside the model's
+reasoning, and what the model is left to do:
+
+```
+                          the task, from you
+                                  │
+   ╔══════════════════════════════▼════════════════════════════════╗
+   ║  1 · DETERMINISTIC GUARDRAILS                                  ║
+   ║  the execution fence · the config trust boundary · the         ║
+   ║  definition-of-done bars. Ordinary code. None of it asks       ║
+   ║  the model whether it should apply.                            ║
+   ║                                                                ║
+   ║    ┌────────────────────────────────────────────────────────┐  ║
+   ║    │ 2 · ATTENUATION                                        │  ║
+   ║    │ the run's envelope, narrowing at every hand-off and     │  ║
+   ║    │ widening at none                                       │  ║
+   ║    │                                                        │  ║
+   ║    │      ┌───────────────────────────────────────────┐     │  ║
+   ║    │      │          the model reasons                │     │  ║
+   ║    │      │   the only part of this that does, and    │     │  ║
+   ║    │      │   the only part that sets no terms        │     │  ║
+   ║    │      └───────────────────────────────────────────┘     │  ║
+   ║    │                                                        │  ║
+   ║    │ 4 · SHARED CONTEXT                                     │  ║
+   ║    │ facts other agents established, with their evidence;    │  ║
+   ║    │ where two disagree, both survive                       │  ║
+   ║    └────────────────────────────────────────────────────────┘  ║
+   ║                                                                ║
+   ║  3 · OBSERVABILITY                                             ║
+   ║  every input to every directive is on the log, and             ║
+   ║  `supervisor explain` reassembles it afterwards                ║
+   ╚════════════════════════════════════════════════════════════════╝
+                                  │
+                    a directive back to the agent — and a
+                    verdict that only evidence can move
+```
+
+The four bounds drawn against the code that applies them, rather than against
+the reasoning they govern, are in [`architecture.md`](architecture.md).
+
 ---
 
 ## 1 · Deterministic guardrails
@@ -273,10 +313,9 @@ things you take the agent's word for.
 | [`architecture.md`](architecture.md) | The same four bounds **drawn**: the phase machine, the durability story, the two backends, and the fence |
 | [`protocol.md`](protocol.md) | The wire protocol between harness and host |
 | [`shared-context-spec.md`](shared-context-spec.md) | Dimension 4 in full, including its open choices |
-| [`remediation-plan.md`](remediation-plan.md) | The **history**: what was found, what was fixed, and why each call was made |
-| [`next-three.md`](next-three.md) | What is scheduled next, and what has been decided |
+| [`history/`](history/) | The **records**: the self-review that found the defects, and the plan that closed them. Closed, and kept for the reasoning rather than the conclusions |
 
-`remediation-plan.md` is where this framing was first written down, in the
-middle of a document about closing 37 findings. That section is kept as the
+[`history/self-review.md`](history/self-review.md) is where this framing was
+first written down, in the middle of a document about closing 37 findings. That section is kept as the
 record of the assessment *as it stood then* — four dimensions with two of them
 open. This document is the current definition; that one is how it got here.
