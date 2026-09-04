@@ -1,7 +1,22 @@
-# What comes next, in order
+# The development plan, and what it decided
+
+*Written 2026-09-02; every item in it is done. See the banner.*
+
+> ## A closed record — not a current plan
+>
+> This document is kept for the reasoning it carries, not for the work it
+> schedules: **everything in it is done**. It is written in the present tense of
+> the day it was written, and it is left that way on purpose — a record that is
+> quietly edited to match what happened later stops being evidence of what was
+> believed at the time, which is most of what makes it worth keeping.
+>
+> For what is true now, read [`../reasoning-control-plane.md`](../reasoning-control-plane.md)
+> (what the harness is), [`../architecture.md`](../architecture.md) (how a run
+> works) and [`../quality-assessment.md`](../quality-assessment.md) (the standard
+> it is held to).
 
 A working document for a session that was not present when it was written, in
-the same shape as `docs/remediation-plan.md`. It says what the next pieces of
+the same shape as [`self-review.md`](self-review.md). It says what the next pieces of
 work are, what has been *verified* about each, what is still only a reading, and
 what has been decided.
 
@@ -27,8 +42,8 @@ control-plane assessment are done. What remains is the items below.
 > **Nothing remains.** Every item in this document is done: 1b, 3a, 3b, 4a,
 > 4b-1 through 4b-5, the split, and the whole of item 4 including `Q-C6`, the
 > audit that closed it last. The diagrams item 3b asked for are
-> [`architecture.md`](architecture.md); the standard the codebase is now held to
-> is [`quality-assessment.md`](quality-assessment.md), which is the live
+> [`architecture.md`](../architecture.md); the standard the codebase is now held to
+> is [`quality-assessment.md`](../quality-assessment.md), which is the live
 > document. **This one is a record**: what was planned, in what order, and why —
 > including the two places the plan was wrong and was overruled. It is not the
 > place to look for what to do next.
@@ -411,7 +426,7 @@ Two halves with different dependencies. **Do them separately.**
 ## 3a · The paradigm, anchored properly — independent of everything
 
 **[verified]** The reasoning-control-plane framing currently lives *inside*
-`docs/remediation-plan.md`, under "After the findings", in the middle of a
+`docs/history/self-review.md`, under "After the findings", in the middle of a
 document about closing 37 findings. That is the wrong home for the paradigm the
 project is built on: a reader looking for what the harness *is* has to read a
 remediation log to find it.
@@ -428,7 +443,7 @@ naming:
 
 **Definition of done:** the paradigm is explained where a new reader finds it,
 with each dimension pointing at the code that implements it, and
-`docs/remediation-plan.md` keeps the history rather than the definition.
+`docs/history/self-review.md` keeps the history rather than the definition.
 
 ### Closed
 
@@ -442,7 +457,7 @@ do. It ends with one worked path through a run touching all four, and an
 explicit "what this is not" (it is not a sandbox, not a permission system, and
 assumes an agent that is wrong rather than hostile).
 
-`docs/remediation-plan.md`'s framing section is **kept, not rewritten**. It is
+`docs/history/self-review.md`'s framing section is **kept, not rewritten**. It is
 the assessment as it stood when two dimensions were open and two of its claims
 were wrong, and that is worth having; it now opens with a pointer saying the
 definition lives elsewhere and that this is the historical record. Rewriting it
@@ -471,7 +486,7 @@ it.
 
 ## 3b · Flow and architecture diagrams — after the split lands
 
-**Done — [`architecture.md`](architecture.md).** All four are drawn, and the two
+**Done — [`architecture.md`](../architecture.md).** All four are drawn, and the two
 questions in the definition of done are answered in the document in as many
 words. Drawn at the level of phases and data flow rather than of modules, which
 is what the "why last" paragraph below suspected was the more useful picture
@@ -547,12 +562,12 @@ cover, not findings:
 
 **Definition of done for the assessment** — not for the work it finds: written
 criteria, findings with ids, and a batch plan, in the shape
-`docs/remediation-plan.md` already uses so that the two read the same way.
+`docs/history/self-review.md` already uses so that the two read the same way.
 
 ### 4a closed
 
 Landed on `chore/quality-assessment` as
-[`docs/quality-assessment.md`](quality-assessment.md): ten written criteria, 15
+[`docs/quality-assessment.md`](../quality-assessment.md): ten written criteria, 15
 findings with ids, a five-batch plan for 4b, and the instruments in CI — a
 coverage floor at 82%, mypy gating at **zero**, and ruff against a configured
 rule set for the first time.
@@ -587,7 +602,7 @@ moves have a reason beyond preference.
 | --- | --- | --- |
 | 1 | **3a** — the paradigm document | Cheap, independent, overdue, and it is what a new reader currently gets wrong. **Done** — see below. |
 | 2 | **1b** — the Bedrock optional extra | Small, independent, closes issue #31 — and it lands *before* the assessment so the assessment covers the module set being kept. **Done** — see §1b. |
-| 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. **Done** — [`quality-assessment.md`](quality-assessment.md). |
+| 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. **Done** — [`quality-assessment.md`](../quality-assessment.md). |
 | 4 | **2 (9c)** — the split | **Done** — split by layer; see §2. Four layers out, 2,591 → 1,652 lines. |
 | 5 | **4b** — close the remaining findings in batches | Against the settled layout, so cleanup diffs are not written into `core/supervisor.py` and immediately moved again. |
 | 6 | **3b** — the diagrams | Last, unchanged: diagrams that name modules go stale the moment the modules move. |

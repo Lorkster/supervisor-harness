@@ -100,11 +100,15 @@ registers the MCP server in `.mcp.json`. Restart the host afterwards.
 
 | Host | Installed |
 | --- | --- |
-| Claude Code | `.claude/skills/supervise/SKILL.md`, `.claude/commands/supervise.md` |
-| Cursor | `.cursor/rules/supervisor.mdc`, `.cursor/commands/supervise.md` |
-| Both | `.mcp.json` entry for the `supervisor` MCP server |
+| Claude Code | `.claude/skills/supervise/SKILL.md`, `.claude/commands/supervise.md`, and the `supervisor` server in `.mcp.json` |
+| Cursor | `.cursor/rules/supervisor.mdc`, `.cursor/commands/supervise.md`, and the same server in `.cursor/mcp.json` |
 
-Use `--host both` to install for both, `--force` to overwrite.
+Two MCP files because the two hosts look in different places: Claude Code reads
+`.mcp.json` at the repository root, Cursor reads `.cursor/mcp.json`. Both are
+merged into rather than overwritten, so servers you already had are kept.
+
+Use `--host both` to install for both, `--force` to overwrite. For a worked
+two-host setup, see [`docs/setup-examples.md`](docs/setup-examples.md).
 
 ### Several projects
 
@@ -641,11 +645,11 @@ memory.
 | --- | --- |
 | [`docs/reasoning-control-plane.md`](docs/reasoning-control-plane.md) | **What the harness is.** The four dimensions of the design, each pointing at the code that implements it, and what each one deliberately does not do. |
 | [`docs/architecture.md`](docs/architecture.md) | **How a run works, drawn.** The phase machine including its failure paths, what is written where and what survives a crash, where the two backends diverge, and how the fence narrows. |
+| [`docs/setup-examples.md`](docs/setup-examples.md) | Worked setups end to end, including two hosts on one machine with different credentials, and what to add for autonomous runs. |
 | [`docs/protocol.md`](docs/protocol.md) | The wire protocol between the harness and the host. |
 | [`docs/shared-context-spec.md`](docs/shared-context-spec.md) | Shared semantic context in full: the design, its decided choices, and its open ones. |
 | [`docs/quality-assessment.md`](docs/quality-assessment.md) | The standard this codebase is held to, what it measured against it, and the disposition of every finding. |
-| [`docs/remediation-plan.md`](docs/remediation-plan.md) | The history — what a review of this codebase found, what was fixed, and why each call was made. |
-| [`docs/next-three.md`](docs/next-three.md) | The plan those two documents were written under, and the record of what it decided. |
+| [`docs/history/`](docs/history/) | **Closed records.** The self-review that found the defects and how they were closed, and the plan the work followed. Kept for the reasoning; nothing in there describes the harness as it is now. |
 
 Documents that cite code by line number are checked in CI
 (`tools/check_doc_refs.py`), so a reference that stops pointing at what it

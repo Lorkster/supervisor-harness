@@ -155,7 +155,10 @@ def check_layout(root: pathlib.Path) -> list[str]:
 
 def main(argv: list[str]) -> int:
     root = pathlib.Path(__file__).resolve().parent.parent
-    docs = [pathlib.Path(a) for a in argv[1:]] or sorted(root.glob("docs/*.md"))
+    # Recursive: `docs/history/` moved two documents out of the top level, and a
+    # glob that stopped at it would have dropped them from the gate silently --
+    # the count in the line this prints was the only sign.
+    docs = [pathlib.Path(a) for a in argv[1:]] or sorted(root.glob("docs/**/*.md"))
     docs += [root / "README.md"] if not argv[1:] else []
 
     problems: list[str] = []

@@ -1,6 +1,6 @@
 # Quality assessment — architecture, code quality, testing
 
-Item **4a** of [`next-three.md`](next-three.md). The scope came with the 9c
+Item **4a** of [`history/development-plan.md`](history/development-plan.md). The scope came with the 9c
 decision: *"after all changes we need to make sure the entire application
 adheres to best practices for architecture, code quality and testing."*
 
@@ -18,7 +18,7 @@ closed. The work is item **4b**, and it is expected to take several batches.
 > a record of what was fixed rather than a queue.
 
 Findings carry ids (`Q-A1`, `Q-C2`, …) so a commit can say `Closes: Q-C1` and be
-reconciled against this document, the way `remediation-plan.md` already works.
+reconciled against this document, the way [`history/self-review.md`](history/self-review.md) already works.
 
 **Nothing here is a reading.** Every claim below is a number produced by a tool
 in this repository, and the tools are now in CI so the numbers stay honest.
@@ -97,7 +97,7 @@ Two notes on what changed in the instruments themselves:
 Worth stating before the findings, because both were assumptions this project's
 own planning documents had written down.
 
-**The codebase is almost fully typed.** `next-three.md` said "Type coverage is
+**The codebase is almost fully typed.** The development plan said "Type coverage is
 unmeasured; there is no `mypy`/`pyright` in CI at all" — true, and it read as a
 risk. The reality: **3 errors across 40 files**, all fixed in this batch, so
 mypy gates at zero from day one rather than needing a baseline. `--strict` costs

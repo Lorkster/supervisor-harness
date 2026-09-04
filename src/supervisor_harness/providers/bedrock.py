@@ -79,7 +79,20 @@ class BedrockProvider(Provider):
             or os.environ.get("AWS_REGION", "")
             or os.environ.get("AWS_DEFAULT_REGION", "")
         )
-        self.profile = profile or os.environ.get("AWS_PROFILE", "")
+        # Only what was *configured*. `AWS_PROFILE` is deliberately not read
+        # here: the SDK resolves the whole chain itself, so inferring it added
+        # nothing -- and it broke the one setup it was most likely to meet.
+        # `AsyncAnthropicBedrock` reads `AWS_BEARER_TOKEN_BEDROCK` as its
+        # `api_key` and then refuses to be given AWS credentials as well:
+        #
+        #   ValueError: Cannot specify both `api_key` and AWS credentials
+        #   (`aws_access_key`, `aws_secret_key`, `aws_session_token`, `aws_profile`)
+        #
+        # A machine with Claude Code's Bedrock token *and* an ordinary corporate
+        # `AWS_PROFILE` therefore could not construct this provider at all. An
+        # explicitly configured profile is still passed, and still conflicts --
+        # but that is a choice the user made in a file, with a message naming it.
+        self.profile = profile
         self.default_model = default_model or DEFAULT_BEDROCK_MODEL
         self.base_url = base_url
         self._client: Any = None

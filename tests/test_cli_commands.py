@@ -493,6 +493,45 @@ def test_init_installs_for_both_hosts_at_once(
     assert (cwd / ".cursor" / "rules" / "supervisor.mdc").is_file()
 
 
+def test_a_cursor_install_registers_the_server_where_cursor_looks_for_it(
+    cwd: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Cursor reads `.cursor/mcp.json`; only `.mcp.json` was ever written.
+
+    So a Cursor install carried the rule telling the agent to drive this MCP
+    server, and no server registered for it to drive -- the one host whose
+    integration could not work as installed. Found while documenting a
+    two-host setup.
+    """
+    assert run_cli(cwd, "init", "--host", "cursor") == 0
+    capsys.readouterr()
+
+    registered = json.loads((cwd / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
+    assert registered["mcpServers"]["supervisor"]["command"] == "supervisor-mcp"
+
+
+def test_an_mcp_file_the_user_already_has_keeps_its_other_servers(
+    cwd: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The file is the user's, and usually names servers unrelated to this one."""
+    (cwd / ".cursor").mkdir()
+    (cwd / ".cursor" / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"other": {"command": "something-else"}}}),
+        encoding="utf-8",
+    )
+    (cwd / ".mcp.json").write_text("{ not json at all", encoding="utf-8")
+
+    assert run_cli(cwd, "init", "--host", "cursor") == 0
+    capsys.readouterr()
+
+    registered = json.loads((cwd / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
+    assert set(registered["mcpServers"]) == {"other", "supervisor"}
+    assert registered["mcpServers"]["other"]["command"] == "something-else"
+
+    # And a file that will not parse is left alone rather than overwritten.
+    assert (cwd / ".mcp.json").read_text(encoding="utf-8") == "{ not json at all"
+
+
 def test_init_does_not_overwrite_without_force(
     cwd: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
