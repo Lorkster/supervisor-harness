@@ -36,8 +36,8 @@ fixed by `e0fe0a7`.
 `fnd_01M13MATP0WX63` is filed medium. It is the most serious thing open and is
 treated here as the release blocker.
 
-`Scope.paths` and `Scope.forbidden_paths` both default to `[]` (models.py:224)
-and are populated from the synthesis model's task scope (phases.py:593). A task
+`Scope.paths` and `Scope.forbidden_paths` both default to `[]` (models.py)
+and are populated from the synthesis model's task scope (phases.py). A task
 the model gives no scope produces an execution agent with no fence at all:
 tools.py reads `if scope.paths and not matches_any(...)`, so empty means
 unrestricted; `SKIP_DIRS` is consulted only by `_walk`; and `write_file` creates
@@ -147,12 +147,12 @@ wrote `.git/hooks/pre-commit` and `.supervisor/runs/r/events.jsonl` with
 `fnd_01M130P3E5WCN7`, `fnd_01M130P3E5K51P`.
 
 - `append` opens `"a"` and writes without repairing a missing trailing newline
-  (eventlog.py:236) — measured to destroy two records, silently. Seek back one
+  (eventlog.py) — measured to destroy two records, silently. Seek back one
   byte under the lock and append a newline if absent.
 - `_last_seq_unlocked` returns `0` for a wholly unparseable log
-  (eventlog.py:298), so sequencing restarts at 1 rather than failing closed.
+  (eventlog.py), so sequencing restarts at 1 rather than failing closed.
 - `read()` has no skipped-line counter; a dropped line is invisible.
-- `fold` applies every event with no `try/except` (events.py:234), so one bad
+- `fold` applies every event with no `try/except` (events.py), so one bad
   payload makes a run permanently unresumable.
 - `AGENT_STATUS`, `AGENT_DISPATCHED` and `CRITERION_VERIFIED` silently `pass`
   when their target is absent — the same shape as the unknown-type bug `b7c9cf4`
@@ -197,9 +197,9 @@ a first attempt at that test passed against the unfixed code.
 `fnd_01M130BWJ4C021`.
 
 `load_state` returns `state.json` whenever it merely parses and reaches the fold
-only on a decode error (runstore.py:99) — a stale snapshot wins over a correct
+only on a decode error (runstore.py) — a stale snapshot wins over a correct
 log forever. `save_snapshot` writes through a constant `state.json.tmp`, never
-fsyncs and takes no lock (runstore.py:110), which is how a stale one gets made
+fsyncs and takes no lock (runstore.py), which is how a stale one gets made
 when two processes report concurrently.
 
 Add `last_seq` to `RunState`, compare it against the log's tail in `load_state`,
@@ -245,15 +245,15 @@ in `save_snapshot` with a payload around 100 KB; on Windows it surfaces as
 `fnd_01M130P3E56TXV`, `fnd_01M130M6QPC2HG`, `fnd_01M130P3E5HZYQ`.
 
 - `_begin_planning` transitions to `ANALYZING` before returning the planner
-  packet (supervisor.py:412). An `advance()` in that window spawns the fallback
+  packet (supervisor.py). An `advance()` in that window spawns the fallback
   fleet, and the planner's later report calls `_spawn` unconditionally
-  (supervisor.py:453) with the transition guard already satisfied, so nothing
+  (supervisor.py) with the transition guard already satisfied, so nothing
   detects the collision. Two full analysis fleets, reachable by an ordinary call
   sequence.
-- `report()` checks only that the agent exists (supervisor.py:838) — never its
+- `report()` checks only that the agent exists (supervisor.py) — never its
   status, never whether that turn was already reported — and `seq` comes from
   `turn_counts`, so a replayed report is accepted and counted.
-- The `DONE` guard at supervisor.py:510 is dead: `_stage_agent` only ever returns
+- The `DONE` guard at supervisor.py is dead: `_stage_agent` only ever returns
   agents in `ACTIVE_AGENT_STATUSES`, so a finished synthesizer falls through to a
   fresh spawn on every `advance()`, each with its own packet.
 
@@ -295,7 +295,7 @@ transitions away.
 On the final iteration of `range(MAX_TOOL_ROUNDS + 1)` the nudge is appended to
 `history` and the code continues — the loop then ends, the nudge is never sent,
 and the tool-call payload falls through to `_record_turn` as if it were the
-agent's answer (supervisor.py:1341). Separately, `history` is *replaced* by three
+agent's answer (supervisor.py). Separately, `history` is *replaced* by three
 messages each round, discarding every earlier tool result, so an agent cannot
 accumulate evidence across rounds.
 
@@ -323,7 +323,7 @@ commit is what catches it.
 rescan half of `fnd_01M1309W6321FP`.
 
 `NOTE` folds to `pass`; turn bodies are dropped; three call sites re-read the
-entire log to compensate (supervisor.py:565, 1754, 1773), one of them once per
+entire log to compensate (supervisor.py), one of them once per
 supervised turn. Add `turns` and `notes` to `RunState`, delete all three rescans,
 and surface notes from `status()`.
 
@@ -371,7 +371,7 @@ only costs time — no behavioural test would catch it coming back.
 Both `report()` paths short-circuit to `_report_verification` before
 `_record_turn`, so a verifier's reasoning, `self_assessment`, `blocked_on` and
 usage reach nothing, and `Budget(max_turns=3)` is unreachable. `Budget.exhausted`
-accepts tokens and seconds; the only call site passes turns (drift.py:393).
+accepts tokens and seconds; the only call site passes turns (drift.py).
 `grep -c usage contracts.py` returns **0**, so no host turn schema asks for usage
 and `state.usage` is empty on the default backend — the token ceiling cannot be
 enforced there at all until the contract changes.
@@ -419,8 +419,8 @@ it builds.
 - `_walk` has no `is_symlink()` guard and `search` reads the walked path
   directly, while `read_file` refuses the same path through `_resolve`. The
   inconsistency is what makes it easy to miss.
-- `PROTECTED_PROVIDER_KEYS` omits `params`, which router.py:180 merges into
-  `extra` and openrouter.py:87 applies *after* `model` and `messages` are set — a
+- `PROTECTED_PROVIDER_KEYS` omits `params`, which router.py merges into
+  `extra` and openrouter.py applies *after* `model` and `messages` are set — a
   workspace config substitutes both. `PROTECTED_SETTINGS` leaves `routing`,
   `roles` and the rest of `policy` settable.
 - `write_artifact` does not sanitise the name: `"../../escaped.md"` writes
@@ -592,7 +592,7 @@ needed from that file; splitting it is a refactor with no defect behind it.
 Last, because it churns the same lines every earlier batch edits.
 
 `_delegated` inspects only the binding, independent of `state.backend`, across
-six sites (supervisor.py:405, 499, 722, 823, 893, 1470); the module docstring
+six sites (supervisor.py); the module docstring
 still claims parity is "a property of the backend". A resumed run is judged by
 whatever config, bindings and host the *new* process has, with `state.host` never
 compared against `self.host`. `Blackboard.supervisor_inbox` has no caller and
@@ -601,7 +601,7 @@ compared against `self.host`. `Blackboard.supervisor_inbox` has no caller and
 
 Mutate-then-emit and *emit replaces the object the caller holds* are the same
 inversion seen twice, and belong here rather than in their own batch: the
-docstring at supervisor.py:20-21 asserts the invariant the code breaks.
+docstring at supervisor.py-21 asserts the invariant the code breaks.
 
 ---
 
@@ -707,7 +707,7 @@ vocabulary.
 
 **Agent-to-agent access controls — weakest.** `RunState` has no scope field. Every
 `Scope` is supplied independently by the synthesis model, per task
-(`phases.py:591`), and nothing anywhere compares one scope to a wider one. There
+(`phases.py`), and nothing anywhere compares one scope to a wider one. There
 is no run-level envelope, no attenuation on spawn, and no time bound on a scope.
 The batch-1 floor is the only universal bound. *This claim is from a reading of
 the code and a grep; verify it before designing against it.*
@@ -768,8 +768,8 @@ over the decision journal; this records what it turned out to be.
 Every claim in the assessment above verified. `RunState` had no scope field
 (`models.py`), `_spawn` related no child scope to a spawner's, nothing anywhere
 compared one scope to a wider one — `core/paths.py` matched a *path* against a
-pattern and stopped there — and both scope sources were models: `phases.py:158`
-for a lens, `phases.py:591` for a task.
+pattern and stopped there — and both scope sources were models: `phases.py`
+for a lens, `phases.py` for a task.
 
 One thing the assessment did not name, found while verifying it.
 `build_verification_agent` gave every verifier `Scope(out_of_scope=…)` with
@@ -1406,7 +1406,7 @@ Two more things fell out of looking:
 - `answer_from_record`, added in 9b so the supervisor could answer an agent's
   question from the run's record, had almost nothing to answer *from*. Two of
   its four sources were those two harness facts.
-- `open_questions` was requested from every analysis agent (`contracts.py:159`),
+- `open_questions` was requested from every analysis agent (`contracts.py`),
   had no field on `AgentTurn`, was never mentioned in `supervisor.py`, and was
   read only from the *synthesis* payload. Every analysis turn spent tokens on it
   and the harness dropped it on arrival — the same shape as the dead paths 9b

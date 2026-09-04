@@ -158,3 +158,37 @@ def test_the_baseline_key_lives_with_the_dict_it_keys() -> None:
 
     brief = (SRC / "agents" / "brief.py").read_text(encoding="utf-8")
     assert "from ..core" not in brief, "agents reaches into core again (Q-A1)"
+
+
+def test_every_declared_phase_is_one_a_run_can_actually_reach() -> None:
+    """A state nothing can enter is a state every reader has to rule out by hand.
+
+    `Phase.ABORTED` was declared in the first commit, listed in
+    `TERMINAL_PHASES`, and set by no code anywhere -- so `supervisor status`
+    could never print it, no log could carry it, and the protocol document
+    described the state machine correctly by leaving it out. It survived a
+    self-review, a quality assessment and a vacuous-test audit before a
+    documentation pass compared the enum against its uses.
+
+    The same shape as the budget ceilings the harness once found in itself:
+    declared, documented, and unenforceable.
+    """
+    from supervisor_harness.models import Phase
+
+    sources = {
+        path: path.read_text(encoding="utf-8")
+        for path in SRC.rglob("*.py")
+        if path.name != "models.py"
+    }
+    unreachable = [
+        member.name
+        for member in Phase
+        if not any(
+            f"Phase.{member.name}" in text or f'"{member.value}"' in text
+            for text in sources.values()
+        )
+    ]
+    assert unreachable == [], (
+        "phase(s) no code outside models.py ever sets or compares: "
+        + ", ".join(unreachable)
+    )

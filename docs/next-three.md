@@ -24,6 +24,15 @@ Every finding from the original 88-finding self-review is closed, both
 outstanding policy calls are decided, and all four dimensions of the
 control-plane assessment are done. What remains is the items below.
 
+> **Nothing remains.** Every item in this document is done: 1b, 3a, 3b, 4a,
+> 4b-1 through 4b-5, the split, and the whole of item 4 including `Q-C6`, the
+> audit that closed it last. The diagrams item 3b asked for are
+> [`architecture.md`](architecture.md); the standard the codebase is now held to
+> is [`quality-assessment.md`](quality-assessment.md), which is the live
+> document. **This one is a record**: what was planned, in what order, and why —
+> including the two places the plan was wrong and was overruled. It is not the
+> place to look for what to do next.
+
 ## Decisions taken, 2026-09-02
 
 Both questions this document said had to be answered before any code have been,
@@ -461,6 +470,19 @@ All three were caught; the first two would both have shipped silently without
 it.
 
 ## 3b · Flow and architecture diagrams — after the split lands
+
+**Done — [`architecture.md`](architecture.md).** All four are drawn, and the two
+questions in the definition of done are answered in the document in as many
+words. Drawn at the level of phases and data flow rather than of modules, which
+is what the "why last" paragraph below suspected was the more useful picture
+anyway — the one thing named per module is the README's layout listing, and that
+is now gated in CI rather than trusted.
+
+The batch that drew them also audited the rest of the documentation, on the same
+suspicion that a document nothing checks is a document nobody has read lately.
+It was right: the README's "every command" table was missing three commands, two
+of which delete things, and 32 line-number citations across three documents were
+stale in a form the doc-reference gate could not see.
 
 **Note after 3a:** `reasoning-control-plane.md` now carries a prose walk of one
 run touching all four dimensions. That is the *narrative*; it is not a
