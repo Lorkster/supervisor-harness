@@ -77,7 +77,7 @@ def build_analysis_agents(
     """Turn chosen lenses into briefed, model-bound, budgeted agents."""
     specs: list[AgentSpec] = []
     for role in lenses:
-        match = registry.match(role)
+        agent_binding = registry.bind(role)
         specs.append(
             AgentSpec(
                 run_id=state.id,
@@ -90,7 +90,8 @@ def build_analysis_agents(
                 binding=config.binding_for(role.stage),
                 backend=state.backend,
                 budget=Budget(max_turns=config.policy.default_max_turns),
-                host_agent_type=match.name if match and match.spawnable else None,
+                host_agent_type=agent_binding.name,
+                host_agent_reason=agent_binding.reason,
             )
         )
     return specs
@@ -160,7 +161,7 @@ def apply_plan(
         if role is None or role.kind is not AgentKind.ANALYSIS:
             continue
         objectives = [str(o).strip() for o in (entry.get("objectives") or []) if str(o).strip()]
-        match = registry.match(role)
+        agent_binding = registry.bind(role)
         specs.append(
             AgentSpec(
                 run_id=state.id,
@@ -179,7 +180,8 @@ def apply_plan(
                 binding=config.binding_for(role.stage),
                 backend=state.backend,
                 budget=Budget(max_turns=config.policy.default_max_turns),
-                host_agent_type=match.name if match and match.spawnable else None,
+                host_agent_type=agent_binding.name,
+                host_agent_reason=agent_binding.reason,
             )
         )
 
@@ -194,7 +196,7 @@ def apply_plan(
         role = ROLES_BY_ID.get(role_id)
         if role_id in chosen or role is None:
             continue
-        match = registry.match(role)
+        agent_binding = registry.bind(role)
         specs.append(
             AgentSpec(
                 run_id=state.id, role=role.id, kind=AgentKind.ANALYSIS, title=role.title,
@@ -202,7 +204,8 @@ def apply_plan(
                 scope=Scope(out_of_scope=list(role.out_of_scope)),
                 binding=config.binding_for(role.stage), backend=state.backend,
                 budget=Budget(max_turns=config.policy.default_max_turns),
-                host_agent_type=match.name if match and match.spawnable else None,
+                host_agent_type=agent_binding.name,
+                host_agent_reason=agent_binding.reason,
             )
         )
 
@@ -604,7 +607,7 @@ def build_execution_agent(
     registry: AgentRegistry,
 ) -> AgentSpec:
     role = role_for_task(task.title, task.action, task.suggested_role)
-    match = registry.match(role)
+    agent_binding = registry.bind(role)
     binding: ModelBinding = task.suggested_binding or config.binding_for(role.stage)
     return AgentSpec(
         run_id=state.id,
@@ -621,7 +624,8 @@ def build_execution_agent(
         binding=binding,
         backend=state.backend,
         budget=Budget(max_turns=config.policy.execution_max_turns),
-        host_agent_type=match.name if match and match.spawnable else None,
+        host_agent_type=agent_binding.name,
+        host_agent_reason=agent_binding.reason,
         task_id=task.id,
         attempt=task.attempts,
     )
@@ -634,7 +638,7 @@ def build_verification_agent(
     registry: AgentRegistry,
 ) -> AgentSpec:
     role = ROLES_BY_ID["verifier"]
-    match = registry.match(role)
+    agent_binding = registry.bind(role)
     return AgentSpec(
         run_id=state.id,
         role=role.id,
@@ -665,7 +669,8 @@ def build_verification_agent(
         # the budget. Now that verification turns are recorded, this is enforced:
         # a second report is refused by the turn-budget bound in `report`.
         budget=Budget(max_turns=1),
-        host_agent_type=match.name if match and match.spawnable else None,
+        host_agent_type=agent_binding.name,
+        host_agent_reason=agent_binding.reason,
         task_id=task.id,
         attempt=task.attempts,
     )

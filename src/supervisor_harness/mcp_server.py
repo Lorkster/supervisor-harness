@@ -53,11 +53,22 @@ else:
 INSTRUCTIONS = """\
 The supervisor harness plans, supervises and verifies multi-agent work.
 
-Call supervisor_start with the user's task. You will get back one or more work
-packets. Each packet contains a complete brief and the exact JSON schema its
-answer must match. Run each packet with your own sub-agent mechanism -- issue
-independent packets in parallel, in a single message -- then call
-supervisor_report with each result.
+Call supervisor_start with the user's task, and with host_agents: every
+sub-agent type you can actually spawn, as
+[{"name": ..., "description": ..., "tools": [...]}, ...]. Send the list even if
+it is empty. This is how a role binds to a real specialist rather than to a
+generic agent -- a security lens run by your security sub-agent is the whole
+point -- and the harness cannot see your sub-agent types for itself.
+
+You will get back one or more work packets. Each packet contains a complete
+brief and the exact JSON schema its answer must match. Run each packet with your
+own sub-agent mechanism -- issue independent packets in parallel, in a single
+message -- then call supervisor_report with each result.
+
+When a packet sets host_agent_type, spawn that sub-agent type. It was chosen
+against the role, and host_agent_reason says why; if you cannot spawn it, run
+the packet generically and say so rather than substituting a different
+speciality of your own choosing.
 
 Do not summarise, paraphrase or improve a packet's brief before dispatching it:
 the supervisor measures drift against that exact text. Do not answer a packet
@@ -144,8 +155,11 @@ def _register_run_tools(server: _Server) -> None:
             prompt: The user's task, in full. Do not summarise it.
             mode: "auto" (let synthesis decide), "report" (analysis only), or
                 "execute" (analysis then approved work).
-            host_agents: Sub-agent types you can spawn, as
-                [{"name": ..., "description": ..., "tools": [...]}, ...].
+            host_agents: Every sub-agent type you can spawn, as
+                [{"name": ..., "description": ..., "tools": [...]}, ...]. Pass it
+                even when empty -- an empty list records that you have none,
+                which is a different run from never having been asked. Roles
+                bind to these; without them every lens runs generically.
             backend: "host" to run agents yourself (default), "autonomous" to let
                 the harness drive its own configured models.
         """

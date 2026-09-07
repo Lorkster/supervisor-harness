@@ -7,7 +7,7 @@ from .brief import (
     render_directive,
     render_inbox,
 )
-from .registry import AgentRegistry, AvailableAgent
+from .registry import AgentBinding, AgentRegistry, AvailableAgent
 from .roles import (
     ALL_ROLES,
     ANALYSIS_ROLES,
@@ -28,6 +28,7 @@ __all__ = [
     "EXECUTION_ROLES",
     "ROLES_BY_ID",
     "VERIFICATION_ROLES",
+    "AgentBinding",
     "AgentRegistry",
     "AvailableAgent",
     "Role",

@@ -203,6 +203,71 @@ async def test_host_agents_are_matched_to_roles(
     by_role = {p.title: p.host_agent_type for p in response.packets}
     assert by_role.get("Architecture") == "Plan", by_role
     assert by_role.get("Security") == "general-purpose", by_role
+    assert all(p.host_agent_reason for p in response.packets), "a binding says why"
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_agent_definition_reaches_the_packet(
+    workspace: Path, host_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The end of the chain the batch-1 defect broke.
+
+    Discovery found `.claude/agents` all along and `match` bound it correctly.
+    The packet then dropped it, because spawnability was derived from the source
+    string -- so a workspace could define a security specialist and watch its
+    security lens run as a generic agent, with nothing on the log saying so.
+    """
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: workspace / "home"))
+    agents = workspace / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "sec.md").write_text(
+        "---\nname: Security Specialist\ndescription: reviews auth and exposure\n---\n"
+        "You review security.\n",
+        encoding="utf-8",
+    )
+
+    store = RunStore(workspace / ".supervisor")
+    host = HostInfo(name="claude-code", workspace=str(workspace), confidence=1.0)
+    supervisor = Supervisor(workspace=workspace, config=host_config, store=store, host=host)
+
+    # No host_agents at all: the workspace's own definitions are the only source.
+    response = await supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    packet = response.packets[0]
+    await supervisor.report(packet.run_id, packet.agent_id, {
+        "restated_goal": "rate limit login", "mode": "execute",
+        "lenses": [
+            {"role": "security", "why": "exposure", "objectives": ["Find the attack path"]},
+        ],
+    })
+    response = await supervisor.advance(response.run_id)
+
+    security = next(p for p in response.packets if p.title == "Security")
+    assert security.host_agent_type == "Security Specialist"
+    assert "sec.md" in security.host_agent_reason, security.host_agent_reason
+
+
+@pytest.mark.asyncio
+async def test_an_empty_declaration_is_recorded_as_a_declaration(
+    workspace: Path, host_config: HarnessConfig
+) -> None:
+    """"Asked, and has none" and "never asked" produce identical runs.
+
+    They produce identical generic briefs too, so without this on the log there
+    is no way to tell afterwards which of them explains a run in which no local
+    agent was used -- which is the first question anyone asks about one.
+    """
+    store = RunStore(workspace / ".supervisor")
+    host = HostInfo(name="claude-code", workspace=str(workspace), confidence=1.0)
+    supervisor = Supervisor(workspace=workspace, config=host_config, store=store, host=host)
+
+    response = await supervisor.start(PROMPT, mode=RunMode.REPORT, host_agents=[])
+
+    declared = [
+        e for e in store.open(response.run_id).events()
+        if e.type is EventType.HOST_AGENTS_DECLARED
+    ]
+    assert len(declared) == 1
+    assert declared[0].payload["agents"] == []
 
 
 BLOCKED_EXECUTION = {

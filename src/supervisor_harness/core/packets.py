@@ -152,6 +152,7 @@ class Packets:
             turn_index=turns_used,
             turns_remaining=max(0, agent.budget.max_turns - turns_used),
             host_agent_type=agent.host_agent_type,
+            host_agent_reason=agent.host_agent_reason,
             model=agent.binding.ref(),
             task_id=agent.task_id,
         )
@@ -176,6 +177,7 @@ class Packets:
             schema=schema,
             turns_remaining=1,
             host_agent_type=agent.host_agent_type,
+            host_agent_reason=agent.host_agent_reason,
             model=agent.binding.ref(),
         )
     def _dispatch_packet(self, session: RunSession, agent: AgentSpec) -> WorkPacket:
@@ -269,8 +271,15 @@ class Packets:
         That declaration is recorded on the run so every later phase can still
         match roles to real subagent types, including after a resume in a
         different session.
+
+        An *empty* declaration is recorded too, and that is the point of the
+        ``is not None`` rather than a truth test. "The host was asked and said it
+        can spawn nothing" and "the host was never asked" produce identical runs
+        and identical generic briefs, and until this was on the log there was no
+        way to tell them apart afterwards -- which is exactly the question you
+        ask when no local agent was used.
         """
-        if host_agents:
+        if host_agents is not None:
             session.emit(EventType.HOST_AGENTS_DECLARED, {"agents": list(host_agents)})
         declared = host_agents or session.state.host_agents
         return AgentRegistry(self.workspace, self.host, declared)
