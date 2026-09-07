@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..assists import record_assist
 from ..models import Usage
 
 
@@ -125,7 +126,7 @@ def extract_json(text: str) -> dict[str, Any] | None:
     if span:
         candidates.append(span)
 
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates):
         if not candidate:
             continue
         # strict=False permits the literal newlines and tabs models routinely
@@ -136,9 +137,18 @@ def extract_json(text: str) -> dict[str, Any] | None:
                 parsed = json.loads(candidate, strict=strict)
             except (json.JSONDecodeError, TypeError, ValueError):
                 continue
+            # Every branch below this point is the harness helping. Counted
+            # rather than merely done, so a provider that needs its JSON dug
+            # out of prose on every turn is visible in the report instead of
+            # being absorbed silently -- see `assists`.
+            if index > 0:
+                record_assist("json_from_prose", candidate[:120])
+            if not strict:
+                record_assist("json_non_strict", candidate[:120])
             if isinstance(parsed, dict):
                 return parsed
             if isinstance(parsed, list):
+                record_assist("json_list_wrapped", f"{len(parsed)} item(s)")
                 return {"items": parsed}
     return None
 

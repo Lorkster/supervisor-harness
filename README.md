@@ -520,6 +520,10 @@ if you set `SUPERVISOR_HOME` (see [Several projects](#several-projects)):
 ```
 runs/<run_id>/events.jsonl    append-only, authoritative
 runs/<run_id>/state.json      derived snapshot, for fast status reads
+runs/<run_id>/progress.ndjson derived, tailable: one short line per event
+runs/<run_id>/packets/        the briefs handed out, and the run's RULES.md
+runs/<run_id>/contracts/      the answer schemas, written once per run
+runs/<run_id>/results/        the answers agents wrote back
 runs/<run_id>/artifacts/      report.md, reconciliation.md, agent output
 lessons.jsonl                 cross-run lessons library
 index.sqlite3                 derived, rebuildable with `supervisor reindex`
@@ -529,6 +533,38 @@ The event log is the source of truth: every turn, directive, drift assessment,
 message, decision and verification is an event. Run state is a fold over that
 log, so an interrupted run resumes with its findings, tasks and verification
 intact — including in a different session.
+
+### Watching a run
+
+A supervised run is many sequential sub-agents, and the harness only wakes when
+it is called, so it cannot push progress to you. Two things it can do instead.
+
+Every response carries a one-line **ledger**, which the host is told to print
+before it dispatches:
+
+```
+analyzing | 2/4 agents done | turn 9/24 | 11 finding(s) | 4m20s | 2 out, longest 1m10s
+```
+
+That last clause is the one that matters: a dispatched agent that has not
+answered is the difference between a run that is slow and one that is stuck.
+
+And every event leaves a short line in `progress.ndjson`, so you can follow a
+run from another terminal without touching the harness:
+
+```bash
+tail -f .supervisor/runs/<run_id>/progress.ndjson
+```
+
+`supervisor status` adds two things worth reading afterwards. **`timing`** says
+where the wall clock went — total, how much of it was agents working, per phase,
+per kind, and the slowest dispatch — folded from the log's own timestamps rather
+than recorded separately. **`assists`** counts what the harness had to repair
+before each answer could be used: JSON dug out of prose, a list boxed into an
+object, a dependency named by title and resolved to an id. Those repairs are all
+the right behaviour, and they were all invisible; a run where the harness fixed
+forty answers is not the run the report otherwise describes, and it is the
+sharpest signal there is about a provider.
 
 Because the reasoning is on disk, you can ask cross-run questions:
 
@@ -622,6 +658,8 @@ src/supervisor_harness/
     tools.py       sandboxed workspace tools for autonomous agents
     paths.py       path normalisation and scope matching
     baseline.py    the commit a run measures its whole-repository checks against
+    timing.py      where a run's wall clock went, folded from the log
+  assists.py       what the harness had to repair before an answer could be used
   mcp_server.py    MCP surface
   cli.py           command line
 ```

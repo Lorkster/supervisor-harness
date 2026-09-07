@@ -97,6 +97,10 @@ class SupervisorResponse:
     directive: dict[str, Any] | None = None
     checkpoint: dict[str, Any] | None = None
     report_markdown: str = ""
+    #: One line saying where the run is: phase, agents, turns, findings, elapsed.
+    #: Stamped where a response reaches a person, so the host can print it
+    #: without deciding what to say. See `Reporting.ledger`.
+    ledger: str = ""
     detail: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

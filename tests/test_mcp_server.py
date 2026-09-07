@@ -302,6 +302,48 @@ async def test_a_result_sent_as_a_json_string_is_accepted(server: Any) -> None:
     assert reported["action"] != "failed"
 
 
+async def test_the_repairs_made_to_an_answer_are_counted(server: Any) -> None:
+    """A prose answer works, and the run records that the harness dug it out.
+
+    The span that has to cover both halves of taking an answer in -- the JSON
+    extracted here and the titles resolved to ids inside the supervisor -- is
+    opened by this tool. Driven through `call_tool` for that reason: a test that
+    opened its own span would prove nothing about the real one.
+    """
+    started = await call(server, "supervisor_start", prompt=PROMPT, mode="execute")
+    packet = started["packets"][0]
+    plan = (
+        '{"restated_goal": "rate limit login", "mode": "execute", '
+        '"lenses": [{"role": "security", "why": "exposure", '
+        '"objectives": ["Find the attack path"]}]}'
+    )
+
+    reported = await call(server, "supervisor_report", run_id=packet["run_id"],
+                          agent_id=packet["agent_id"],
+                          result=f"Here you go:\n```json\n{plan}\n```\nHope that helps.")
+
+    assert reported.get("error") is None
+    status = await call(server, "supervisor_status", run_id=packet["run_id"])
+    assert status["assists"]["json_from_prose"] == 1, status["assists"]
+    assert status["assists"]["result_not_an_object"] == 1
+
+
+async def test_a_clean_answer_records_no_repairs(server: Any) -> None:
+    """"Nothing needed fixing" has to be distinguishable from "nobody counted"."""
+    started = await call(server, "supervisor_start", prompt=PROMPT, mode="execute")
+    packet = started["packets"][0]
+
+    await call(server, "supervisor_report", run_id=packet["run_id"],
+               agent_id=packet["agent_id"], result={
+                   "restated_goal": "rate limit login", "mode": "execute",
+                   "lenses": [{"role": "security", "why": "exposure",
+                               "objectives": ["Find the attack path"]}],
+               })
+
+    status = await call(server, "supervisor_status", run_id=packet["run_id"])
+    assert status["assists"] == {}
+
+
 async def test_a_result_that_is_not_an_object_is_refused_not_raised(server: Any) -> None:
     """An exception here surfaces to the user as a broken tool, not a bad call."""
     started = await call(server, "supervisor_start", prompt=PROMPT, mode="execute")

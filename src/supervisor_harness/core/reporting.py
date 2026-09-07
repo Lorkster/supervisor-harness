@@ -20,9 +20,11 @@ from typing import Any
 
 from ..config import HarnessConfig
 from ..models import (
+    ACTIVE_AGENT_STATUSES,
     CriterionStatus,
     ExecutionTask,
     Phase,
+    TaskStatus,
     Usage,
 )
 from ..serde import to_jsonable
@@ -33,6 +35,7 @@ from .blackboard import contested_keys
 from .envelope import stale_reason
 from .journal import RunJournal, build_journal
 from .responses import SupervisorResponse
+from .timing import clock, measure
 
 #: How many of a run's notes ``status`` returns. The whole list is in the state
 #: and all of it is in the log; this is what fits in an answer meant to be read.
@@ -150,6 +153,15 @@ class Reporting:
             ],
             "note_count": len(state.notes),
             "usage": to_jsonable(state.total_usage()),
+            # Where the wall clock went, folded from the log's own timestamps.
+            # Nothing records this at run time: every event is already stamped,
+            # so storing a duration beside them would be a second source of
+            # truth for a derived number.
+            "timing": measure(self.store.log(run_id).read_all()).to_payload(),
+            # What the harness had to repair before each answer could be used.
+            # Empty on a run where nothing needed repairing, which is the
+            # answer, not a missing field.
+            "assists": dict(state.assists),
             "error": state.error,
         }
     def explain(self, run_id: str, agent_id: str = "") -> RunJournal:
@@ -163,6 +175,55 @@ class Reporting:
         """
         state = self.store.load_state(run_id)
         return build_journal(state, self.store.log(run_id).read_all(), agent_id)
+    def ledger(self, run_id: str) -> str:
+        """One line saying where the run is, for the host to print verbatim.
+
+        The complaint this answers is "it is slow and I cannot see what is going
+        on". The harness only wakes when it is called, so it cannot push
+        progress -- but every response it hands back already knows the phase, the
+        agents, the turns spent and the findings so far. It simply never said so
+        in a form a host would echo.
+
+        Costs one fold over the log and no model call. Deliberately one line: a
+        progress report the host has to summarise before showing is a progress
+        report the host will skip.
+        """
+        state = self.store.load_state(run_id)
+        timing = measure(self.store.log(run_id).read_all())
+
+        active = [a for a in state.agents.values() if a.status in ACTIVE_AGENT_STATUSES]
+        settled = [a for a in state.agents.values() if a.status not in ACTIVE_AGENT_STATUSES]
+        spent = sum(state.turn_counts.get(a.id, 0) for a in state.agents.values())
+        budget = sum(a.budget.max_turns for a in state.agents.values())
+
+        parts = [str(state.phase)]
+        if state.agents:
+            parts.append(f"{len(settled)}/{len(state.agents)} agents done")
+        if budget:
+            parts.append(f"turn {spent}/{budget}")
+        if state.findings:
+            parts.append(f"{len(state.findings)} finding(s)")
+        if state.tasks:
+            verified = sum(1 for t in state.tasks.values() if t.status is TaskStatus.VERIFIED)
+            parts.append(f"{verified}/{len(state.tasks)} task(s) verified")
+        parts.append(clock(timing.total_seconds))
+        if timing.waiting:
+            longest = timing.waiting[0]
+            parts.append(f"{len(timing.waiting)} out, longest {clock(longest.seconds)}")
+        elif active:
+            parts.append(f"{len(active)} running")
+        # Only when it happened. A ledger that says "0 repairs" on every line
+        # trains the reader to stop reading the line.
+        repairs = sum(state.assists.values())
+        if repairs:
+            parts.append(f"{repairs} harness repair(s)")
+        # ASCII, deliberately. This line is printed to a terminal by the CLI and
+        # echoed by a host, and a middle dot arrives as mojibake on a console
+        # that is not UTF-8 -- which is the default on Windows. The house style
+        # already writes "--" rather than an em dash in anything a model or a
+        # terminal reads, for the same reason.
+        return " | ".join(parts)
+
     @staticmethod
     def _task_view(task: ExecutionTask) -> dict[str, Any]:
         return {
