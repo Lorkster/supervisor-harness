@@ -823,7 +823,7 @@ async def test_an_outstanding_directive_is_reissued_on_resume(
     })
     response = await supervisor.advance(response.run_id)
     agent_id = response.packets[0].agent_id
-    original_brief = response.packets[0].brief
+    original_brief = response.packets[0].read_brief()
 
     # A turn that drifts: work on something the brief excluded, outside scope.
     await supervisor.report(response.run_id, agent_id, {
@@ -851,16 +851,19 @@ async def test_an_outstanding_directive_is_reissued_on_resume(
     assert resumed.action == "dispatch"
     packet = next(p for p in resumed.packets if p.agent_id == agent_id)
 
-    # The correction is carried, rather than silently dropped...
-    assert "Supervisor directive" in packet.brief
-    assert issued.kind.value in packet.brief
+    # The correction is carried, rather than silently dropped. Read through the
+    # packet rather than off it: the brief is handed over by reference, so
+    # `packet.brief` is empty and the file is what the agent is actually given.
+    brief = packet.read_brief()
+    assert "Supervisor directive" in brief
+    assert issued.kind.value in brief
     for correction in issued.corrections:
-        assert correction in packet.brief
+        assert correction in brief
 
     # ...and the packet still stands on its own, as the protocol promises.
-    assert "Output contract" in packet.brief
-    assert "Objectives" in packet.brief
-    assert original_brief.split("\n\n---\n\n")[0][:400] in packet.brief
+    assert "Output contract" in brief
+    assert "Objectives" in brief
+    assert original_brief.split("\n\n---\n\n")[0][:400] in brief
 
 
 async def test_a_settled_agent_is_not_handed_a_stale_directive(

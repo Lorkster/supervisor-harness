@@ -411,6 +411,14 @@ remain, and they follow from the backend rather than being oversights:
 Cursor runs them with its own tools, under your own permission model, and
 reports each turn back. Nothing runs that your host would not have run.
 
+A packet carries **paths, not text**: the brief, the answer's JSON schema and
+the file to write the answer to, plus a few lines naming the job. The sub-agent
+reads the brief and writes its answer; the orchestrator holds neither. That is
+not tidiness — a supervised run makes the orchestrator the message bus, so
+without it every brief and every result crosses one context, and an analysis
+fan-out costs about nine times what it needs to. Set `inline_briefs` to put the
+full text back in the packet for a host that cannot read files.
+
 **Autonomous.** The harness drives models directly through a
 workspace-sandboxed toolset (`list_files`, `read_file`, `search`, and
 `write_file` for execution agents). Reads cannot escape the workspace; writes
@@ -556,6 +564,13 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |
 | `allow_command_execution` | false | Let the harness run commands itself |
 | `apply_lessons` | true | Inject past lessons into briefs |
+
+One setting sits beside `policy` rather than inside it, because it decides how
+a packet is carried rather than how hard the supervisor pushes back:
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `inline_briefs` | false | Put the whole brief and schema in the packet instead of pointing at them. For a host that cannot read files. |
 
 ---
 

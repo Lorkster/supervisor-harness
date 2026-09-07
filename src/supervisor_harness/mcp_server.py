@@ -60,10 +60,17 @@ it is empty. This is how a role binds to a real specialist rather than to a
 generic agent -- a security lens run by your security sub-agent is the whole
 point -- and the harness cannot see your sub-agent types for itself.
 
-You will get back one or more work packets. Each packet contains a complete
-brief and the exact JSON schema its answer must match. Run each packet with your
-own sub-agent mechanism -- issue independent packets in parallel, in a single
-message -- then call supervisor_report with each result.
+You will get back one or more work packets. Run each with your own sub-agent
+mechanism -- issue independent packets in parallel, in a single message.
+
+A packet normally carries paths rather than text: brief_path is the brief,
+contract_path is the JSON schema the answer must match, result_path is where the
+answer goes, and brief_digest is a few lines for you. Tell the sub-agent to read
+brief_path in full and to write its answer to result_path, then call
+supervisor_report with result_path and no result. Do not read the brief into
+your own context to relay it, and do not work from the digest: it names the job,
+it is not the job. A packet with a populated brief and schema instead of paths is
+carried inline; report those with result.
 
 When a packet sets host_agent_type, spawn that sub-agent type. It was chosen
 against the role, and host_agent_reason says why; if you cannot spawn it, run
@@ -173,28 +180,44 @@ def _register_run_tools(server: _Server) -> None:
 
     @server.tool(
         description=(
-            "Report one agent's result. Returns the supervisor's directive: either "
-            "corrections and another turn, or acceptance."
+            "Report one agent's result -- by result_path where the packet gave one, "
+            "so the answer never enters your context. Returns the supervisor's "
+            "directive: either corrections and another turn, or acceptance."
         )
     )
     async def supervisor_report(
         run_id: str,
         agent_id: str,
-        result: dict[str, Any] | str,
+        result: dict[str, Any] | str | None = None,
+        result_path: str = "",
     ) -> dict[str, Any]:
         """Hand back what an agent produced.
 
         Args:
             run_id: From the packet.
             agent_id: From the packet.
-            result: The agent's JSON object, matching the packet's schema. Pass it
-                through unmodified -- do not fill gaps or improve it, because the
-                supervisor is judging the agent's real output.
+            result: The agent's JSON object, matching the packet's contract. Pass
+                it through unmodified -- do not fill gaps or improve it, because
+                the supervisor is judging the agent's real output.
+            result_path: Where the agent wrote its answer, when the packet gave it
+                a result_path to write to. Preferred over `result`: a large
+                finding set never has to pass through your context at all.
         """
-        payload = _as_dict(result)
+        if result_path:
+            try:
+                raw = supervisor().store.read_result(run_id, result_path)
+            except (ValueError, FileNotFoundError, OSError) as exc:
+                return {
+                    "error": f"could not read the reported result: {exc}",
+                    "result_path": result_path,
+                    "hint": "the agent may not have written it; check the path in the packet",
+                }
+            payload = _as_dict(raw)
+        else:
+            payload = _as_dict(result) if result is not None else None
         if payload is None:
             return {
-                "error": "result must be a JSON object matching the packet schema",
+                "error": "result must be a JSON object matching the packet contract",
                 "received": str(result)[:200],
             }
         return _result(await supervisor().report(run_id, agent_id, payload))

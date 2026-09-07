@@ -315,16 +315,51 @@ class RunStore:
         directory. Verified before the fix, which is why this is a check rather
         than a comment saying the callers are careful.
         """
-        artifacts = self.run_dir(run_id) / "artifacts"
-        artifacts.mkdir(parents=True, exist_ok=True)
-        path = (artifacts / _artifact_name(name)).resolve()
+        return self.write_run_file(run_id, "artifacts", name, content)
+
+    def write_run_file(self, run_id: str, subdir: str, name: str, content: str) -> Path:
+        """Write one file into a subdirectory of this run, and only into it.
+
+        The containment argument is `write_artifact`'s, and this is that method
+        generalised rather than a second copy of it: the handoff directories
+        (``packets``, ``contracts``, ``results``) take names derived from agent
+        ids and schema names, which is exactly the "a later caller derives it
+        from something" case the check was written for.
+        """
+        directory = self.run_dir(run_id) / _artifact_name(subdir)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = (directory / _artifact_name(name)).resolve()
         # Belt and braces against a name that survives the first check: on a
         # case-insensitive or symlinked path, resolve() is the last word on where
         # the write actually lands.
-        if artifacts.resolve() not in path.parents:
-            raise ValueError(f"artifact name escapes the run directory: {name!r}")
+        if directory.resolve() not in path.parents:
+            raise ValueError(f"name escapes the run directory: {subdir}/{name!r}")
         path.write_text(content, encoding="utf-8")
         return path
+
+    def run_file(self, run_id: str, subdir: str, name: str) -> Path:
+        """Where :meth:`write_run_file` would put this file. Writes nothing."""
+        return (self.run_dir(run_id) / _artifact_name(subdir) / _artifact_name(name)).resolve()
+
+    def read_result(self, run_id: str, path: str | Path) -> str:
+        """Read an agent's answer back from the run's ``results`` directory.
+
+        Contained deliberately, and to that one directory. The path arrives from
+        the host, which got it from a sub-agent, which is a model: this is the
+        one place in the handoff where something outside the harness names a
+        file the harness then opens. Absolute or relative, it has to land in
+        ``runs/<id>/results`` or it is not read.
+        """
+        results = (self.run_dir(run_id) / "results").resolve()
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = results / _artifact_name(str(path))
+        resolved = candidate.resolve()
+        if results not in resolved.parents:
+            raise ValueError(f"result path is outside this run's results directory: {path!r}")
+        if not resolved.is_file():
+            raise FileNotFoundError(f"no result written at {path!r}")
+        return resolved.read_text(encoding="utf-8")
 
     # -- lessons library ---------------------------------------------------
 

@@ -4,20 +4,52 @@ The second of the layers `core/supervisor.py` was split into, and like
 `core/reporting.py` it made **zero calls back into the supervisor** before the
 split -- which is what made lifting it out safe rather than hopeful. It reads
 the run's state, the lessons library and the agent registry, and returns a
-:class:`WorkPacket`. It decides nothing about phases and writes nothing.
+:class:`WorkPacket`. It decides nothing about phases.
 
-The bodies are the ones that were on ``Supervisor``, moved verbatim.
+## Where a packet is carried, and why it is not carried inline
+
+It used to write nothing. It now writes the brief, the answer's schema and the
+run's rules into the run directory, and puts paths in the packet instead of
+text -- because a host-delegated run makes the orchestrator the message bus and
+the orchestrator is not the reader.
+
+A native sub-agent is a context firewall: it burns its own window and the caller
+pays for the final report. Here the supervisor has to see every brief, every
+result and every directive in order to supervise them, so nothing is firewalled,
+and a run of thirty round trips pushes all thirty briefs and all thirty answers
+through one context. Measured on an analysis brief: about 9,000 characters of
+which roughly 5,000 is the pretty-printed schema -- the same 5,000 for every
+analysis agent in every run.
+
+Writing them out changes who pays for them. The supervisor still records the
+brief on the log and still scores drift against it; the orchestrator holds a few
+lines and a path, and the sub-agent -- which has file tools, being an agent --
+reads the file. `BRIEF_RENDERED` carries the by-reference text, not the inline
+text it replaced, because drift is scored against what the agent was actually
+given and scoring it against a brief it never saw would be worse than not
+scoring it. The file additionally carries any outstanding directive, which the
+log records separately and has always kept out of the drift anchor.
+
+Two things stay inline. An autonomous run has no second process to read a file:
+the harness feeds the brief straight to a provider, so `Backend.AUTONOMOUS`
+always carries text. And ``inline_briefs`` in the configuration forces the old
+form for a host that cannot read files -- it costs context, not correctness.
 """
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..agents.brief import (
+    BriefRefs,
     build_analysis_brief,
     build_execution_brief,
+    build_rules_document,
     build_verification_brief,
+    render_contract,
     render_directive,
 )
 from ..agents.registry import AgentRegistry
@@ -45,6 +77,47 @@ from ..store.runstore import RunSession, RunStore
 from .blackboard import render_context
 from .responses import WorkPacket
 from .tools import render_tools_section
+
+#: The contract file each kind of answer is written to, once per run. Keyed by
+#: the packet's ``kind`` so a stage packet and an agent packet name theirs the
+#: same way, and named after the contract rather than the agent so two analysis
+#: lenses share one file instead of writing the same schema twice.
+CONTRACT_FILENAMES = {
+    "analysis": "analysis-turn.json",
+    "execution": "execution-turn.json",
+    "verification": "verification.json",
+}
+
+#: Where the run's rules live, relative to the run directory. In ``packets``
+#: rather than beside them because it is brief material: written once, pointed
+#: at by every brief in the run.
+RULES_FILENAME = "RULES.md"
+
+
+@dataclass(frozen=True)
+class _Handoff:
+    """The files one by-reference packet uses, absolute and as brief text."""
+
+    brief: Path
+    contract: Path
+    result: Path
+    refs: BriefRefs
+
+
+def _relative_to(path: Path, base: Path) -> str:
+    """``path`` as the shortest thing that still resolves for the reader.
+
+    Relative to the workspace when the run directory is inside it, which is the
+    default layout and reads far better in a brief; absolute otherwise, because
+    ``SUPERVISOR_HOME`` can put the run directory anywhere and a relative path
+    out of a sub-agent's working directory is a failed dispatch rather than an
+    untidy one.
+    """
+    try:
+        return path.relative_to(base).as_posix()
+    except ValueError:
+        return str(path)
+
 
 # Directives that leave the agent owing another turn. The rest (accept, stop,
 # escalate) settle it, so there is nothing outstanding to re-issue.
@@ -88,6 +161,12 @@ class Packets:
             else ""
         )
 
+        handoff = (
+            None if self._inline(agent)
+            else self._handoff(session, agent.id, str(agent.kind), turns_used)
+        )
+        refs = handoff.refs if handoff else BriefRefs()
+
         if agent.kind is AgentKind.ANALYSIS:
             schema = ANALYSIS_TURN_SCHEMA
             brief = build_analysis_brief(
@@ -97,6 +176,7 @@ class Packets:
                 ),
                 lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
                 tools=tools,
+                refs=refs,
             )
         elif agent.kind is AgentKind.EXECUTION:
             schema = EXECUTION_TURN_SCHEMA
@@ -115,6 +195,7 @@ class Packets:
                 lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
                 supporting_findings=findings,
                 tools=tools,
+                refs=refs,
             )
         else:
             schema = VERIFICATION_SCHEMA
@@ -122,7 +203,7 @@ class Packets:
             summary = self._change_summary(session, task)
             brief = build_verification_brief(
                 state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
-                schema, change_summary=summary, tools=tools,
+                schema, change_summary=summary, tools=tools, refs=refs,
             )
 
         # The brief is rendered once and reused, so it stays a stable anchor for
@@ -142,20 +223,130 @@ class Packets:
         if directive is not None:
             brief = f"{brief}\n\n---\n\n{render_directive(directive, agent)}"
 
-        return WorkPacket(
-            run_id=state.id,
-            agent_id=agent.id,
-            kind=str(agent.kind),
-            title=agent.title,
-            brief=brief,
-            schema=schema,
-            turn_index=turns_used,
-            turns_remaining=max(0, agent.budget.max_turns - turns_used),
-            host_agent_type=agent.host_agent_type,
-            host_agent_reason=agent.host_agent_reason,
-            model=agent.binding.ref(),
-            task_id=agent.task_id,
+        return self._carry(
+            WorkPacket(
+                run_id=state.id,
+                agent_id=agent.id,
+                kind=str(agent.kind),
+                title=agent.title,
+                brief=brief,
+                schema=schema,
+                turn_index=turns_used,
+                turns_remaining=max(0, agent.budget.max_turns - turns_used),
+                host_agent_type=agent.host_agent_type,
+                host_agent_reason=agent.host_agent_reason,
+                model=agent.binding.ref(),
+                task_id=agent.task_id,
+            ),
+            agent=agent,
+            handoff=handoff,
         )
+
+    # -- carrying a packet by reference ------------------------------------
+
+    def _inline(self, agent: AgentSpec) -> bool:
+        """Whether this packet carries its brief instead of pointing at it."""
+        return self.config.inline_briefs or agent.backend is Backend.AUTONOMOUS
+
+    def _handoff(
+        self, session: RunSession, agent_id: str, kind: str, turn_index: int
+    ) -> _Handoff:
+        """The three files this packet points at: where they are, and how named.
+
+        The paths are computed once and used twice -- as relative text inside
+        the brief, where a reader is a model and someone's disk layout does not
+        belong, and as absolute paths on the packet, where the reader is a host
+        whose working directory the harness does not control.
+
+        The rules document is written here rather than once per run: it is
+        deterministic for the run, so the repeated write is idempotent, and a
+        guard would be a cache to invalidate in exchange for one small write per
+        dispatch.
+        """
+        run_id = session.state.id
+        rules = self.store.write_run_file(
+            run_id, "packets", RULES_FILENAME, build_rules_document(session.state)
+        )
+        contract_name = CONTRACT_FILENAMES.get(kind, f"{kind}.json")
+        contract = self.store.run_file(run_id, "contracts", contract_name)
+        result = self.store.run_file(run_id, "results", f"{agent_id}.t{turn_index}.json")
+        # The results directory has to exist before an agent is told to write
+        # into it: a sub-agent that has to create a directory first is a
+        # sub-agent given one more way to put the file somewhere else.
+        result.parent.mkdir(parents=True, exist_ok=True)
+        return _Handoff(
+            brief=self.store.run_file(run_id, "packets", f"{agent_id}.t{turn_index}.md"),
+            contract=contract,
+            result=result,
+            refs=BriefRefs(
+                rules=_relative_to(rules, self.workspace),
+                contract=_relative_to(contract, self.workspace),
+                result=_relative_to(result, self.workspace),
+            ),
+        )
+
+    def _carry(
+        self,
+        packet: WorkPacket,
+        *,
+        agent: AgentSpec,
+        handoff: _Handoff | None,
+    ) -> WorkPacket:
+        """Move the brief and schema out of the packet and into the run directory.
+
+        Returns the packet unchanged when it is carried inline. Otherwise both
+        are written out and then *emptied* on the packet -- emptied rather than
+        left populated, because a packet carrying both forms saves nothing and
+        invites a reader to use whichever one it happens to notice.
+        """
+        if handoff is None:
+            return packet
+
+        self.store.write_run_file(
+            packet.run_id, "packets", handoff.brief.name, packet.brief
+        )
+        self.store.write_run_file(
+            packet.run_id, "contracts", handoff.contract.name,
+            json.dumps(packet.schema, indent=2),
+        )
+
+        packet.brief_path = str(handoff.brief)
+        packet.contract_path = str(handoff.contract)
+        packet.result_path = str(handoff.result)
+        packet.brief_digest = self._digest(packet, agent)
+        packet.brief = ""
+        packet.schema = {}
+        return packet
+
+    def _digest(self, packet: WorkPacket, agent: AgentSpec) -> str:
+        """A few lines so the orchestrator can dispatch and narrate, and no more.
+
+        Deliberately not a summary of the brief. The supervisor scores drift
+        against the brief's exact text, so a digest good enough to work *from*
+        would be a second, unmeasured brief -- which is the failure the "do not
+        summarise a packet before dispatching it" rule already exists to stop.
+        This names the job and says which file to read.
+        """
+        turn = f"turn {packet.turn_index + 1}"
+        if agent.budget.max_turns:
+            turn += f" of {agent.budget.max_turns}"
+        lines = [f"{packet.title} -- {packet.kind}, {turn}"]
+        if agent.objectives:
+            shown = "; ".join(agent.objectives[:3])
+            more = f" (+{len(agent.objectives) - 3} more)" if len(agent.objectives) > 3 else ""
+            lines.append(f"Objectives: {shown}{more}")
+        lines.append(
+            "Scope: " + (", ".join(agent.scope.paths) if agent.scope.paths else "the workspace")
+        )
+        lines.append(
+            f"Brief: {packet.brief_path} -- give the sub-agent this file in full; "
+            "do not summarise it."
+        )
+        lines.append(
+            f"Answer: write the object described by {packet.contract_path} to "
+            f"{packet.result_path}, then report that path."
+        )
+        return "\n".join(lines)
     def _stage_packet(
         self,
         session: RunSession,
@@ -165,20 +356,35 @@ class Packets:
         schema: dict[str, Any],
         kind: str,
     ) -> WorkPacket:
+        handoff = None if self._inline(agent) else self._handoff(session, agent.id, kind, 0)
         brief = f"{system}\n\n---\n\n{user}"
+        if handoff is not None:
+            # A stage prompt describes its answer in prose and relies on the
+            # packet's `schema` for the shape. Emptying that without saying where
+            # it went would leave the stage with no contract at all, so the
+            # pointer is part of the brief before the brief is recorded.
+            brief += "\n\n## Output contract\n" + render_contract(
+                schema, handoff.refs.contract, handoff.refs.result
+            )
+        # Recorded before the packet is stripped, so the log holds what the
+        # agent was actually given rather than the packet it arrived in.
         session.emit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
         session.emit(EventType.AGENT_DISPATCHED, {"agent_id": agent.id, "kind": kind})
-        return WorkPacket(
-            run_id=session.state.id,
-            agent_id=agent.id,
-            kind=kind,
-            title=agent.title,
-            brief=brief,
-            schema=schema,
-            turns_remaining=1,
-            host_agent_type=agent.host_agent_type,
-            host_agent_reason=agent.host_agent_reason,
-            model=agent.binding.ref(),
+        return self._carry(
+            WorkPacket(
+                run_id=session.state.id,
+                agent_id=agent.id,
+                kind=kind,
+                title=agent.title,
+                brief=brief,
+                schema=schema,
+                turns_remaining=1,
+                host_agent_type=agent.host_agent_type,
+                host_agent_reason=agent.host_agent_reason,
+                model=agent.binding.ref(),
+            ),
+            agent=agent,
+            handoff=handoff,
         )
     def _dispatch_packet(self, session: RunSession, agent: AgentSpec) -> WorkPacket:
         """Packet for an agent being (re-)dispatched, carrying any open directive.

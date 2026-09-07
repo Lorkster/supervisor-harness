@@ -72,25 +72,55 @@ The response carries `action: "dispatch"` and one or more packets:
   "kind": "analysis",             // analysis | execution | verification
                                   // | planning | synthesis | checkpoint | improvement
   "title": "Security",
-  "brief": "# Analysis brief: Security\n...",
-  "schema": { "type": "object", ... },
+  "brief_path": ".../runs/run_.../packets/agt_....t0.md",
+  "brief_digest": "Security -- analysis, turn 1 of 6\nObjectives: ...",
+  "contract_path": ".../runs/run_.../contracts/analysis-turn.json",
+  "result_path": ".../runs/run_.../results/agt_....t0.json",
+  "brief": "",                    // populated only in the inline form
+  "schema": {},                   // populated only in the inline form
   "turn_index": 0,
   "turns_remaining": 6,
-  "host_agent_type": "general-purpose",
+  "host_agent_type": "Security Specialist",
+  "host_agent_reason": "Security Specialist (.claude/agents/sec.md): hint 'security' matched",
   "model": "host",
   "task_id": null
 }
 ```
 
+#### By reference, and why
+
+A packet normally carries **paths, not text**. `brief_path` is the brief,
+`contract_path` is the JSON schema the answer must match, `result_path` is where
+the answer goes, and `brief_digest` is a few lines for the orchestrator.
+
+This is not a size optimisation for its own sake. A supervised run makes the
+orchestrator the message bus: every brief goes out through its context, every
+result comes back through it, and nothing is firewalled the way a native
+sub-agent firewalls its own transcript. The supervisor has to see all of it; the
+orchestrator only has to know which file to hand to whom. An analysis brief is
+about 9,000 characters, roughly 5,000 of which is the pretty-printed schema --
+the same 5,000 for every analysis agent in every run.
+
+A packet with `brief` and `schema` populated and no paths is the **inline** form.
+The autonomous backend always uses it, and `inline_briefs` in the configuration
+forces it for a host that cannot read files. Handle both: if `brief_path` is set
+use the files, otherwise use `brief` and `schema`.
+
 Rules:
 
 - **Issue independent packets in parallel**, in a single message. Analysis fans
   out precisely so several lenses run at once.
-- **Pass `brief` verbatim.** Do not summarise, merge, extend or "improve" it. The
-  supervisor scores drift against that exact text, and the brief carries the
-  scope fence, the peer list, past lessons and the output contract.
-- Use `host_agent_type` as your subagent type when it is set.
-- `schema` is the exact JSON shape the answer must take.
+- **Give the sub-agent `brief_path` and let it read the file.** Do not read the
+  brief into your own context to relay it, and do not summarise, merge, extend
+  or "improve" it: the supervisor scores drift against that exact text, and the
+  brief carries the scope fence, the peer list, past lessons and the output
+  contract.
+- **`brief_digest` names the job; it is not the job.** It exists so you can
+  dispatch and narrate without holding the brief. A sub-agent briefed from the
+  digest is an unmeasured agent.
+- Use `host_agent_type` as your subagent type when it is set; `host_agent_reason`
+  says why it was chosen, or why the packet carries none.
+- Tell the sub-agent to write its answer to `result_path`, and report that path.
 - **The agents share one working tree.** Packets run concurrently in the same
   workspace, separated only by their path scopes, and a path scope does not
   constrain git: every brief therefore forbids `git stash`, `git checkout`,
@@ -109,8 +139,21 @@ Rules:
 supervisor_report({
   "run_id": "run_...",
   "agent_id": "agt_...",
-  "result": { /* the agent's JSON, unmodified */ }
+  "result_path": ".../runs/run_.../results/agt_....t0.json"   // preferred
 })
+```
+
+Report by `result_path` whenever the packet gave one: the answer is read from
+the file and never enters your context, so a lens that produces forty findings
+costs you one string. The path must land inside that run's `results` directory —
+it arrives from a sub-agent, and this is the one point in the handoff where
+something outside the harness names a file the harness then opens.
+
+If the packet was inline, or the agent answered in the conversation instead of
+writing the file, pass `result` with the object (or the prose containing it):
+
+```jsonc
+supervisor_report({ "run_id": "run_...", "agent_id": "agt_...", "result": { ... } })
 ```
 
 Report what the agent actually produced. Do not fill in empty fields, fix
@@ -265,7 +308,7 @@ call at any time.
 | Tool | Arguments | Returns |
 | --- | --- | --- |
 | `supervisor_start` | `prompt`, `mode`, `host_agents`, `backend` | the run id and its first work packets |
-| `supervisor_report` | `run_id`, `agent_id`, `result` | the supervisor's directive for that agent |
+| `supervisor_report` | `run_id`, `agent_id`, `result_path` or `result` | the supervisor's directive for that agent |
 | `supervisor_advance` | `run_id`, `host_agents` | the next packets, an approval request, or completion |
 | `supervisor_abandon` | `run_id`, `agent_id`, `reason` | the phase, with that agent ended |
 | `supervisor_approve` | `run_id`, `decisions` | the first execution packets |
