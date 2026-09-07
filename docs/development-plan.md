@@ -3,8 +3,9 @@
 *Written 2026-09-07. This one is live — the work in it is scheduled, not done.*
 
 > **Progress.** Batches 1 ([#53](https://github.com/Lorkster/supervisor-harness/pull/53))
-> and 2 ([#54](https://github.com/Lorkster/supervisor-harness/pull/54)) are merged.
-> Batch 3 is open. Nothing below has been edited to match what happened;
+> 2 ([#54](https://github.com/Lorkster/supervisor-harness/pull/54)) and
+> 3 ([#55](https://github.com/Lorkster/supervisor-harness/pull/55)) are merged.
+> Batch 4 is open. Nothing below has been edited to match what happened;
 > where a batch measured something the plan only estimated, the measurement
 > is added beneath it and the estimate is left standing.
 
@@ -289,6 +290,25 @@ Two of their conventions are worth adopting as our own invariants:
 **Divergence:** do not implement ATIF v1.7 literally. Pinning to someone else's
 evolving spec version buys compatibility with consumers we do not have. Take the
 shape, keep our own names, and write an adapter if a consumer appears.
+
+> **Done**, and the compaction convention needed reinterpreting rather than
+> porting. The harness does not compact context, so `is_copied_context` has no
+> literal analogue — but it does *re-issue*, handing an unanswered agent the same
+> brief again, and a consumer counting work would count that twice. `repeats`
+> names the earlier step, and it chains, so any number of re-issues folds back
+> onto the one piece of work they all repeat.
+>
+> One place the export is honestly approximate: a recorded checkpoint is a merge
+> of deterministic scoring with a model's judgement, and the event does not say
+> whether a model actually contributed. Checkpoint and lesson steps are marked
+> `mixed` rather than resolved. Making it exact needs a field on `Checkpoint`,
+> which is a change to what a run *records* — and this batch is a reader, so it
+> does not get to make it. Worth doing in a later batch if anything comes to
+> depend on the distinction.
+>
+> Measured on a small run: 17 of 19 steps were `policy`. That ratio is the
+> number the format exists to make legible, and it was previously unavailable
+> without reading the log by hand.
 
 ## Batch 5 — Facts that know whether they are still true
 

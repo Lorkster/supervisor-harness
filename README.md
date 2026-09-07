@@ -241,6 +241,7 @@ shorthand for something the CLI will not tell you itself.
 | `explain [RUN]` | how the run got here: every turn, its drift signals, and the directive each one drew | `-a/--agent` one agent, `--width COLS` |
 | `drift AGENT [RUN]` | ask the drift model for a second opinion on one agent's last turn | — |
 | `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
+| `trajectory [RUN]` | export the run as a portable trajectory document | `-o FILE` |
 | `runs` | list recent runs in this store | `-n/--limit` (default 20) |
 | `lessons` | show what previous runs taught the harness | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit` |
 | `providers` | show stage routing and whether each provider answers | — |
@@ -556,6 +557,34 @@ run from another terminal without touching the harness:
 tail -f .supervisor/runs/<run_id>/progress.ndjson
 ```
 
+### Exporting a run
+
+```bash
+supervisor trajectory <run_id> -o run.json
+```
+
+One JSON document: the supervisor's steps, and each agent's nested beneath it
+with its own id. It is a projection over the event log — nothing is recorded for
+it, and running it changes nothing.
+
+Two properties make it worth having rather than just being the log again. **A
+deterministic step says so and carries no model metrics**, so `policy_steps`
+against `model_steps` says how much of a run a model was asked for at all — the
+claim that continuous drift-watching is cheap, as a number rather than an
+argument. And **a step that repeats earlier work names the step it repeats**, so
+a packet re-issued to an agent that never answered is not counted twice by
+whatever consumes the document.
+
+Both are checked by a validator rather than left as documentation, and the
+command reports any breach and still writes the file: a document that violates
+an invariant is evidence about the build, and withholding it leaves you with
+nothing to send anyone.
+
+The shape is adapted from NVIDIA's ATIF trajectory format, whose nesting is the
+one a supervised run already has. It is deliberately not ATIF itself — the names
+are this project's, and pinning to another project's evolving version would buy
+compatibility with consumers that do not exist yet.
+
 `supervisor status` adds two things worth reading afterwards. **`timing`** says
 where the wall clock went — total, how much of it was agents working, per phase,
 per kind, and the slowest dispatch — folded from the log's own timestamps rather
@@ -659,6 +688,7 @@ src/supervisor_harness/
     paths.py       path normalisation and scope matching
     baseline.py    the commit a run measures its whole-repository checks against
     timing.py      where a run's wall clock went, folded from the log
+    trajectory.py  a run exported as a portable, validated document
   assists.py       what the harness had to repair before an answer could be used
   mcp_server.py    MCP surface
   cli.py           command line

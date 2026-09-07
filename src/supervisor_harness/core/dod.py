@@ -10,6 +10,27 @@ module is what makes that claim enforceable:
   liveness / code-quality criteria policy requires, where the task admits them.
 * :func:`verify_criterion` proves a single criterion, either by running the
   check here or by handing it to the host to run.
+
+## The split this module keeps, in seven words
+
+NVIDIA's NOOA documentation puts it better than this codebase had: **types
+validate values; Python validates the world.** A schema can enforce that a line
+number is positive or that a status is one of three strings. It cannot prove
+that a cited file exists, that a test ran, that a row was written or that an API
+accepted a change.
+
+Both halves live here and are deliberately not the same thing.
+:func:`validate_criteria` is the first kind: it reads a criterion's own text and
+refuses the ones that cannot be checked at all, which is a judgement about the
+*statement*. :func:`verify_criterion` is the second: it runs the check and reads
+what actually happened, which is a judgement about the *world*. A criterion that
+passes the first and fails the second is the ordinary case, and a criterion that
+passed the first and was never put through the second is why "verified with no
+evidence is recorded as failed" exists.
+
+The exported trajectory (`core/trajectory.py`) carries the same distinction
+outward: a criterion the harness proved itself is marked as costing nothing,
+while an agent's account of proving one is marked as a model's claim.
 """
 
 from __future__ import annotations

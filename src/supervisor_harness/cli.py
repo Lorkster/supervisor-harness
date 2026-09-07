@@ -32,6 +32,7 @@ from .config import KNOWN_STAGES, PROJECT_CONFIG, load_config, write_example
 from .core.supervisor import Supervisor, SupervisorResponse
 from .host.detect import detect_host
 from .models import Backend, RunMode
+from .serde import to_jsonable
 from .store.events import (
     UNRECOGNISED_TYPE_KEY,
     Event,
@@ -624,6 +625,44 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trajectory(args: argparse.Namespace) -> int:
+    """Export a run as a portable trajectory document."""
+    sup = _supervisor(args)
+    run_id = args.run_id or sup.store.latest_run_id()
+    if not run_id:
+        print("No runs recorded yet.", file=sys.stderr)
+        return 1
+    if run_id not in sup.store.list_run_ids():
+        print(f"error: no such run: {run_id}", file=sys.stderr)
+        return 2
+
+    from .core.trajectory import build_trajectory, validate
+
+    trajectory = build_trajectory(
+        sup.store.load_state(run_id), sup.store.open(run_id).events(),
+        version=__version__,
+    )
+    problems = validate(trajectory)
+    if problems:
+        # Reported, and the document is still written. A trajectory that breaks
+        # an invariant is evidence about this build, and withholding it would
+        # leave whoever hit it with nothing to send anyone.
+        for problem in problems:
+            print(f"warning: {problem}", file=sys.stderr)
+
+    payload = json.dumps(to_jsonable(trajectory), indent=2, ensure_ascii=False)
+    if args.out:
+        Path(args.out).write_text(payload, encoding="utf-8")
+        totals = trajectory.totals
+        print(
+            f"wrote {args.out}: {totals['steps']} step(s) across "
+            f"{totals['agents']} agent(s), {totals['model_steps']} of them a model's"
+        )
+    else:
+        print(payload)
+    return 2 if problems else 0
+
+
 def cmd_drift(args: argparse.Namespace) -> int:
     """Ask the drift model for a second opinion on one agent's last turn."""
     sup = _supervisor(args)
@@ -954,6 +993,14 @@ def _add_read_commands(sub: Any, common: argparse.ArgumentParser) -> None:
     p.add_argument("--width", type=int, default=96, metavar="COLS",
                    help="wrap long text at this width (default: 96)")
     p.set_defaults(func=cmd_explain)
+
+    p = sub.add_parser("trajectory", parents=[common],
+                       help="export a run as a portable trajectory document")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
+    p.add_argument("-o", "--out", default="", metavar="FILE",
+                   help="write to this file instead of stdout")
+    p.set_defaults(func=cmd_trajectory)
 
     p = sub.add_parser("drift", parents=[common],
                        help="ask the drift model about an agent that looks off-brief")
