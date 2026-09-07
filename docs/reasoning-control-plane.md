@@ -149,7 +149,7 @@ authority is handed on — when synthesis creates a task (`attenuate` at
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:1612](../src/supervisor_harness/core/supervisor.py:1612)). It
+[supervisor.py:1656](../src/supervisor_harness/core/supervisor.py:1656)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 

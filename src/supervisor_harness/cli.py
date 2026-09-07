@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import shutil
 import sys
@@ -50,6 +51,13 @@ INTEGRATIONS = Path(__file__).parent / "integrations"
 def _emit(data: Any, as_json: bool) -> None:
     if as_json:
         print(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _print_ledger(response: SupervisorResponse) -> None:
+    """Where the run is, in one line, before whatever else is being shown."""
+    if response.ledger:
+        print()
+        print(f"  {response.ledger}")
 
 
 def _print_packets(response: SupervisorResponse) -> None:
@@ -95,13 +103,22 @@ def _print_directive(response: SupervisorResponse) -> None:
         print(f"    - {correction}")
 
 
-def _print_response(response: SupervisorResponse, as_json: bool) -> None:
+def _print_response(
+    response: SupervisorResponse, as_json: bool, sup: Supervisor | None = None
+) -> None:
     """Render one supervisor response for a human, section by section.
 
     Each section is its own function because each is independent: the response
     carries packets, or proposed tasks, or a directive, in any combination, and
     a reader looking for one of them should not have to step over the others.
     """
+    # The MCP server stamps this in `_result`; the CLI is the other surface a
+    # person reads a response on, and it reaches the store the same way. Failing
+    # to build a progress line is never worth failing a command for.
+    if sup is not None and not response.ledger and response.run_id:
+        with contextlib.suppress(Exception):
+            response.ledger = sup.reporting.ledger(response.run_id)
+
     if as_json:
         _emit(response.to_dict(), True)
         return
@@ -259,7 +276,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             await sup.aclose()
 
     response = asyncio.run(go())
-    _print_response(response, args.json)
+    _print_response(response, args.json, sup)
     if response.action == "await_approval" and not args.json:
         print("\nApprove with:")
         print(f"  supervisor approve {response.run_id} --all")
@@ -307,7 +324,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json)
+    _print_response(asyncio.run(go()), args.json, sup)
     return 0
 
 
@@ -325,7 +342,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json)
+    _print_response(asyncio.run(go()), args.json, sup)
     return 0
 
 
@@ -368,7 +385,7 @@ def cmd_advance(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json)
+    _print_response(asyncio.run(go()), args.json, sup)
     return 0
 
 
@@ -385,7 +402,7 @@ def cmd_abandon(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json)
+    _print_response(asyncio.run(go()), args.json, sup)
     return 0
 
 
@@ -431,7 +448,7 @@ def cmd_approve(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json)
+    _print_response(asyncio.run(go()), args.json, sup)
     return 0
 
 
@@ -448,7 +465,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json)
+    _print_response(asyncio.run(go()), args.json, sup)
     return 0
 
 

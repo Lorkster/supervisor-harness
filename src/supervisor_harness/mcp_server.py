@@ -18,10 +18,12 @@ contributes the tools, the repository context and the user's permission model.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .assists import assisting, record_assist
 from .config import KNOWN_STAGES
 from .core.supervisor import Supervisor, SupervisorResponse
 from .models import Backend, RunMode
@@ -86,6 +88,12 @@ call supervisor_abandon with the agent id and what happened. The harness cannot
 tell a dead agent from a slow one, and will otherwise re-issue that packet on
 every advance. Never invent a result on a missing agent's behalf.
 
+Every response carries a one-line `ledger`: phase, agents done, turns spent,
+findings, elapsed. Print it verbatim before you dispatch. A supervised run is
+many sequential sub-agents and the harness cannot speak unless spoken to, so
+that line is all the user has to tell a slow run from a stuck one. If they want
+to watch it live instead, `tail -f .supervisor/runs/<run_id>/progress.ndjson`.
+
 After reporting every packet, call supervisor_advance to get the next phase.
 When the run reaches await_approval, present the proposed tasks to the user with
 their actions, motivations and definitions of done, and let the user decide
@@ -119,6 +127,14 @@ def supervisor() -> Supervisor:
 
 def _result(response: SupervisorResponse) -> dict[str, Any]:
     """Shape a response for the host, with the next step stated plainly."""
+    # Stamped here rather than at each of the twenty places a response is built:
+    # this is where one reaches a person, and it is a read over the log with no
+    # bearing on what the response means. A run whose ledger cannot be built --
+    # a store that has gone -- still returns its response; a progress line is
+    # not worth failing a call for.
+    if not response.ledger and response.run_id:
+        with contextlib.suppress(Exception):
+            response.ledger = supervisor().reporting.ledger(response.run_id)
     payload = response.to_dict()
     payload["next_step"] = {
         "dispatch": (
@@ -138,6 +154,8 @@ def _result(response: SupervisorResponse) -> dict[str, Any]:
                     "definition-of-done results.",
         "failed": "Tell the user the run failed and why.",
     }.get(response.action, "")
+    if response.ledger:
+        payload["next_step"] = f"Print the ledger line, then: {payload['next_step']}"
     return payload
 
 
@@ -203,6 +221,19 @@ def _register_run_tools(server: _Server) -> None:
                 a result_path to write to. Preferred over `result`: a large
                 finding set never has to pass through your context at all.
         """
+        with assisting():
+            return await _take_report(run_id, agent_id, result, result_path)
+
+    async def _take_report(
+        run_id: str, agent_id: str, result: dict[str, Any] | str | None, result_path: str
+    ) -> dict[str, Any]:
+        """The body of `supervisor_report`, inside an open assists span.
+
+        Split out only so the span wraps both halves of taking an answer in: the
+        JSON dug out of prose here and the titles resolved to ids inside the
+        supervisor are the same answer being repaired, and counting them
+        separately would understate both.
+        """
         if result_path:
             try:
                 raw = supervisor().store.read_result(run_id, result_path)
@@ -214,6 +245,8 @@ def _register_run_tools(server: _Server) -> None:
                 }
             payload = _as_dict(raw)
         else:
+            if isinstance(result, str):
+                record_assist("result_not_an_object", result[:120])
             payload = _as_dict(result) if result is not None else None
         if payload is None:
             return {

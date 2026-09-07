@@ -25,6 +25,7 @@ from ..ids import now_iso
 from ..ids import older_than as _older_than
 from ..models import Lesson, RunState
 from ..serde import from_jsonable, to_jsonable
+from . import progress
 from .eventlog import EventLog, FileLock
 from .events import Event, EventType, _apply_contained, fold
 from .index import RunIndex
@@ -627,6 +628,10 @@ class RunSession:
         self.store = store
         self.state = state
         self._log = store.log(state.id)
+        #: Derived, disposable, and tailable from another terminal while a run
+        #: is in flight. Deliberately not the event log: a reader that rotates
+        #: or truncates what it follows must not be truncating the record.
+        self.progress_path = store.run_dir(state.id) / "progress.ndjson"
         self._pending_index = False
         self._index_error: str | None = None
         # Created lazily: a session is constructed in synchronous code, and an
@@ -651,6 +656,7 @@ class RunSession:
             run_id=self.state.id, type=type, actor=actor, payload=redact(payload or {})
         )
         self._log.append(event)
+        progress.append(self.progress_path, [event])
         self.state = _apply_contained(self.state, event)
         self._pending_index = True
         self.store.save_snapshot(self.state)
@@ -699,6 +705,7 @@ class RunSession:
                 for t, payload, actor in events
             ]
             await asyncio.to_thread(self._log.append_many, built)
+            await asyncio.to_thread(progress.append, self.progress_path, built)
             for event in built:
                 self.state = _apply_contained(self.state, event)
             self._pending_index = True

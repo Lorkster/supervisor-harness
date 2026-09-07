@@ -18,6 +18,7 @@ from typing import Any
 
 from ..agents.registry import AgentRegistry
 from ..agents.roles import ROLES_BY_ID, Role, role_for_task, select_lenses
+from ..assists import record_assist
 from ..config import HarnessConfig, Policy
 from ..ids import now_iso
 from ..models import (
@@ -150,6 +151,7 @@ def apply_plan(
     """
     entries = plan.get("lenses") or []
     if not entries:
+        record_assist("plan_unusable", "the planning answer named no lenses")
         return fallback, str(plan.get("shared_context", "")), RunMode.AUTO
 
     specs: list[AgentSpec] = []
@@ -186,6 +188,7 @@ def apply_plan(
         )
 
     if not specs:
+        record_assist("plan_unusable", f"none of {len(entries)} lens entries named a real lens")
         return fallback, str(plan.get("shared_context", "")), RunMode.AUTO
 
     # A planning model may sharpen a lens but may not drop one that policy
@@ -370,6 +373,7 @@ def resolve_dependencies(tasks: list[ExecutionTask]) -> dict[str, list[str]]:
                 continue
             match = by_title.get(entry.casefold())
             if match is None:
+                record_assist("dependency_dropped", entry)
                 notes.setdefault(task.id, []).append(
                     f"dropped dependency naming no task in this plan: {entry!r}"
                 )
@@ -378,6 +382,7 @@ def resolve_dependencies(tasks: list[ExecutionTask]) -> dict[str, list[str]]:
                     f"dropped self-dependency: {entry!r}"
                 )
             elif match not in resolved:
+                record_assist("dependency_by_title", entry)
                 resolved.append(match)
         task.depends_on = resolved
     return notes
@@ -431,10 +436,13 @@ def resolve_rationale_refs(
             entry = str(raw).strip()
             match = by_id.get(entry) or by_title.get(entry.casefold())
             if match is None:
+                record_assist("finding_ref_dropped", entry)
                 notes.setdefault(task.id, []).append(
                     f"dropped a reference naming no finding in this run: {entry!r}"
                 )
             elif match not in resolved:
+                if entry not in by_id:
+                    record_assist("finding_ref_by_title", entry)
                 resolved.append(match)
         task.rationale_refs = resolved
         if not resolved:

@@ -745,6 +745,12 @@ class RunState:
     messages: list[Message] = field(default_factory=list)
     directives: list[Directive] = field(default_factory=list)
     drift: dict[str, DriftAssessment] = field(default_factory=dict)
+    # What the harness had to repair before each answer could be used, by kind,
+    # summed over the run. Counted because the repairs are otherwise invisible:
+    # a run in which forty answers were dug out of prose is not the run the
+    # report describes, and it is the sharpest signal there is about a provider.
+    # Totals only -- the per-answer detail stays on the log. See `assists`.
+    assists: dict[str, int] = field(default_factory=dict)
     checkpoints: list[Checkpoint] = field(default_factory=list)
     lessons: list[Lesson] = field(default_factory=list)
     # Files the run wrote, latest write per path, so replay can recover them

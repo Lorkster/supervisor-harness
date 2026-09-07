@@ -54,6 +54,7 @@ class EventType(StrEnum):
     FINDING_ADDED = "finding_added"
     DIRECTIVE_ISSUED = "directive_issued"
     DRIFT_ASSESSED = "drift_assessed"
+    ASSISTS_RECORDED = "assists_recorded"
     MESSAGE_SENT = "message_sent"
     MESSAGE_DELIVERED = "message_delivered"
     TASK_PROPOSED = "task_proposed"
@@ -236,6 +237,18 @@ def _on_drift_assessed(state: RunState, event: Event) -> None:
     state.drift[p["agent_id"]] = from_jsonable(p["assessment"], DriftAssessment)
 
 
+def _on_assists_recorded(state: RunState, event: Event) -> None:
+    """Accumulate the run's total repairs, by kind.
+
+    Totals only. The per-answer detail -- which stage, which samples -- stays on
+    the log, where `supervisor explain` can reach it: a state snapshot that grew
+    a sample list per answer would carry a run's worth of model output in the
+    thing read on every status call.
+    """
+    for kind, count in (event.payload.get("counts") or {}).items():
+        state.assists[str(kind)] = state.assists.get(str(kind), 0) + int(count)
+
+
 def _on_message_sent(state: RunState, event: Event) -> None:
     p = event.payload
     _upsert(state.messages, from_jsonable(p["message"], Message))
@@ -366,6 +379,7 @@ _HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
     EventType.FINDING_ADDED: _on_finding_added,
     EventType.DIRECTIVE_ISSUED: _on_directive_issued,
     EventType.DRIFT_ASSESSED: _on_drift_assessed,
+    EventType.ASSISTS_RECORDED: _on_assists_recorded,
     EventType.MESSAGE_SENT: _on_message_sent,
     EventType.MESSAGE_DELIVERED: _on_message_delivered,
     EventType.TASK_PROPOSED: _on_task_proposed,

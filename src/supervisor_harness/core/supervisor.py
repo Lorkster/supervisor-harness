@@ -41,6 +41,7 @@ from ..agents.brief import (
     render_directive,
 )
 from ..agents.registry import AgentRegistry
+from ..assists import assisting, current_assists
 from ..config import HarnessConfig, Policy, load_config
 from ..contracts import (
     CHECKPOINT_SCHEMA,
@@ -962,6 +963,18 @@ class Supervisor:
                 detail={"error": "duplicate_report", "agent_status": str(agent.status)},
             )
 
+        try:
+            return await self._report_accepted(session, agent, payload)
+        finally:
+            # Whatever the path out -- and there are four -- the repairs made on
+            # the way through are recorded. In a `finally` because an answer that
+            # raised is exactly the one whose repairs are worth knowing about.
+            await self._flush_assists(session, agent)
+
+    async def _report_accepted(
+        self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
+    ) -> SupervisorResponse:
+        """Everything `report` does once the report is known to be a real one."""
         if agent.kind is AgentKind.SYNTHESIS:
             return await self._report_stage(session, agent, payload)
 
@@ -997,6 +1010,30 @@ class Supervisor:
             self._mark_task_awaiting_verification(session, agent, payload)
 
         return self.supervision._after_directive(session, agent, directive)
+
+    async def _flush_assists(self, session: RunSession, agent: AgentSpec) -> None:
+        """Record what the harness had to repair to make this answer usable.
+
+        Reads whatever recorder the caller installed -- the MCP tool opens one
+        around both the JSON extraction and this call, so a fenced answer dug
+        out of prose in `mcp_server` and a dependency resolved by title in
+        `core/phases` land in the same span. Outside a span the recorder
+        discards, so a direct call from a test or the CLI records nothing rather
+        than failing.
+
+        Emptied after emitting, so a caller that reports several agents inside
+        one span attributes each set of repairs to the agent that caused it
+        rather than to all of them cumulatively.
+        """
+        assists = current_assists()
+        if not assists:
+            return
+        payload = assists.to_payload()
+        payload["agent_id"] = agent.id
+        payload["stage"] = f"{agent.kind}.{agent.role}" if agent.role else str(agent.kind)
+        assists.counts.clear()
+        assists.samples.clear()
+        await session.aemit(EventType.ASSISTS_RECORDED, payload, actor=agent.id)
 
     @staticmethod
     def _stale_report_reason(state: RunState, agent: AgentSpec) -> str | None:
@@ -1251,7 +1288,12 @@ class Supervisor:
 
         async def drive(agent: AgentSpec) -> None:
             async with limit:
-                await self._drive_agent(session, agent)
+                # Per agent, and per *task*: `gather` runs each of these in its
+                # own asyncio task, which gets its own copy of the context, so
+                # four parallel agents get four recorders rather than one they
+                # would all write into and mis-attribute to each other.
+                with assisting(f"{agent.kind}.{agent.role}"):
+                    await self._drive_agent(session, agent)
 
         results = await asyncio.gather(
             *(drive(a) for a in agents), return_exceptions=True
@@ -1371,11 +1413,13 @@ class Supervisor:
                 # before the verdict is applied, so a verifier's work is visible
                 # on both backends rather than on neither.
                 turn = await self.supervision._record_turn(session, agent, payload)
+                await self._flush_assists(session, agent)
                 await self.supervision._assess_drift(session, agent, turn)
                 await self._report_verification(session, agent, payload)
                 return
 
             turn = await self.supervision._record_turn(session, agent, payload)
+            await self._flush_assists(session, agent)
             directive = await self.supervision._supervise(session, agent, turn)
 
             if should_escalate(

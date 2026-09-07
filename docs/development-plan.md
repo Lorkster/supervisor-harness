@@ -2,8 +2,9 @@
 
 *Written 2026-09-07. This one is live — the work in it is scheduled, not done.*
 
-> **Progress.** Batch 1 is merged ([#53](https://github.com/Lorkster/supervisor-harness/pull/53)).
-> Batch 2 is open. Nothing below has been edited to match what happened;
+> **Progress.** Batches 1 ([#53](https://github.com/Lorkster/supervisor-harness/pull/53))
+> and 2 ([#54](https://github.com/Lorkster/supervisor-harness/pull/54)) are merged.
+> Batch 3 is open. Nothing below has been edited to match what happened;
 > where a batch measured something the plan only estimated, the measurement
 > is added beneath it and the estimate is left standing.
 
@@ -238,6 +239,29 @@ model calls. Alongside it, append one NDJSON line per event to
 `runs/<id>/progress.ndjson` so a second terminal can `tail -f` a run. That is
 NOOA's `tail()` producer inverted, and the cheapest available answer to "I
 cannot see what is happening".
+
+> **Done**, with one correction to this plan: the repairs are not in
+> `core/responses.py`, which holds only the response types. They are spread
+> across `providers/base.py` (JSON dug out of prose, non-strict parsing, a list
+> boxed into an object), `core/phases.py` (dependencies and rationale references
+> resolved from titles, a planning answer with no usable lens) and
+> `mcp_server.py` (a string where an object was required). That is *why* they
+> needed a context-scoped recorder rather than a counter on one class -- the
+> deepest of them is three layers below the code that knows which stage is being
+> answered.
+>
+> Timing turned out to need nothing recorded at all. Every event already carries
+> a timestamp, so `core/timing.py` is a projection in the same class as
+> `core/journal.py`; storing a duration beside the events that imply it would
+> have been a second source of truth for a derived number. The plan's "recorded
+> per packet and per stage" was the wrong instinct.
+>
+> Token and cost fields were **not** added. They only exist where the harness
+> calls a provider itself, and the run that prompted all of this was
+> host-delegated, where the harness never sees a token. Adding fields that are
+> structurally empty on the backend the complaint came from would have made the
+> report look more informative than it is. Wall-clock attribution, which works on
+> both backends, is what that half of the batch became.
 
 ## Batch 4 — Trajectory export
 
