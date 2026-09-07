@@ -26,6 +26,7 @@ the module's own docstring documents to hosts.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -195,9 +196,70 @@ async def test_a_packet_arrives_with_everything_the_host_needs(server: Any) -> N
     packet = started["packets"][0]
 
     assert packet["run_id"] and packet["agent_id"] and packet["kind"] == "planning"
-    assert packet["brief"].strip()
-    assert packet["schema"]["type"] == "object"
     assert packet["turns_remaining"] >= 1
+    # By reference across the boundary: paths, not the text they point at.
+    assert Path(packet["brief_path"]).read_text(encoding="utf-8").strip()
+    assert json.loads(Path(packet["contract_path"]).read_text(encoding="utf-8"))
+    assert packet["brief_digest"].strip()
+    assert not packet["brief"] and not packet["schema"]
+
+
+async def test_a_result_is_reported_by_path(server: Any) -> None:
+    """The return half of the handoff: the answer never enters the caller.
+
+    A host that reports by path has read no part of the answer, which is the
+    point -- a lens that produces forty findings costs the orchestrator one
+    string either way.
+    """
+    started = await call(server, "supervisor_start", prompt=PROMPT, mode="execute")
+    packet = started["packets"][0]
+    Path(packet["result_path"]).write_text(
+        json.dumps({
+            "restated_goal": "rate limit login", "mode": "execute",
+            "lenses": [{"role": "security", "why": "exposure",
+                        "objectives": ["Find the attack path"]}],
+        }),
+        encoding="utf-8",
+    )
+
+    reported = await call(server, "supervisor_report", run_id=packet["run_id"],
+                          agent_id=packet["agent_id"], result_path=packet["result_path"])
+
+    assert reported.get("error") is None
+    assert reported["action"] != "failed"
+
+
+async def test_a_result_path_outside_the_run_is_refused(server: Any, tmp_path: Path) -> None:
+    """The one place something outside the harness names a file it then opens.
+
+    The path comes from a host, which got it from a sub-agent, which is a model.
+    Containment is to this run's results directory or it is not a boundary.
+    """
+    started = await call(server, "supervisor_start", prompt=PROMPT, mode="execute")
+    packet = started["packets"][0]
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text('{"restated_goal": "x", "mode": "report", "lenses": []}', encoding="utf-8")
+
+    refused = await call(server, "supervisor_report", run_id=packet["run_id"],
+                         agent_id=packet["agent_id"], result_path=str(elsewhere))
+
+    assert "outside this run" in refused["error"]
+
+
+async def test_a_result_path_with_nothing_written_says_so(server: Any) -> None:
+    """A sub-agent that answered in prose instead of writing the file.
+
+    The host needs to be told which of the two things went wrong, because the
+    fix differs: re-run the agent, or report the answer it did give inline.
+    """
+    started = await call(server, "supervisor_start", prompt=PROMPT, mode="execute")
+    packet = started["packets"][0]
+
+    refused = await call(server, "supervisor_report", run_id=packet["run_id"],
+                         agent_id=packet["agent_id"], result_path=packet["result_path"])
+
+    assert "could not read" in refused["error"]
+    assert refused["hint"]
 
 
 async def test_each_action_tells_the_host_what_to_do_next(

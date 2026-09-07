@@ -72,10 +72,14 @@ class HostSimulator:
         # the same on this path as it does under the autonomous backend.
         from supervisor_harness.providers.base import ChatMessage, CompletionRequest
 
+        brief = packet.read_brief()
+        schema = packet.schema
+        if packet.contract_path:
+            schema = json.loads(Path(packet.contract_path).read_text(encoding="utf-8"))
         request = CompletionRequest(
-            messages=[ChatMessage("user", packet.brief)],
-            system=packet.brief[:200],
-            json_schema=packet.schema,
+            messages=[ChatMessage("user", brief)],
+            system=brief[:200],
+            json_schema=schema,
         )
         return self.answers.answer_for(stage, request)
 
@@ -142,16 +146,112 @@ async def test_host_delegated_run_completes(
 
 
 async def test_packets_carry_everything_the_host_needs(host_supervisor: Supervisor) -> None:
-    """A packet is self-contained: brief, schema, budget and agent identity."""
+    """A packet is self-contained -- by reference, which is still self-contained.
+
+    The brief and the schema are on disk rather than in the packet, so what has
+    to be true is that the packet names them, that they are there, and that
+    `read_brief` gets the text back without the caller knowing which form it was
+    handed.
+    """
     start = await host_supervisor.start(PROMPT, mode=RunMode.EXECUTE)
     packet = start.packets[0]
 
     assert packet.run_id and packet.agent_id
-    assert packet.brief.strip()
-    assert packet.schema.get("type") == "object"
+    assert packet.by_reference
+    assert not packet.brief and not packet.schema, "both forms would invite reading either"
+    assert packet.read_brief().strip()
+    assert json.loads(Path(packet.contract_path).read_text(encoding="utf-8"))["type"] == "object"
+    assert packet.result_path and Path(packet.result_path).parent.is_dir(), (
+        "an agent told where to write should not have to create the directory"
+    )
+    assert len(packet.brief_digest.splitlines()) >= 3, "the digest names the job"
     assert packet.turns_remaining >= 1
     # Serialisable, because it crosses the MCP boundary as JSON.
     assert json.loads(json.dumps(packet.to_dict()))
+
+
+async def test_the_digest_is_not_a_brief(host_supervisor: Supervisor) -> None:
+    """It names the job; it is not something a sub-agent could work from.
+
+    A digest good enough to work from would be a second, unmeasured brief --
+    the exact failure the "do not summarise a packet before dispatching it"
+    rule exists to stop, reintroduced by the harness itself.
+    """
+    start = await host_supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+    packet = start.packets[0]
+
+    assert len(packet.brief_digest) < len(packet.read_brief()) / 4
+    assert packet.brief_path in packet.brief_digest
+    assert packet.result_path in packet.brief_digest
+
+
+async def test_a_by_reference_dispatch_is_a_fraction_of_the_inline_one(
+    workspace: Path, host_config: HarnessConfig, fake: FakeProvider
+) -> None:
+    """The measurement the batch exists for, pinned so a regression is visible.
+
+    "It reduces context" is the whole claim, and nothing else in the suite would
+    notice it stopping being true: every other test would still pass with the
+    brief quietly back inline. Measured on the analysis fan-out, which is where
+    a run spends most of its packets, as the JSON that actually crosses the MCP
+    boundary.
+
+    The bar is five-fold against the roughly seven-fold this run measures, and
+    the gap is deliberate: a bar set just under the observed value has to be
+    re-baselined every time a role's charter is edited, and the claim being
+    protected is the shape of the saving rather than a particular number. The
+    ratio also improves with the number of lenses, because what a by-reference
+    packet carries is mostly path length and does not grow with the brief -- the
+    same fan-out with three lenses measures about nine-fold.
+    """
+
+    async def dispatch_size(inline: bool) -> int:
+        config = default_config()
+        config.backend = Backend.HOST
+        config.routing = {k: "host" for k in config.routing}
+        config.policy = host_config.policy
+        config.inline_briefs = inline
+        root = workspace / ("inline" if inline else "byref")
+        root.mkdir()
+        supervisor = Supervisor(
+            workspace=root, config=config, store=RunStore(root / ".supervisor"),
+            host=HostInfo(name="claude-code", workspace=str(root), confidence=1.0),
+        )
+        start = await supervisor.start(PROMPT, mode=RunMode.EXECUTE)
+        plan = start.packets[0]
+        await supervisor.report(plan.run_id, plan.agent_id, {
+            "restated_goal": "rate limit login", "mode": "execute",
+            "lenses": [
+                {"role": "architecture", "why": "structure", "objectives": ["Map the path"]},
+                {"role": "security", "why": "exposure", "objectives": ["Find the attack path"]},
+            ],
+        })
+        analysis = await supervisor.advance(start.run_id)
+        assert len(analysis.packets) >= 2, "expected the analysis fan-out"
+        return sum(len(json.dumps(p.to_dict())) for p in analysis.packets)
+
+    inline = await dispatch_size(inline=True)
+    by_reference = await dispatch_size(inline=False)
+
+    assert by_reference * 5 < inline, (
+        f"by-reference dispatch was {by_reference} chars against {inline} inline; "
+        "the handoff has stopped paying for itself"
+    )
+
+
+async def test_inline_briefs_restore_the_old_shape(
+    workspace: Path, host_config: HarnessConfig
+) -> None:
+    """The escape hatch for a host that cannot read files."""
+    host_config.inline_briefs = True
+    store = RunStore(workspace / ".supervisor")
+    host = HostInfo(name="claude-code", workspace=str(workspace), confidence=1.0)
+    supervisor = Supervisor(workspace=workspace, config=host_config, store=store, host=host)
+
+    packet = (await supervisor.start(PROMPT, mode=RunMode.EXECUTE)).packets[0]
+
+    assert packet.brief.strip() and packet.schema.get("type") == "object"
+    assert not packet.by_reference and not packet.brief_path
 
 
 async def test_analysis_packets_are_parallel_and_name_their_peers(
@@ -171,7 +271,7 @@ async def test_analysis_packets_are_parallel_and_name_their_peers(
     assert len(response.packets) >= 2, "analysis should fan out"
     assert "in parallel" in response.message
 
-    briefs = [p.brief for p in response.packets]
+    briefs = [p.read_brief() for p in response.packets]
     assert any("Other agents" in b for b in briefs), "agents must know their peers"
     assert all("Output contract" in b for b in briefs)
 

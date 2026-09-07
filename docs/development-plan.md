@@ -2,6 +2,11 @@
 
 *Written 2026-09-07. This one is live — the work in it is scheduled, not done.*
 
+> **Progress.** Batch 1 is merged ([#53](https://github.com/Lorkster/supervisor-harness/pull/53)).
+> Batch 2 is open. Nothing below has been edited to match what happened;
+> where a batch measured something the plan only estimated, the measurement
+> is added beneath it and the estimate is left standing.
+
 A working document in the same shape as the closed
 [`history/development-plan.md`](history/development-plan.md): what the next
 pieces of work are, what has been *verified* about each, what is still only a
@@ -158,6 +163,14 @@ less while the lenses run as generic agents.*
 **From NOOA: nothing.** This is a straight defect fix and it should not wait for
 an idea.
 
+> **Done** in #53. Two things the plan did not anticipate. Hint matching was
+> broken one layer deeper than described: the description-overlap pass matched
+> bare substrings, so "security" bound an *Insecurity* Auditor — found by a test
+> written for the hint pass and fixed in the same batch. And
+> `build_execution_agent` already had a local named `binding` holding a
+> `ModelBinding`, so the registry's binding is `agent_binding`; a blanket rename
+> would have shadowed it silently.
+
 ## Batch 2 — Packets by reference
 
 *Closes observation 2. Inspired by NOOA's progressive disclosure (`doc(obj)`)
@@ -184,6 +197,15 @@ authoritative and already on disk.
 
 Keep the inline mode behind a flag: a host that cannot read files needs it, and
 the autonomous backend does not want the indirection.
+
+> **Measured.** An analysis fan-out of three lenses: **39,517 characters inline
+> against 4,232 by reference**, an 89% reduction, as the JSON that actually
+> crosses the MCP boundary. Two lenses measure about seven-fold rather than
+> nine, because what a by-reference packet carries is mostly path length and
+> does not grow with the brief — so the saving improves as a run fans out
+> wider. Pinned at five-fold in the suite, deliberately below the observed
+> value: a bar set just under it would need re-baselining every time a role's
+> charter is edited.
 
 **Divergence:** NOOA's disclosure is model-callable at run time. Ours is
 resolved by the host before the subagent starts — same economics, no new tool

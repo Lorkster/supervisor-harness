@@ -10,6 +10,7 @@ explicit rather than conversational.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from ..models import (
@@ -64,6 +65,22 @@ SHARED_TREE_RULE = (
     "say so in your output and measure against the run's baseline commit "
     "instead."
 )
+
+
+@dataclass(frozen=True)
+class BriefRefs:
+    """Where a by-reference brief points for the things it does not carry.
+
+    Empty strings mean "carry it inline", which is what an autonomous run gets
+    and what a host that cannot read files gets. One object rather than three
+    keyword arguments on each of three builders: they always travel together,
+    and a builder given the contract path but not the result path is a bug
+    rather than a configuration.
+    """
+
+    rules: str = ""
+    contract: str = ""
+    result: str = ""
 
 
 def _section(title: str, body: str) -> str:
@@ -125,7 +142,25 @@ def _peers_block(peers: list[AgentSpec], self_id: str) -> str:
     )
 
 
-def _scope_block(agent: AgentSpec, role: Role | None) -> str:
+def _working_tree_line(rules_ref: str) -> str:
+    """The shared-tree rule, or a pointer to where it is written out in full.
+
+    The rule is a kilobyte, it is byte-identical in every brief of every run,
+    and it is one of the few things in a brief that an agent must not skim. A
+    pointer is the better shape for both facts -- read once, applied throughout
+    -- but only when there is a file to point at, so the full text stays the
+    default and nothing is lost on a host that cannot read one.
+    """
+    if not rules_ref:
+        return f"Working tree: {SHARED_TREE_RULE}"
+    return (
+        f"Working tree: read **Shared working tree** in `{rules_ref}` before you "
+        "touch anything. It forbids specific git commands, it is binding, and "
+        "breaking it destroys another agent's unfinished work rather than yours."
+    )
+
+
+def _scope_block(agent: AgentSpec, role: Role | None, rules_ref: str = "") -> str:
     lines: list[str] = []
     if agent.scope.paths:
         lines.append("In scope (paths): " + ", ".join(f"`{p}`" for p in agent.scope.paths))
@@ -140,11 +175,11 @@ def _scope_block(agent: AgentSpec, role: Role | None) -> str:
         lines.append(_bullets(sorted(set(out))))
     # Its own paragraph: a bullet list runs into the line after it otherwise.
     lines.append("")
-    lines.append(f"Working tree: {SHARED_TREE_RULE}")
+    lines.append(_working_tree_line(rules_ref))
     return "\n".join(lines)
 
 
-def _baseline_block(run: RunState) -> str:
+def _baseline_block(run: RunState, rules_ref: str = "") -> str:
     """What a whole-repository measurement is measured *against*.
 
     Every agent in a run writes into the same tree, so a criterion like "the
@@ -162,6 +197,15 @@ def _baseline_block(run: RunState) -> str:
         else "This run has no recorded baseline commit: the workspace is not a git "
         "repository, or git could not be reached."
     )
+    # The commit stays inline whichever way the brief is carried. It is one line,
+    # it differs per run, and it is the value an agent has to quote back in a
+    # measurement -- so a pointer would be indirection with nothing saved.
+    if rules_ref:
+        return lead + (
+            f"\n\nHow to measure anything whole-repository against it: **Measuring "
+            f"against the baseline** in `{rules_ref}`. Read it before you report a "
+            "test count, a lint result or a build outcome."
+        )
     body = (
         "The tree in front of you is not the baseline plus your own change. Other "
         "agents are writing into it while you work, so any whole-repository "
@@ -198,12 +242,69 @@ def _budget_block(agent: AgentSpec) -> str:
     return " ".join(parts)
 
 
-def _contract_block(schema: dict[str, Any]) -> str:
-    return (
-        "Reply with exactly one JSON object matching this schema. No prose outside "
-        "it, no code fence.\n\n```json\n"
-        + json.dumps(schema, indent=2)
-        + "\n```"
+def render_contract(
+    schema: dict[str, Any], contract_ref: str = "", result_ref: str = ""
+) -> str:
+    """The answer's shape, inline or by reference.
+
+    Pretty-printed, the analysis schema alone is a little over five thousand
+    characters, and it is the same five thousand for every analysis agent in
+    every run. Written once and pointed at, it costs a line.
+
+    ``result_ref`` changes where the answer goes, not what it is: an agent that
+    writes its JSON to a file keeps a large finding set out of the caller's
+    context on the way back, the same way the brief keeps it out on the way in.
+    """
+    if not contract_ref:
+        return (
+            "Reply with exactly one JSON object matching this schema. No prose outside "
+            "it, no code fence.\n\n```json\n"
+            + json.dumps(schema, indent=2)
+            + "\n```"
+        )
+    lines = [
+        f"Your answer is one JSON object matching the schema in `{contract_ref}`. "
+        "Read that file; do not guess the shape from the section headings above.",
+    ]
+    if result_ref:
+        lines.append(
+            f"\nWrite that object to `{result_ref}` -- the file, not your reply -- and "
+            "then say in one line that you have written it. Nothing else you say is "
+            "read as the answer."
+        )
+    else:
+        lines.append("\nReply with the object and nothing else: no prose, no code fence.")
+    return "\n".join(lines)
+
+
+def build_rules_document(run: RunState) -> str:
+    """The run-scoped rules every brief in the run points at.
+
+    Two blocks that were repeated verbatim in every brief: the shared-tree rule
+    and how to measure a whole-repository claim against the baseline. Neither
+    varies by agent, both are long, and one of them is the rule an agent is most
+    likely to skim past when it arrives buried in its own scope section.
+
+    Written per run rather than per package because the baseline commit is a
+    property of the run, and a rules document that named a different run's
+    baseline would be worse than no rules document.
+    """
+    return "\n".join(
+        [
+            f"# Rules for run {run.id}",
+            "",
+            "Every brief in this run points here. Read it once; it applies to all of",
+            "your turns.",
+            "",
+            "## Shared working tree",
+            "",
+            SHARED_TREE_RULE,
+            "",
+            "## Measuring against the baseline",
+            "",
+            _baseline_block(run),
+            "",
+        ]
     )
 
 
@@ -221,8 +322,10 @@ def build_analysis_brief(
     shared_context: str = "",
     lessons: list[Lesson] | None = None,
     tools: str = "",
+    refs: BriefRefs | None = None,
 ) -> str:
     """Brief for one analysis lens."""
+    refs = refs or BriefRefs()
     focus = role.focus_questions if role else []
     parts = [
         f"# Analysis brief: {agent.title}\n\n"
@@ -238,13 +341,13 @@ def build_analysis_brief(
             "conclude is not applicable -- say so and say why.",
         ),
         _section("Questions to answer", _bullets(focus)) if focus else "",
-        _section("Scope", _scope_block(agent, role)),
+        _section("Scope", _scope_block(agent, role, refs.rules)),
         _section("Tools", tools),
         _section("Other agents", _peers_block(peers, agent.id)),
         _section("Lessons from previous runs", _lessons_block(lessons or [], run.workspace)),
         _section("Rules", _bullets(CORE_RULES)),
         _section("Budget", _budget_block(agent)),
-        _section("Output contract", _contract_block(schema)),
+        _section("Output contract", render_contract(schema, refs.contract, refs.result)),
     ]
     return "\n".join(p for p in parts if p).strip()
 
@@ -284,8 +387,10 @@ def build_execution_brief(
     lessons: list[Lesson] | None = None,
     supporting_findings: list[str] | None = None,
     tools: str = "",
+    refs: BriefRefs | None = None,
 ) -> str:
     """Brief for an approved execution task."""
+    refs = refs or BriefRefs()
     parts = [
         f"# Execution brief: {task.title}\n\n"
         f"You are agent `{agent.id}`, assigned to task `{task.id}` in a supervised "
@@ -297,8 +402,8 @@ def build_execution_brief(
         _section("Findings behind this task", _bullets(supporting_findings or [])),
         _section("Your speciality", (role.charter if role else agent.brief)),
         _section("Definition of done", _dod_block(task.dod)),
-        _section("Baseline", _baseline_block(run)),
-        _section("Scope", _scope_block(agent, role)),
+        _section("Baseline", _baseline_block(run, refs.rules)),
+        _section("Scope", _scope_block(agent, role, refs.rules)),
         _section("Tools", tools),
         _section("Other agents", _peers_block(peers, agent.id)),
         _section("Lessons from previous runs", _lessons_block(lessons or [], run.workspace)),
@@ -314,7 +419,7 @@ def build_execution_brief(
             ),
         ),
         _section("Budget", _budget_block(agent)),
-        _section("Output contract", _contract_block(schema)),
+        _section("Output contract", render_contract(schema, refs.contract, refs.result)),
     ]
     return "\n".join(p for p in parts if p).strip()
 
@@ -331,8 +436,10 @@ def build_verification_brief(
     schema: dict[str, Any],
     change_summary: str = "",
     tools: str = "",
+    refs: BriefRefs | None = None,
 ) -> str:
     """Brief for proving (or disproving) a task's definition of done."""
+    refs = refs or BriefRefs()
     parts = [
         f"# Verification brief: {task.title}\n\n"
         f"You are agent `{agent.id}`. An implementer reports this task complete. "
@@ -341,7 +448,7 @@ def build_verification_brief(
         _section("What was supposed to happen", f"{task.action}\n\n{task.motivation}"),
         _section("What the implementer reports", change_summary),
         _section("Criteria to verify", _dod_block(task.dod)),
-        _section("Baseline", _baseline_block(run)),
+        _section("Baseline", _baseline_block(run, refs.rules)),
         _section(
             "How to verify",
             _bullets(
@@ -367,10 +474,10 @@ def build_verification_brief(
             "Scope",
             "Verify only the criteria listed. Do not fix anything you find; report "
             "it. Report regressions separately.\n\n"
-            f"Working tree: {SHARED_TREE_RULE}",
+            + _working_tree_line(refs.rules),
         ),
         _section("Tools", tools),
-        _section("Output contract", _contract_block(schema)),
+        _section("Output contract", render_contract(schema, refs.contract, refs.result)),
     ]
     return "\n".join(p for p in parts if p).strip()
 

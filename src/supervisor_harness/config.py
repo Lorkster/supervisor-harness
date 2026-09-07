@@ -161,6 +161,14 @@ class HarnessConfig:
     routing: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_ROUTING))
     policy: Policy = field(default_factory=Policy)
     roles: dict[str, dict[str, Any]] = field(default_factory=dict)   # extra/overridden roles
+    # Put the whole brief and schema in the packet instead of writing them out
+    # and pointing at them. Off by default: the by-reference form exists because
+    # a host-delegated run pushes every brief, result and directive through the
+    # orchestrator's context, and the orchestrator is not the reader. Turn it on
+    # for a host that cannot read files -- it costs context, not correctness.
+    # Not a PROTECTED_SETTING: a workspace choosing this only makes its own runs
+    # more expensive, which is not the direction protection exists to stop.
+    inline_briefs: bool = False
     sources: list[str] = field(default_factory=list)                 # files that contributed
     # Settings a workspace file tried to set but was not permitted to; surfaced
     # to the user rather than silently dropped.
