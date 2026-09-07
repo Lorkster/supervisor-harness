@@ -232,7 +232,7 @@ something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
 `FACT_ESTABLISHED` ([events.py:47](../src/supervisor_harness/store/events.py:47)),
 and facts reach later agents' briefs through `render_context`
-([core/blackboard.py:84](../src/supervisor_harness/core/blackboard.py:84)).
+([core/blackboard.py:104](../src/supervisor_harness/core/blackboard.py:104)).
 
 Note the distinction the type carries, which is easy to get wrong:
 `RunState.facts` holds what the **harness** knows — the baseline commit, the

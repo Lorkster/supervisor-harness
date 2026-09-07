@@ -78,6 +78,13 @@ the disagreement is kept and surfaced rather than resolved by whoever wrote
 last: it shows in the brief as open, in the report's conflicts, and in
 `supervisor status`. A claim with no evidence is dropped.
 
+A claim is also checked against the tree it was made about. An agent that names
+the file its claim concerns has that file's state recorded alongside it, and a
+later agent inheriting the claim is told when the file has been edited or
+removed since — so the statement reads as the writer's snapshot rather than as
+the current state. Resolution is strict path lookup and never evaluation: a fact
+is written by a model onto a board other agents read.
+
 **6. It learns.** Failures that better briefing would have prevented become
 lessons, stored across runs and injected into future briefs for that role.
 
@@ -682,6 +689,7 @@ src/supervisor_harness/
     drift.py       heuristics, escalation, the directive ladder
     dod.py         criteria validation, quality bars, verification
     envelope.py    the run's scope grant, and attenuation down the delegation chain
+    facts.py       whether a fact one agent established is still true when another reads it
     blackboard.py  shared context, message routing, contradiction detection
     journal.py     the decision journal `supervisor explain` renders
     tools.py       sandboxed workspace tools for autonomous agents
