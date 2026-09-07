@@ -31,6 +31,10 @@ class WorkPacket:
     turn_index: int = 0
     turns_remaining: int = 0
     host_agent_type: str | None = None
+    # Why this agent type was chosen, or why the packet carries none. Always
+    # populated: "briefed generically" is a decision the host should be able to
+    # see, not an absence it has to infer.
+    host_agent_reason: str = ""
     model: str = "host"
     task_id: str | None = None
 

@@ -344,6 +344,10 @@ class AgentSpec:
     backend: Backend = Backend.HOST
     budget: Budget = field(default_factory=Budget)
     host_agent_type: str | None = None   # e.g. a Claude Code subagent type
+    # Why that sub-agent type, or why none. Recorded because the alternative was
+    # silence: a role could match a workspace's own specialist, have the match
+    # discarded, and run as a generic agent with nothing anywhere saying so.
+    host_agent_reason: str = ""
     task_id: str | None = None           # set for execution agents
     # Which attempt of ``task_id`` this agent was built for. A remediated task
     # needs a verifier of its own; without this the first attempt's verifier

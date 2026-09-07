@@ -291,7 +291,7 @@ def test_nothing_matches_rather_than_something_wrong(
 def test_file_agents_are_used_only_when_the_host_declares_nothing(
     tmp_path: Path, elsewhere_home: Path
 ) -> None:
-    """A file is a hint; a host-declared agent can actually be spawned."""
+    """Files are the fallback source; a host declaration takes precedence."""
     _agent_file(tmp_path / ".claude" / "agents", "plan",
                 "---\nname: Plan\ndescription: software architect\n---\n")
 
@@ -299,11 +299,122 @@ def test_file_agents_are_used_only_when_the_host_declares_nothing(
     match = from_files.match("architecture")
 
     assert match is not None and match.name == "Plan"
-    assert match.spawnable is False, "a file is not something the host can spawn by name"
 
     # A host-declared agent takes precedence over the same file.
     declared = _registry(tmp_path, _declared("Plan", "software architect"))
-    assert declared.match("architecture").spawnable is True
+    assert declared.match("architecture").source == "host"
+
+
+def test_a_claude_agents_file_is_spawnable_under_claude_code(
+    tmp_path: Path, elsewhere_home: Path
+) -> None:
+    """The regression this batch exists for.
+
+    `.claude/agents/*.md` is exactly what Claude Code spawns by name. Treating
+    those files as unspawnable "hints" meant a workspace could define a security
+    specialist, have it discovered *and matched*, and still run the security
+    lens as a generic agent -- with nothing anywhere saying so.
+    """
+    _agent_file(tmp_path / ".claude" / "agents", "sec",
+                "---\nname: Security Specialist\ndescription: reviews auth\n---\n")
+
+    binding = _registry(tmp_path).bind("security")
+
+    assert binding.name == "Security Specialist"
+    assert "Security Specialist" in binding.reason
+
+
+def test_a_claude_agents_file_is_not_spawnable_under_another_host(tmp_path: Path) -> None:
+    """Naming a subagent type to a host with no such mechanism fails the dispatch.
+
+    The files are still read under an unknown host -- they are the best available
+    description of what the workspace expects -- but they are not claimed as
+    spawnable, so the packet degrades to a generic brief instead of asking for
+    something that cannot be produced.
+    """
+    _agent_file(tmp_path / ".claude" / "agents", "sec",
+                "---\nname: Security Specialist\ndescription: reviews auth\n---\n")
+
+    registry = AgentRegistry(tmp_path, HostInfo(name="unknown"))
+    binding = registry.bind("security")
+
+    assert binding.name is None
+    assert "cannot spawn it by name" in binding.reason
+    assert "Security Specialist" in binding.reason, "the near-miss is worth reporting"
+
+
+def test_a_hint_matches_a_longer_name(tmp_path: Path, elsewhere_home: Path) -> None:
+    """Hints are slugs; agents are named by whoever wrote the file.
+
+    Exact-name lookup, which is all this used to do, matched neither "Security
+    Specialist" nor "Code Reviewer", so every curated hint in `roles.py` was
+    dead and binding fell through to the substring pass beneath it.
+    """
+    registry = _registry(tmp_path, _declared("Security Specialist"), _declared("Code Reviewer"))
+
+    assert registry.bind("security").name == "Security Specialist"
+    assert registry.bind("quality").name == "Code Reviewer"
+
+
+def test_a_hint_prefixes_a_token_rather_than_appearing_anywhere_in_it(
+    tmp_path: Path, elsewhere_home: Path
+) -> None:
+    """A prefix, not a substring: "security" must not reach "Insecurity Auditor"."""
+    registry = _registry(tmp_path, _declared("Insecurity Auditor", "audits vibes"))
+
+    assert registry.bind("security").name is None
+
+
+def test_an_earlier_hint_beats_a_later_hint_that_matches_exactly(
+    tmp_path: Path, elsewhere_home: Path
+) -> None:
+    """Each hint is tried in full before the next one is tried at all.
+
+    Nearly every role carries "general-purpose" as its last hint. Trying every
+    hint exactly before trying any of them loosely would let that last resort
+    beat a real specialist whose name is longer than the hint that names it.
+    """
+    registry = _registry(
+        tmp_path, _declared("general-purpose", "does anything"), _declared("Security Specialist")
+    )
+
+    assert registry.bind("security").name == "Security Specialist"
+
+
+def test_a_binding_always_says_why(tmp_path: Path, elsewhere_home: Path) -> None:
+    """The three ways to get no agent type are worth telling apart.
+
+    Before this they were indistinguishable at every call site: nothing was
+    available, something was available and nothing matched, or something matched
+    and this host cannot spawn it.
+    """
+    nothing = _registry(tmp_path).bind("security")
+    assert nothing.name is None
+    assert "no agent types declared" in nothing.reason
+
+    no_match = _registry(tmp_path, _declared("barista", "makes coffee")).bind("data")
+    assert no_match.name is None
+    assert "matched this role" in no_match.reason
+
+    matched = _registry(tmp_path, _declared("Security Specialist")).bind("security")
+    assert matched.name == "Security Specialist"
+    assert matched.reason, "a successful binding says which rule chose it"
+
+
+def test_spawnable_names_covers_both_sources(tmp_path: Path, elsewhere_home: Path) -> None:
+    """Both sources, host-declared first, because both really can be spawned.
+
+    Matching still prefers a declaration over a file -- that is `_best` -- but
+    "what can this host spawn at all" is a different question, and answering it
+    with only the declared half understated it by every workspace-defined agent.
+    """
+    _agent_file(tmp_path / ".claude" / "agents", "sec",
+                "---\nname: Security Specialist\ndescription: reviews auth\n---\n")
+
+    assert _registry(tmp_path).spawnable_names() == ["Security Specialist"]
+    assert _registry(tmp_path, _declared("Explore")).spawnable_names() == [
+        "Explore", "Security Specialist",
+    ]
 
 
 # -- routing a stage to a model ---------------------------------------------
@@ -479,6 +590,9 @@ def test_the_registry_describes_what_it_found(
 
     assert described["host"] == CLAUDE_CODE
     assert described["host_declared"] == ["general-purpose"]
-    assert {"name": "Plan", "source": "claude-code-file"} in described["from_files"]
+    assert {
+        "name": "Plan", "source": "claude-code-file", "spawnable": True,
+    } in described["from_files"]
+    assert described["spawnable"] == ["general-purpose", "Plan"]
     assert described["builtin_roles"], "the built-in roles always work and must be listed"
     assert len(registry.all()) > len(registry.host_agents)

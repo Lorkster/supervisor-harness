@@ -57,6 +57,8 @@ def _print_packets(response: SupervisorResponse) -> None:
         target = f" via {packet.host_agent_type}" if packet.host_agent_type else ""
         print(f"\n  packet {packet.agent_id} ({packet.kind}){target}")
         print(f"    {packet.title}  [{packet.model}, {packet.turns_remaining} turn(s) left]")
+        if packet.host_agent_reason:
+            print(f"    agent: {packet.host_agent_reason}")
 
 
 def _print_proposed_tasks(response: SupervisorResponse) -> None:
