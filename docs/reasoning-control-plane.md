@@ -108,7 +108,7 @@ about work done on it.
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:688](../src/supervisor_harness/core/dod.py:688)) holds a runner to
+([core/dod.py:709](../src/supervisor_harness/core/dod.py:709)) holds a runner to
 an allow-list. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.
