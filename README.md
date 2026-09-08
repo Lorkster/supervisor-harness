@@ -257,6 +257,7 @@ shorthand for something the CLI will not tell you itself.
 | `drift AGENT [RUN]` | ask the drift model for a second opinion on one agent's last turn | — |
 | `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
 | `trajectory [RUN]` | export the run as a portable trajectory document | `-o FILE` |
+| `audit [RUN]` | what a finished run's agents actually did, as against what they were allowed to do | `-o NAME` for the evidence filename |
 | `runs` | list recent runs in this store | `-n/--limit` (default 20) |
 | `lessons` | show what previous runs taught the harness, including the ones it has retired | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit`; `--live-only` to hide retired ones |
 | `providers` | show stage routing and whether each provider answers | — |
@@ -572,6 +573,39 @@ run from another terminal without touching the harness:
 tail -f .supervisor/runs/<run_id>/progress.ndjson
 ```
 
+### Auditing a run
+
+```bash
+supervisor audit <run_id>
+```
+
+The envelope and the fence answer one question, at issue time: what may this
+agent touch. In host-delegated mode — the default — they are not even the
+enforcement, because your host runs the work under your own permission model and
+the harness sees only what comes back. So the run with the least enforcement had
+no way to be asked, afterwards, what its agents actually *did*.
+
+Six scanners, all deterministic, none of them asking a model anything: writes an
+agent reported outside its own scope, writes outside the run's envelope, criteria
+whose recorded command is one no agent may run, passes whose evidence never
+mentions the command it is supposed to be the output of, findings closed by tasks
+that touched none of the files they cite, and — where there is a baseline commit
+and a git repository — files the tree shows changed that no agent claimed.
+
+The method matters more than any single check, and is borrowed from NVIDIA's
+red-team scanners: **classify the action and its result, never the surface that
+advertised the capability.** The trap here is sharper than it was there, because
+every brief this harness writes contains the prohibited git commands in full — a
+scanner that searched briefs would report every agent in every run, at total
+confidence, for having read its instructions. So a brief, a scope and a task's
+action are never evidence. Only what an agent reported doing, and what a
+criterion recorded as run, are read.
+
+A scanner that could not run says so in the report rather than being omitted: a
+silent scanner and a clean one look identical, and only one of them is
+reassuring. The evidence is written under the run, and the command exits non-zero
+when there is something to look at, so it can gate a pipeline.
+
 ### Exporting a run
 
 ```bash
@@ -707,6 +741,7 @@ src/supervisor_harness/
     tools.py       sandboxed workspace tools for autonomous agents
     paths.py       path normalisation and scope matching
     baseline.py    the commit a run measures its whole-repository checks against
+    audit.py       what a finished run's agents actually did, from the record
     timing.py      where a run's wall clock went, folded from the log
     trajectory.py  a run exported as a portable, validated document
   assists.py       what the harness had to repair before an answer could be used

@@ -625,6 +625,38 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Ask a finished run what its agents actually did."""
+    sup = _supervisor(args)
+    run_id = args.run_id or sup.store.latest_run_id()
+    if not run_id:
+        print("No runs recorded yet.", file=sys.stderr)
+        return 1
+    if run_id not in sup.store.list_run_ids():
+        print(f"error: no such run: {run_id}", file=sys.stderr)
+        return 2
+
+    from .core.audit import audit
+
+    report = audit(sup.store.load_state(run_id), Path(args.workspace).resolve())
+    if args.json:
+        _emit(report.to_payload(), True)
+    else:
+        print(report.render())
+
+    # Written under the run so the evidence sits beside the log it was read
+    # from, and so a second run of the audit can be diffed against the first.
+    out = args.out or "audit.md"
+    written = sup.store.write_run_file(run_id, "audit", out, report.render())
+    if not args.json:
+        print(f"written to {written}")
+
+    # Non-zero when there is something to look at, so this can gate a pipeline.
+    # A skipped scanner is not a finding: it is a scanner that could not run,
+    # said so in the report, and must not be reported as a clean result either.
+    return 1 if report else 0
+
+
 def cmd_trajectory(args: argparse.Namespace) -> int:
     """Export a run as a portable trajectory document."""
     sup = _supervisor(args)
@@ -1007,6 +1039,14 @@ def _add_read_commands(sub: Any, common: argparse.ArgumentParser) -> None:
     p.add_argument("--width", type=int, default=96, metavar="COLS",
                    help="wrap long text at this width (default: 96)")
     p.set_defaults(func=cmd_explain)
+
+    p = sub.add_parser("audit", parents=[common],
+                       help="what a finished run's agents actually did, from the record")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
+    p.add_argument("-o", "--out", default="", metavar="NAME",
+                   help="filename for the evidence written under the run (default: audit.md)")
+    p.set_defaults(func=cmd_audit)
 
     p = sub.add_parser("trajectory", parents=[common],
                        help="export a run as a portable trajectory document")
