@@ -28,6 +28,33 @@ it is the signature of that last case.
 **Waiting** is a dispatch with no answer yet. Reported separately and never
 folded into a total, because an agent that will never report would otherwise
 inflate the run's elapsed time for ever.
+
+## Busy is not the sum of the dispatches
+
+Dispatches overlap -- that is the point of a fan-out -- so adding them up
+measures agent effort, not wall clock. Both numbers are here because they answer
+different questions and are routinely confused:
+
+* **busy** is the wall time covered by at least one dispatch. It is bounded by
+  the run's elapsed time, and `elapsed - busy` is honest idle.
+* **agent seconds** is their sum. Four lenses working five minutes each is
+  twenty agent-minutes across five minutes busy, and the ratio of the two is
+  **concurrency**: how many agents were really running at once.
+
+This module reported the sum and called it `dispatched_seconds`, which read as
+"how much of the run was agents working". Against a real 53-minute run that gave
+98.6%, and the true figure was 52.8% -- the same overlap counted four times.
+Anything derived from it was wrong in the same direction, including the idle
+time, which the offline tool computed as `elapsed - sum` and printed as *minus*
+five minutes. A negative duration is at least visible; a plausible percentage is
+not, which is why this went unnoticed through a whole batch of work aimed at
+exactly this question.
+
+One thing no arithmetic here can recover: both ends of a dispatch are stamped
+when the *host* calls the harness. Concurrency above 1 proves the host had
+several packets out at once; concurrency of 1 across a fan-out issued in one
+breath means the host ran them one at a time, or reported them that way. The
+harness cannot see which.
 """
 
 from __future__ import annotations
@@ -63,12 +90,43 @@ def _elapsed(start: str, end: str) -> float:
 
 @dataclass
 class Span:
-    """One measured interval, with enough identity to attribute it."""
+    """One measured interval, with enough identity to attribute it.
+
+    ``start`` and ``end`` are kept alongside the duration because a set of
+    durations cannot be unioned and a set of intervals can. Without them the
+    only available total is the sum, which is how this module came to report
+    one.
+    """
 
     label: str
     seconds: float
     agent_id: str = ""
     kind: str = ""
+    start: str = ""
+    end: str = ""
+
+
+def _union_seconds(spans: list[Span]) -> float:
+    """Wall time covered by at least one of these spans.
+
+    The overlapping part is counted once, so the result never exceeds the run's
+    elapsed time however many agents were out at once. Spans whose timestamps
+    could not be read are skipped rather than treated as instantaneous: a span
+    at the epoch would swallow the whole run.
+    """
+    intervals = []
+    for span in spans:
+        first, last = _parsed(span.start), _parsed(span.end)
+        if first is not None and last is not None and last > first:
+            intervals.append((first.timestamp(), last.timestamp()))
+
+    covered, cursor = 0.0, float("-inf")
+    for start, end in sorted(intervals):
+        if end <= cursor:
+            continue        # wholly inside a span already counted
+        covered += end - max(start, cursor)
+        cursor = end
+    return covered
 
 
 @dataclass
@@ -82,9 +140,36 @@ class Timing:
     waiting: list[Span] = field(default_factory=list)
 
     @property
-    def dispatched_seconds(self) -> float:
-        """Time spent inside answered dispatches."""
+    def busy_seconds(self) -> float:
+        """Wall time with at least one dispatch out. Never above `total_seconds`."""
+        return _union_seconds(self.dispatches)
+
+    @property
+    def agent_seconds(self) -> float:
+        """Effort: the dispatches added up, overlap and all. May exceed the run."""
         return sum(s.seconds for s in self.dispatches)
+
+    @property
+    def idle_seconds(self) -> float:
+        """Elapsed time with no agent out: the harness thinking, or nobody at all.
+
+        `max(0, ...)` is belt and braces rather than arithmetic. The union is
+        bounded by the run's span by construction, and the clamp is here so that
+        a log with a timestamp from the future reports zero idle instead of a
+        negative duration -- which is what the caller of the old sum printed.
+        """
+        return max(0.0, self.total_seconds - self.busy_seconds)
+
+    @property
+    def concurrency(self) -> float:
+        """Agents running at once, averaged over the busy time.
+
+        1.0 across a fan-out means it did not fan out. Above 1 is proof the host
+        had several packets out together; at 1 the harness cannot tell a host
+        that queued them from one that ran them and reported them in order.
+        """
+        busy = self.busy_seconds
+        return self.agent_seconds / busy if busy else 0.0
 
     @property
     def slowest(self) -> Span | None:
@@ -94,11 +179,11 @@ class Timing:
         """One line: how long, and how much of it was agents working."""
         if not self.total_seconds:
             return "no elapsed time recorded"
-        share = self.dispatched_seconds / self.total_seconds
+        share = self.busy_seconds / self.total_seconds
         parts = [
             f"{clock(self.total_seconds)} elapsed",
-            f"{clock(self.dispatched_seconds)} in {len(self.dispatches)} dispatch(es)"
-            f" ({share:.0%})",
+            f"{clock(self.busy_seconds)} busy across {len(self.dispatches)} dispatch(es)"
+            f" ({share:.0%}, {self.concurrency:.2f} at once)",
         ]
         slowest = self.slowest
         if slowest is not None:
@@ -110,7 +195,10 @@ class Timing:
     def to_payload(self) -> dict[str, object]:
         return {
             "total_seconds": round(self.total_seconds, 2),
-            "dispatched_seconds": round(self.dispatched_seconds, 2),
+            "busy_seconds": round(self.busy_seconds, 2),
+            "idle_seconds": round(self.idle_seconds, 2),
+            "agent_seconds": round(self.agent_seconds, 2),
+            "concurrency": round(self.concurrency, 2),
             "by_phase": {k: round(v, 2) for k, v in self.by_phase.items()},
             "by_kind": {k: round(v, 2) for k, v in self.by_kind.items()},
             "slowest": (
@@ -180,7 +268,14 @@ def measure(events: list[Event], *, now: str = "") -> Timing:
             seconds = _elapsed(started[0], event.ts)
             kind = started[1] or "agent"
             timing.dispatches.append(
-                Span(label=f"{kind} {agent_id}", seconds=seconds, agent_id=agent_id, kind=kind)
+                Span(
+                    label=f"{kind} {agent_id}",
+                    seconds=seconds,
+                    agent_id=agent_id,
+                    kind=kind,
+                    start=started[0],
+                    end=event.ts,
+                )
             )
             timing.by_kind[kind] = timing.by_kind.get(kind, 0.0) + seconds
 
@@ -199,6 +294,8 @@ def measure(events: list[Event], *, now: str = "") -> Timing:
                 seconds=_elapsed(ts, now),
                 agent_id=agent_id,
                 kind=kind,
+                start=ts,
+                end=now,
             )
         )
     timing.waiting.sort(key=lambda s: -s.seconds)
