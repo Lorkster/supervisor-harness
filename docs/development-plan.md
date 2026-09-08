@@ -2,16 +2,22 @@
 
 *Written 2026-09-07. This one is live — the work in it is scheduled, not done.*
 
-> **Progress.** Batches 1 ([#53](https://github.com/Lorkster/supervisor-harness/pull/53))
-> 2 ([#54](https://github.com/Lorkster/supervisor-harness/pull/54)) and
-> 3 ([#55](https://github.com/Lorkster/supervisor-harness/pull/55)) and
-> 4 ([#56](https://github.com/Lorkster/supervisor-harness/pull/56)) and
-> 5 ([#57](https://github.com/Lorkster/supervisor-harness/pull/57)) and
-> 6 ([#58](https://github.com/Lorkster/supervisor-harness/pull/58)) and
-> 7 ([#59](https://github.com/Lorkster/supervisor-harness/pull/59)) are merged.
-> Batch 8 is open. Nothing below has been edited to match what happened;
-> where a batch measured something the plan only estimated, the measurement
-> is added beneath it and the estimate is left standing.
+> **Progress.** Batches 1–8 are merged:
+> [#53](https://github.com/Lorkster/supervisor-harness/pull/53),
+> [#54](https://github.com/Lorkster/supervisor-harness/pull/54),
+> [#55](https://github.com/Lorkster/supervisor-harness/pull/55),
+> [#56](https://github.com/Lorkster/supervisor-harness/pull/56),
+> [#57](https://github.com/Lorkster/supervisor-harness/pull/57),
+> [#58](https://github.com/Lorkster/supervisor-harness/pull/58),
+> [#59](https://github.com/Lorkster/supervisor-harness/pull/59),
+> [#60](https://github.com/Lorkster/supervisor-harness/pull/60).
+>
+> **Batch 9 was rewritten on 2026-09-08**, on a measurement that overturned its
+> premise. Its original text is left standing, with the measurement beneath it
+> and the replacement after that -- the same rule the rest of this document
+> follows. Nothing else has been edited to match what happened; where a batch
+> measured something the plan only estimated, the measurement is added beneath
+> it and the estimate is left standing.
 
 A working document in the same shape as the closed
 [`history/development-plan.md`](history/development-plan.md): what the next
@@ -50,7 +56,8 @@ with a different thesis is how a control plane stops being one.
 - [Batch 6 — Lessons that decay and consolidate](#batch-6--lessons-that-decay-and-consolidate)
 - [Batch 7 — `supervisor audit`](#batch-7--supervisor-audit)
 - [Batch 8 — Enforce versus observe](#batch-8--enforce-versus-observe)
-- [Batch 9 — Reactive supervision](#batch-9--reactive-supervision)
+- [Batch 9 — Reactive supervision](#batch-9--reactive-supervision) — *declined on measurement*
+- [Batch 9, rewritten](#batch-9-rewritten--make-the-losses-visible-and-split-the-one-judgement)
 - [Woven in rather than batched](#woven-in-rather-than-batched)
 - [Decided against](#decided-against)
 
@@ -517,6 +524,90 @@ currently model them all as the latter.
 for replay, and it should not be traded until batches 3 and 7 have said where
 the wall clock actually goes.
 
+> **Measured, and the answer overturned this batch.** Left as written above,
+> because the deferral was the right call on the evidence available and the
+> evidence is what changed.
+>
+> A real run under Claude Code, 53 minutes, 344 events
+> ([#62](https://github.com/Lorkster/supervisor-harness/issues/62)):
+> **98.6% of the wall clock was inside dispatches.** The only idle in the run was
+> `awaiting_approval` at 338s, which is a person reading. There is nothing for
+> `race()` to save, and the reactive half of this batch is **declined** — not
+> deferred again. See "Decided against".
+>
+> What the same measurement found instead is below, as batch 9 rewritten. The
+> process-group discipline survives unchanged: it was always justified on
+> correctness rather than on latency.
+
+---
+
+## Batch 9 (rewritten) — make the losses visible, and split the one judgement
+
+*Replaces reactive supervision, on the measurement above. Nothing here is
+adapted from NOOA; it comes from a run.*
+
+Where the 53 minutes went:
+
+| | seconds | share | where a fix would live |
+| --- | ---: | ---: | --- |
+| analysis | 1364.8 | 43% | the host — the harness can only measure |
+| execution | 1145.2 | 36% | inherent |
+| synthesis | 446.8 | 14% | **the harness** |
+| planning | 175.9 | 6% | inherent |
+
+### 9a — Concurrency in the ledger, and a note when a fan-out serialises
+
+The four analysis lenses were dispatched **232 milliseconds apart**, in one
+response, exactly as `_run_analysis` intends — and then ran one after another
+for 23 minutes. Average concurrency 0.98. Run in parallel they would have taken
+about seven minutes: **924 seconds, 29% of the run, lost to something the
+harness does correctly.**
+
+It is not a harness defect and cannot be fixed here. Both places that could
+instruct the host already do, in the words the failure would need: the dispatch
+message says "N agent(s) to run in parallel. Dispatch them together", and the
+MCP instructions say "issue independent packets in parallel, in a single
+message". Both were ignored on this run. More emphatic wording is not the fix.
+
+What the harness *can* do is stop it being invisible, because it holds both
+timestamps:
+
+- **`conc` in the ledger.** Batch 3's line already prints on every dispatch;
+  adding average concurrency to it means a serialised fan-out shows while it is
+  happening rather than in a post-mortem.
+- **A note on the log when a fan-out serialises.** A run whose lenses ran one at
+  a time took four times longer than the design intends, and that belongs in the
+  record beside the drift assessments — it is the same kind of fact about how the
+  work actually went, and the reconciliation and the audit both read notes.
+
+Neither makes a run faster. Both make a 29% loss visible on the run that pays
+it, which is the precondition for anyone fixing it. The alternative is that
+every run pays it silently, which is what has been happening.
+
+The same instinct as batch 3, one level up: the harness could not say where its
+own time went, and now the host cannot say where it spent the harness's.
+
+### 9b — Decompose synthesis
+
+447 seconds in a single dispatch, concurrency 1.00, 0.8s idle — the seven
+minutes was entirely sub-agent work, and 14% of the run in one judgement that
+cannot currently be split.
+
+It is one agent reading every finding, proposing every task, and writing a
+definition of done for each. Those are separable: a cluster of findings about
+one subsystem can be proposed against independently of a cluster about another,
+and the harness already groups findings by lens and by key.
+
+**The part that must not be split** is the arbitration — deduplicating tasks
+that two clusters both proposed, ordering `depends_on`, and holding the total
+against `max_analysis_lenses`-style bounds. So the shape is fan-out then
+reconcile, with the reconciliation staying one judgement over a much smaller
+input.
+
+Worth doing only if 9a's numbers hold on a second run: one measurement is a
+data point, and a batch that reorganises the phase most likely to produce a bad
+plan should not rest on one.
+
 ---
 
 ## Woven in rather than batched
@@ -545,6 +636,15 @@ agent that can extend its own capabilities during a run is an agent setting the
 terms of its own judgement. The narrow version worth revisiting later is letting
 a *verified* check be promoted into the definition-of-done check library under a
 gate of the same kind.
+
+**Reactive supervision (`race()`)** — measured at approximately zero. Batch 9
+originally deferred it pending evidence; the evidence arrived
+([#62](https://github.com/Lorkster/supervisor-harness/issues/62)) and says
+98.6% of a real run's wall clock is inside dispatches, with the only idle being
+a person at the approval gate. Deterministic pull-based delivery stays, and it
+keeps the property that made it worth defending: the whole conversation replays
+from the log. Revisit only if a run ever shows a phase far longer than the
+dispatches inside it — the `idle` column exists to say so.
 
 **The ellipsis-body DSL itself** — an agentic method declared by writing `...`
 as its body. Elegant in a framework whose unit is a Python object. It moves the
