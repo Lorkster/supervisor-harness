@@ -1,6 +1,6 @@
 # Quality assessment — architecture, code quality, testing
 
-Item **4a** of [`history/development-plan.md`](history/development-plan.md). The scope came with the 9c
+Item **4a** of [`development-plan.md`](development-plan.md). The scope came with the 9c
 decision: *"after all changes we need to make sure the entire application
 adheres to best practices for architecture, code quality and testing."*
 
@@ -8,17 +8,30 @@ This is the assessment, not the work. It says what the criteria are, what was
 measured against them, what was found, and in what order the findings should be
 closed. The work is item **4b**, and it is expected to take several batches.
 
+> ## A closed record — not the current standard
+>
 > **Every finding in this document is closed.** Seventeen: the fifteen this
 > assessment opened with, plus two found while closing them — `Q-Q5`, a real
 > defect in the command timeout, and `Q-C7`, a deletion path with no tests.
 > `Q-C6` was the last to close.
 >
-> The criteria below are still the standard — they are what CI gates on — so
-> this stays a live document. What changed is that its findings section is now
-> a record of what was fixed rather than a queue.
+> This document argued, correctly, that its criteria were still the standard and
+> that it should therefore stay live. That was right about the criteria and
+> wrong about the document: three quarters of it is a findings queue that is now
+> empty, and a live standard buried in a closed assessment is a standard nobody
+> reads. The criteria and the gates moved to
+> [`../quality-standard.md`](../quality-standard.md), which is maintained. What
+> is left here is the assessment: what was measured, what it found, and in what
+> order the findings were closed.
+>
+> **It is written in the present tense of the day it was written, and it is left
+> that way.** The numbers below — a 2,584-line `core/supervisor.py`, three mypy
+> errors, `journal.py` at complexity 26 — were true when they were taken and
+> several are not now. That is the point of a record: edited to match what
+> happened afterwards, it stops being evidence of what was believed at the time.
 
 Findings carry ids (`Q-A1`, `Q-C2`, …) so a commit can say `Closes: Q-C1` and be
-reconciled against this document, the way [`history/self-review.md`](history/self-review.md) already works.
+reconciled against this document, the way [`self-review.md`](self-review.md) already works.
 
 **Nothing here is a reading.** Every claim below is a number produced by a tool
 in this repository, and the tools are now in CI so the numbers stay honest.

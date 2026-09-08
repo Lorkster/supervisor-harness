@@ -18,7 +18,7 @@ from .ids import new_id, now_iso
 # computes the value: `core.baseline` writes it and `agents.brief` reads it, and
 # a constant owned by either package makes the other import across a package
 # boundary. It did, and that single import was the whole of the `core` <->
-# `agents` cycle (finding Q-A1 in docs/quality-assessment.md).
+# `agents` cycle (finding Q-A1 in docs/history/quality-assessment.md).
 BASELINE_FACT = "baseline commit"
 
 # --------------------------------------------------------------------------

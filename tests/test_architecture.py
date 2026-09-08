@@ -1,4 +1,4 @@
-"""The architecture criteria from `docs/quality-assessment.md`, as a test.
+"""The architecture criteria from `docs/quality-standard.md`, as a test.
 
 Criterion 1 says package dependencies form a DAG. Finding **Q-A1** was that they
 did not: `core` imported `agents.registry`, `agents.roles` and `agents.brief`,

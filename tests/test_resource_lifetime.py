@@ -1,6 +1,6 @@
 """Who closes what, and when.
 
-Finding **Q-Q3** of `docs/quality-assessment.md`: `RunIndex.close()` existed and
+Finding **Q-Q3** of `docs/history/quality-assessment.md`: `RunIndex.close()` existed and
 nothing in the codebase called it. `RunStore` had no close at all, so every
 store ever built held its SQLite connection until the process ended. A suite run
 under ``-W always`` reported 90 unclosed connections; by default

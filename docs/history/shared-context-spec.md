@@ -1,13 +1,25 @@
 # Shared semantic context — specification
 
 The last open dimension of the control-plane assessment in
-[`history/self-review.md`](history/self-review.md). Recorded there as wanting "a design pass that ends
+[`self-review.md`](self-review.md). Recorded there as wanting "a design pass that ends
 in a written spec before any code, the way the envelope got one". This is that
 spec.
 
-**Status: implemented on `feat/shared-context` (2026-09-02).** The three open
-choices in §5 were decided by the user, each as recommended; §8 records them and
-the one place the implementation departed from this spec.
+> ## A closed record — the design, not the code
+>
+> **Implemented on `feat/shared-context` (2026-09-02).** The three open choices
+> in §5 were decided by the user, each as recommended; §8 records them and the
+> one place the implementation departed from this spec.
+>
+> It is kept for the argument, not the specification. What shared context *is*
+> now lives in the code and in
+> [`../reasoning-control-plane.md`](../reasoning-control-plane.md) §4; this is
+> the design pass that produced it, including the parts that were genuinely
+> undetermined at the time and the reasoning that settled them.
+>
+> **Written in the present tense of its day, and left that way.** Where it
+> describes the codebase — §1's claim that the fact store is "in practice
+> empty", for one — it is describing `main` as it stood on 2026-09-02.
 
 Written to be picked up by a session that was not present for it, and to be
 argued with: the section that mattered most was [§5 Open

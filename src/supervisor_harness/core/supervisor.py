@@ -143,7 +143,7 @@ class Supervisor:
         self.router = router or ModelRouter(self.config, host_name=self.host.name)
         self.toolbox = Toolbox(self.workspace, self.config.policy, self.store.root)
         # The layers below the phase machine. Neither calls back into it, which
-        # is what made them separable at all -- see docs/quality-assessment.md.
+        # is what made them separable at all -- see docs/history/quality-assessment.md.
         self.reporting = Reporting(self.config, self.store)
         self.packets = Packets(self.config, self.store, self.workspace, self.host)
         self.lifecycle = Lifecycle(self.config, self.router)

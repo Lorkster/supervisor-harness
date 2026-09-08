@@ -1,6 +1,6 @@
 """The tools themselves: what they return when they are allowed to work.
 
-Finding **Q-C5** of `docs/quality-assessment.md`: `core/tools.py` sat at 79%,
+Finding **Q-C5** of `docs/history/quality-assessment.md`: `core/tools.py` sat at 79%,
 and the shape of the gap was the interesting part. The fence's *decisions* --
 `_scope_refusal`, the floor, the executable allow-list -- are thoroughly covered
 by `test_hardening.py`, which is where every refusal this module has ever

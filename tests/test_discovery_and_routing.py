@@ -1,6 +1,6 @@
 """Finding the host, reading what it declares, and routing a stage to a model.
 
-Finding **Q-C4** of `docs/quality-assessment.md`: `agents/registry.py` at 57%,
+Finding **Q-C4** of `docs/history/quality-assessment.md`: `agents/registry.py` at 57%,
 `providers/router.py` at 67%, `host/detect.py` at 71%. Three modules that decide
 what a run can *do* before any model is asked anything -- which agents exist,
 which host is driving, and where a stage's work is sent.

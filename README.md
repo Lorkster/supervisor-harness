@@ -785,10 +785,9 @@ memory.
 | [`docs/architecture.md`](docs/architecture.md) | **How a run works, drawn.** The phase machine including its failure paths, what is written where and what survives a crash, where the two backends diverge, and how the fence narrows. |
 | [`docs/setup-examples.md`](docs/setup-examples.md) | Worked setups end to end, including two hosts on one machine with different credentials, and what to add for autonomous runs. |
 | [`docs/protocol.md`](docs/protocol.md) | The wire protocol between the harness and the host. |
-| [`docs/shared-context-spec.md`](docs/shared-context-spec.md) | Shared semantic context in full: the design, its decided choices, and its open ones. |
-| [`docs/quality-assessment.md`](docs/quality-assessment.md) | The standard this codebase is held to, what it measured against it, and the disposition of every finding. |
+| [`docs/quality-standard.md`](docs/quality-standard.md) | **The standard this codebase is held to.** Ten criteria, the CI gates that enforce each, and when a new gate is worth adding. |
 | [`docs/development-plan.md`](docs/development-plan.md) | **The work that is scheduled.** Nine batches: three from what a real run cost in latency, context and unused local agents, and six adapted from a reading of another agent framework. Says what is verified, what is only a reading, and what was decided against. |
-| [`docs/history/`](docs/history/) | **Closed records.** The self-review that found the defects and how they were closed, and the plan the work followed. Kept for the reasoning; nothing in there describes the harness as it is now. |
+| [`docs/history/`](docs/history/) | **Closed records.** The self-review that found the defects and how they were closed, the plan the work followed, the quality assessment that set the standard, and the design pass for shared context. Kept for the reasoning; nothing in there describes the harness as it is now. |
 
 Documents that cite code by line number are checked in CI
 (`tools/check_doc_refs.py`), so a reference that stops pointing at what it

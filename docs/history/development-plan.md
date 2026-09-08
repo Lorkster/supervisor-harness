@@ -12,7 +12,7 @@
 >
 > For what is true now, read [`../reasoning-control-plane.md`](../reasoning-control-plane.md)
 > (what the harness is), [`../architecture.md`](../architecture.md) (how a run
-> works) and [`../quality-assessment.md`](../quality-assessment.md) (the standard
+> works) and [`quality-assessment.md`](quality-assessment.md) (the standard
 > it is held to).
 
 A working document for a session that was not present when it was written, in
@@ -33,7 +33,7 @@ configured, and CI gates on *no new* (file, rule) pairs rather than on zero.
 > batch 4b-4: 463 tests, ruff **configured and at zero** with CI running
 > `ruff check` (the by-(file, rule) diff tool is gone), coverage 88.7% with a
 > floor, mypy at zero, and `core/supervisor.py` split down to 1,652 lines.
-> `docs/quality-assessment.md` is the current standard.
+> [`../quality-standard.md`](../quality-standard.md) is the current standard.
 
 Every finding from the original 88-finding self-review is closed, both
 outstanding policy calls are decided, and all four dimensions of the
@@ -43,8 +43,9 @@ control-plane assessment are done. What remains is the items below.
 > 4b-1 through 4b-5, the split, and the whole of item 4 including `Q-C6`, the
 > audit that closed it last. The diagrams item 3b asked for are
 > [`architecture.md`](../architecture.md); the standard the codebase is now held to
-> is [`quality-assessment.md`](../quality-assessment.md), which is the live
-> document. **This one is a record**: what was planned, in what order, and why —
+> is [`../quality-standard.md`](../quality-standard.md), which is the live
+> document. The assessment that produced those criteria has since joined this
+> directory as [`quality-assessment.md`](quality-assessment.md). **This one is a record**: what was planned, in what order, and why —
 > including the two places the plan was wrong and was overruled. It is not the
 > place to look for what to do next.
 
@@ -567,7 +568,7 @@ criteria, findings with ids, and a batch plan, in the shape
 ### 4a closed
 
 Landed on `chore/quality-assessment` as
-[`docs/quality-assessment.md`](../quality-assessment.md): ten written criteria, 15
+[`docs/quality-assessment.md`](quality-assessment.md): ten written criteria, 15
 findings with ids, a five-batch plan for 4b, and the instruments in CI — a
 coverage floor at 82%, mypy gating at **zero**, and ruff against a configured
 rule set for the first time.
@@ -602,7 +603,7 @@ moves have a reason beyond preference.
 | --- | --- | --- |
 | 1 | **3a** — the paradigm document | Cheap, independent, overdue, and it is what a new reader currently gets wrong. **Done** — see below. |
 | 2 | **1b** — the Bedrock optional extra | Small, independent, closes issue #31 — and it lands *before* the assessment so the assessment covers the module set being kept. **Done** — see §1b. |
-| 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. **Done** — [`quality-assessment.md`](../quality-assessment.md). |
+| 3 | **4a** — the assessment: criteria, instrumentation, and layout-independent findings | Produces the coverage measurement and the architecture criteria that item 2 needs in order to be provable. **Done** — [`quality-assessment.md`](quality-assessment.md). |
 | 4 | **2 (9c)** — the split | **Done** — split by layer; see §2. Four layers out, 2,591 → 1,652 lines. |
 | 5 | **4b** — close the remaining findings in batches | Against the settled layout, so cleanup diffs are not written into `core/supervisor.py` and immediately moved again. |
 | 6 | **3b** — the diagrams | Last, unchanged: diagrams that name modules go stale the moment the modules move. |

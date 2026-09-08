@@ -1,6 +1,6 @@
 """The MCP boundary: the harness as Claude Code and Cursor actually see it.
 
-Finding **Q-C1** of `docs/quality-assessment.md`, and the one the assessment
+Finding **Q-C1** of `docs/history/quality-assessment.md`, and the one the assessment
 called the most serious: `mcp_server.py` was **0% covered**. 101 statements, not
 one of them executed by any test. Everything behind it -- the phase machine, the
 fence, the store, the packets -- is well covered. The thing a host actually

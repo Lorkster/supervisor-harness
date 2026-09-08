@@ -361,7 +361,7 @@ things you take the agent's word for.
 | [`../README.md`](../README.md) | What the harness does, and how to run it |
 | [`architecture.md`](architecture.md) | The same four bounds **drawn**: the phase machine, the durability story, the two backends, and the fence |
 | [`protocol.md`](protocol.md) | The wire protocol between harness and host |
-| [`shared-context-spec.md`](shared-context-spec.md) | Dimension 4 in full, including its open choices |
+| [`history/shared-context-spec.md`](history/shared-context-spec.md) | The design pass behind dimension 4, and how its open choices were settled |
 | [`history/`](history/) | The **records**: the self-review that found the defects, and the plan that closed them. Closed, and kept for the reasoning rather than the conclusions |
 
 [`history/self-review.md`](history/self-review.md) is where this framing was
