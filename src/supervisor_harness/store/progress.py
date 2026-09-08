@@ -103,6 +103,18 @@ def append(path: Path, events: list[Event]) -> None:
     cannot write a progress line has still recorded everything that matters.
     Letting it fail a run would trade the authoritative record for the
     convenience over it.
+
+    Broad on purpose. This caught ``OSError`` alone, which covers the disk and
+    nothing else -- and the work here is not only writing. ``as_line`` reaches
+    into an event's payload and ``json.dumps`` serialises what it finds, so a
+    payload carrying something unserialisable raises ``TypeError`` from a
+    function documented as never raising, and takes the run with it. An
+    observing surface that can only be isolated from *some* of its own failures
+    is not isolated: the guarantee is what the caller relies on, and a caller
+    cannot know which kind of failure it is about to get.
+
+    Found by `tests/test_enforce_versus_observe.py`, which asserts the guarantee
+    rather than the implementation of it.
     """
     if not events:
         return
@@ -111,7 +123,7 @@ def append(path: Path, events: list[Event]) -> None:
         with path.open("a", encoding="utf-8") as handle:
             for event in events:
                 handle.write(json.dumps(as_line(event), ensure_ascii=False) + "\n")
-    except OSError:
+    except Exception:  # noqa: BLE001 - derived and disposable; see the docstring
         return
 
 

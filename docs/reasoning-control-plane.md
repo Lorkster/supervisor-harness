@@ -290,6 +290,55 @@ One task, end to end, touching all four:
 The through-line: at every step the thing being judged is not the thing setting
 the terms.
 
+## The invariant underneath all four
+
+Every surface in this harness either **enforces** or **observes**, and the two
+have opposite failure rules.
+
+| | enforces | observes |
+| --- | --- | --- |
+| may refuse or change the outcome | yes — that is what it is for | never |
+| what an error inside it means | refuse: fail closed | isolate: the run continues |
+| examples | `core/tools.py`, `core/dod.py`, `core/envelope.py`, `core/facts.py`, the config trust boundary, the store's containment | `store/progress.py`, the SQLite index, `core/timing.py`, `core/journal.py`, `core/trajectory.py`, `core/audit.py`, `assists`, lesson consolidation, the drift model's second opinion |
+
+The rule is borrowed from NOOA's middleware documentation, which draws the same
+line for the same reason: interception is control flow, so its exceptions
+propagate; observation is not, so its exceptions are isolated. Adopting it as an
+invariant rather than a description matters here more than it does there,
+because the claim this whole document makes is that a judgement is made on terms
+its subject does not set. **An observer that could move a verdict, or an enforcer
+that failed open, would break that claim without breaking a single behavioural
+test.**
+
+So both directions are checked mechanically, in
+[`tests/test_enforce_versus_observe.py`](../tests/test_enforce_versus_observe.py):
+
+- no error handler in an enforcing module returns the permissive answer — an
+  `except` that answered `ToolResult(..., True, ...)` or
+  `VerificationOutcome(CriterionStatus.PASS, ...)` reads exactly like a check
+  that decided the operation was fine;
+- every broad `except Exception` sits on a declared observing surface, listed
+  with the reason it is allowed to swallow — a new one is a deliberate decision
+  to make something unable to fail a run, and belongs in a list someone edits;
+- a run reaches the same verdict with the progress writer, the index and the
+  consolidation pass each raising in turn.
+
+Two hazards NOOA's documentation names apply here for reasons of our own.
+**Enforcement must not recurse into what it fenced**: a shell writes files, so
+`WRITE_KINDS` and `COMMAND_KINDS` are the same set, and the harness's own
+criterion runner is gated by `allow_command_execution` — the same switch that
+fences an agent's shell — rather than given a private path around it. And
+**anything re-runnable must be idempotent**: the remediation loop re-issues
+packets and re-verifies criteria, so a turn reported twice is recorded once and a
+criterion verified twice reaches the same verdict.
+
+That check found one defect on the way in. `store/progress.py` was documented as
+never raising and caught `OSError` alone — so a payload that would not serialise
+raised `TypeError` out of it and would have taken the run with it. An observing
+surface isolated from only some of its own failures is not isolated, because the
+guarantee is what the caller relies on and a caller cannot know which kind of
+failure it is about to get.
+
 ## What this is not
 
 It is not a safety mechanism against a hostile model. Every bound here assumes
