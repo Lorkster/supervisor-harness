@@ -63,6 +63,12 @@ same MCP servers as the Cursor editor, and reads `.cursor/rules` as well, so one
 
 Restart each host afterwards; neither rescans for MCP servers while running.
 
+Run the same command again after upgrading the package. Six of those seven files
+are the harness's instructions to a host rather than your configuration, and
+`init` refreshes any that have fallen behind the release — see
+[Updating](../README.md#updating). `supervisor.config.json` is the exception and
+is left as you have it.
+
 ### 2. Use it from either host
 
 From Claude Code or Cursor:

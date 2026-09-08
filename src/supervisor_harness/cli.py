@@ -151,10 +151,19 @@ def _supervisor(args: argparse.Namespace) -> Supervisor:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    """Install host integrations and an example configuration."""
+    """Install host integrations and an example configuration, or refresh them.
+
+    Also the update procedure: running it again brings every shipped component
+    back in step with the installed package, and reports each one it changed.
+    See `_copy` for why that is the default and `tests/test_init_refresh.py`
+    for the split between component, registration and settings.
+    """
     workspace = Path(args.workspace).resolve()
     written: list[str] = []
 
+    # The one file `init` will not touch on its own. Everything else it writes
+    # is a component it owns; this is the user's policy, and re-running an
+    # install is not a request to discard it.
     config_path = workspace / PROJECT_CONFIG
     if not config_path.exists() or args.force:
         write_example(config_path)
@@ -170,30 +179,31 @@ def cmd_init(args: argparse.Namespace) -> int:
         skill_dir = workspace / ".claude" / "skills" / "supervise"
         skill_dir.mkdir(parents=True, exist_ok=True)
         _copy(INTEGRATIONS / "claude_code" / "SKILL.md", skill_dir / "SKILL.md",
-              args.force, written, workspace)
+              args.keep_integrations, written, workspace)
         cmd_dir = workspace / ".claude" / "commands"
         cmd_dir.mkdir(parents=True, exist_ok=True)
         _copy(INTEGRATIONS / "claude_code" / "supervise.md", cmd_dir / "supervise.md",
-              args.force, written, workspace)
+              args.keep_integrations, written, workspace)
 
     if "cursor" in targets or host.name == "cursor":
         rules_dir = workspace / ".cursor" / "rules"
         rules_dir.mkdir(parents=True, exist_ok=True)
         _copy(INTEGRATIONS / "cursor" / "supervisor.mdc", rules_dir / "supervisor.mdc",
-              args.force, written, workspace)
+              args.keep_integrations, written, workspace)
         cmd_dir = workspace / ".cursor" / "commands"
         cmd_dir.mkdir(parents=True, exist_ok=True)
         _copy(INTEGRATIONS / "cursor" / "supervise.md", cmd_dir / "supervise.md",
-              args.force, written, workspace)
+              args.keep_integrations, written, workspace)
 
     # Each host reads its own file. Claude Code takes `.mcp.json` at the
     # repository root; Cursor's documented project location is
     # `.cursor/mcp.json`, and its CLI picks up the same servers as its editor.
     # Writing only the first left a Cursor install carrying the rule that tells
     # it to drive this MCP server, with no server registered to drive.
-    _register_mcp(workspace / ".mcp.json", args.force, written, workspace)
+    _register_mcp(workspace / ".mcp.json", args.keep_integrations, written, workspace)
     if "cursor" in targets or host.name == "cursor":
-        _register_mcp(workspace / ".cursor" / "mcp.json", args.force, written, workspace)
+        _register_mcp(workspace / ".cursor" / "mcp.json", args.keep_integrations,
+                      written, workspace)
 
     if args.json:
         _emit({"workspace": str(workspace), "host": host.name, "written": written}, True)
@@ -206,7 +216,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         for path in written:
             print(f"  {path}")
     else:
-        print("Nothing to write -- everything is already in place (use --force to overwrite).")
+        print("Nothing to do -- every component is already current.")
     print(
         "\nNext: restart your host so it picks up the MCP server, then ask it to "
         "'supervise' a task, or run `supervisor run \"...\"` for an autonomous run."
@@ -214,13 +224,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _register_mcp(path: Path, force: bool, written: list[str], root: Path) -> None:
+def _register_mcp(path: Path, keep: bool, written: list[str], root: Path) -> None:
     """Add the `supervisor` server to one MCP config file, keeping the rest.
 
     Merged rather than written over: the file is the user's, and it usually
-    already names servers that have nothing to do with this one. An entry that
-    is already there is left alone unless ``--force`` says otherwise, so
-    re-running `init` cannot quietly revert a command someone edited.
+    already names servers that have nothing to do with this one. Every other
+    server is preserved exactly.
+
+    The `supervisor` entry itself is kept *current*, because it is registration
+    rather than configuration -- if the command or its arguments change in a
+    release, an entry left as it was points the host at something that no longer
+    works. ``keep`` opts out for anyone who has edited theirs on purpose.
 
     A file that will not parse is left exactly as it is. Overwriting it would
     lose whatever the user had, which is a worse outcome than an unregistered
@@ -234,16 +248,42 @@ def _register_mcp(path: Path, force: bool, written: list[str], root: Path) -> No
         except json.JSONDecodeError:
             return
     servers = existing.setdefault("mcpServers", {})
-    if "supervisor" in servers and not force:
+    wanted = template["mcpServers"]["supervisor"]
+    already = servers.get("supervisor")
+    if already == wanted or (already is not None and keep):
         return
-    servers["supervisor"] = template["mcpServers"]["supervisor"]
+    servers["supervisor"] = wanted
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-    written.append(path.relative_to(root).as_posix())
+    written.append(
+        path.relative_to(root).as_posix() + (" (updated)" if already is not None else "")
+    )
 
 
-def _copy(src: Path, dst: Path, force: bool, written: list[str], root: Path) -> None:
-    if dst.exists() and not force:
+def _copy(src: Path, dst: Path, keep: bool, written: list[str], root: Path) -> None:
+    """Install one shipped component, refreshing it when it has fallen behind.
+
+    These files -- the skill, the rule, the slash commands -- are not the user's
+    configuration. They are the harness's instructions to the host, copied out
+    of the package so the host can find them, and a stale one silently breaks
+    the product: a skill describing a packet shape two batches old had a host
+    driving a protocol the harness no longer speaks, at a cost of three context
+    compactions in one run before anyone looked.
+
+    So `init` refreshes them by default and says which it changed. That makes
+    `supervisor init` the update procedure, rather than something you run once
+    and can never safely run again -- which is the alternative, and it needs a
+    second command plus a user who knows to reach for it.
+
+    ``keep`` is the escape hatch for someone who has deliberately edited one.
+    Their copy then stops tracking the package, which is a real decision and is
+    why it takes a flag.
+    """
+    if dst.exists():
+        if keep or dst.read_bytes() == src.read_bytes():
+            return
+        shutil.copyfile(src, dst)
+        written.append(f"{dst.relative_to(root)} (updated)")
         return
     shutil.copyfile(src, dst)
     written.append(str(dst.relative_to(root)))
@@ -949,10 +989,14 @@ def cmd_mcp(args: argparse.Namespace) -> int:
 def _add_run_commands(sub: Any, common: argparse.ArgumentParser) -> None:
     """The commands that drive a run: set one going and answer it."""
     p = sub.add_parser("init", parents=[common],
-                       help="install host integrations and an example config")
+                       help="install host integrations, or refresh them after an upgrade")
     p.add_argument("--host", choices=["claude", "cursor", "both"], default="",
                    help="which host to install for (default: whichever is detected)")
-    p.add_argument("--force", action="store_true", help="overwrite existing files")
+    p.add_argument("--force", action="store_true",
+                   help="also replace supervisor.config.json with the example")
+    p.add_argument("--keep-integrations", action="store_true",
+                   help="leave an existing skill, rule, command or MCP entry as it is, "
+                        "even when the package ships a newer one")
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("run", parents=[common], help="run a task to completion without a host")

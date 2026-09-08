@@ -122,8 +122,36 @@ Two MCP files because the two hosts look in different places: Claude Code reads
 `.mcp.json` at the repository root, Cursor reads `.cursor/mcp.json`. Both are
 merged into rather than overwritten, so servers you already had are kept.
 
-Use `--host both` to install for both, `--force` to overwrite. For a worked
-two-host setup, see [`docs/setup-examples.md`](docs/setup-examples.md).
+Use `--host both` to install for both. For a worked two-host setup, see
+[`docs/setup-examples.md`](docs/setup-examples.md).
+
+### Updating
+
+`supervisor init` is also the update procedure. Run it again after upgrading:
+
+```bash
+pip install -U -e .
+supervisor init
+```
+
+It refreshes the skill, the rules, the slash commands and the `supervisor` MCP
+entry whenever the package ships a newer one, reports each as `(updated)`, and
+says `Nothing to do` when your project is already current. Restart the host
+afterwards.
+
+Those files are not your configuration — they are the harness's instructions to
+your host, and a release that changes the protocol changes them with it. A copy
+left behind goes on driving the old protocol: nothing fails, the run just costs
+several times what it should. `pip install -U` cannot fix that on its own,
+because the stale copy is in your project.
+
+Two things are never refreshed:
+
+- **`supervisor.config.json`** is yours. `--force` replaces it with the example;
+  nothing else touches it.
+- **Anything you have deliberately edited**, if you pass `--keep-integrations`.
+  That copy then stops tracking the package, so no later release will correct
+  it for you.
 
 ### Several projects
 
@@ -244,7 +272,7 @@ shorthand for something the CLI will not tell you itself.
 
 | Command | What it does | Its own arguments |
 | --- | --- | --- |
-| `init` | install host integrations and an example config into a project | `--host claude\|cursor\|both` (default: whichever host is detected), `--force` to overwrite existing files |
+| `init` | install host integrations and an example config, or refresh them after an upgrade | `--host claude\|cursor\|both` (default: whichever host is detected), `--force` to also replace `supervisor.config.json`, `--keep-integrations` to leave edited files alone |
 | `run PROMPT` | drive a whole run to completion without a host | `--mode`, `--backend host\|autonomous`, `-y/--yes` |
 | `start PROMPT` | begin a host-delegated run and print its first work packets | `--mode`, `--host-agents` — the subagent types you can spawn, as a JSON array: `'["general-purpose"]'`, or `'[{"name": "general-purpose", "description": "..."}]'` when you want the description to inform role matching |
 | `report RUN AGENT` | hand back one agent's result | `-i/--input` a JSON file, or `-` for stdin (the default) |
