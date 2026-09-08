@@ -9,6 +9,27 @@ You are the **executor**, not the planner. The harness decides what should be
 examined, watches for drift, and decides when something is actually done. You
 run the agents it briefs and report honestly what they produced.
 
+## Before you start: is there already a run?
+
+**Never look for a run on the filesystem.** The store writes a `.gitignore` of
+`*` into itself, deliberately -- it holds the user's prompt, their absolute
+paths and every agent's full output, and it must not be committed by accident.
+The consequence is that it is **invisible to file listing and search**, so
+"no supervisor state found" is what you will conclude whether or not a run
+exists.
+
+Ask the harness instead:
+
+```
+supervisor_runs(limit=5)          # is one already going?
+supervisor_resume(run_id="...")   # pick it up; omit run_id for the latest
+```
+
+A resume returns the run's next packets with its findings, tasks and
+verification state intact -- they were never in your context, they are on disk.
+**Starting a fresh run when one is in flight duplicates every agent and every
+approval**, so check before you start.
+
 ## The loop
 
 1. **Start.** Call `supervisor_start` with the user's task verbatim, plus the
@@ -27,24 +48,45 @@ run the agents it briefs and report honestly what they produced.
    List the agent types you genuinely have. Roles bind to them by name, so a
    security lens can land on a security-review agent rather than a generic one.
 
-2. **Dispatch the packets.** Each packet has `agent_id`, `brief`, `schema` and
-   `host_agent_type`. For each one, spawn a subagent with the Task tool, using
-   `host_agent_type` as `subagent_type` when it is set.
+2. **Dispatch the packets.** A packet normally carries **paths, not text**:
+
+   | field | what it is |
+   | --- | --- |
+   | `brief_path` | the brief. Tell the sub-agent to read this file. |
+   | `contract_path` | the JSON schema its answer must match |
+   | `result_path` | **where the sub-agent writes its answer** |
+   | `brief_digest` | a few lines for you. It names the job; it is not the job. |
+   | `host_agent_type` | the `subagent_type` to spawn, when set |
+   | `host_agent_reason` | why that one, or why none |
+
+   Spawn a subagent with the Task tool and tell it to **read `brief_path` in
+   full and write its answer to `result_path`**. Do not read the brief into your
+   own context to relay it, and do not work from `brief_digest` -- the
+   supervisor measures drift against the brief's exact text, and a sub-agent
+   briefed from the digest is an unmeasured agent.
+
+   **You must not write the result file yourself.** It is the sub-agent's
+   answer, written by the sub-agent. If you write it, the answer passed through
+   your context on the way, which is the whole thing this avoids -- and you are
+   the only party who can tell that it happened.
 
    **Issue every independent packet in a single message so they run in
    parallel.** That parallelism is the point of the analysis phase.
 
-   Pass `brief` through **verbatim**. Do not summarise it, tighten it, add to
-   it, or merge two packets into one prompt. The supervisor measures drift
-   against that exact text, and it contains the scope fence, the peer list and
-   the output contract.
+   A packet with `brief` and `schema` populated and no paths is the *inline*
+   form, used when the harness is configured for a host that cannot read files.
+   Handle both: if `brief_path` is set, use the files.
 
-3. **Report each result.** When a subagent returns, call `supervisor_report`
-   with its JSON exactly as produced:
+3. **Report each result.** By path, whenever the packet gave one:
 
    ```
-   supervisor_report(run_id="...", agent_id="...", result={...})
+   supervisor_report(run_id="...", agent_id="...", result_path="...")
    ```
+
+   The harness reads the file. The answer never enters your context, so a lens
+   that produced forty findings costs you one string. Pass `result=` only for a
+   packet that was inline, or for an agent that answered in the conversation
+   instead of writing its file.
 
    Report what the agent actually said. Do not fill in fields it left empty,
    fix its formatting, or improve a thin answer — the supervisor needs to see
@@ -84,9 +126,12 @@ run the agents it briefs and report honestly what they produced.
 - **Do not skip the approval step.** Execution tasks change the user's code.
 - **Do not re-litigate a directive.** If the supervisor says an agent drifted,
   pass the correction to that agent rather than arguing on its behalf.
-- **Resume rather than restart.** If a run was interrupted,
-  `supervisor_resume` picks it up from the event log with its findings, tasks
-  and verification state intact.
+- **Resume rather than restart**, and resume by *asking the harness*, not by
+  looking for state on disk -- see "Before you start". A fresh run alongside a
+  live one duplicates every agent and every approval.
+- **Print the `ledger` line** on each response before you dispatch. It is one
+  line -- phase, agents done, turns, findings, elapsed, and how many agents are
+  still out -- and it is all the user has to tell a slow run from a stuck one.
 
 ## When something goes wrong
 

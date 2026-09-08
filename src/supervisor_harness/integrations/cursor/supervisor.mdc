@@ -9,18 +9,29 @@ When the user asks for supervised, thorough or multi-angle work — or invokes
 `/supervise` — drive the supervisor harness MCP server rather than working
 directly. You execute; the harness plans, supervises and verifies.
 
+## Before you start
+
+`supervisor_runs(limit=5)` — is a run already in flight? `supervisor_resume`
+picks one up with its findings, tasks and verification intact. **Never look for
+a run on the filesystem**: the store gitignores itself so it cannot be committed
+by accident, which also makes it invisible to file listing. Starting a second
+run alongside a live one duplicates every agent and every approval.
+
 ## Loop
 
 1. `supervisor_start(prompt=<the user's request verbatim>, mode="auto",
    host_agents=[...])`. List the agent kinds you can actually run in
    background or in a sub-chat.
-2. Run each returned packet. Start independent packets **together**, not one
-   after another. Pass each `brief` through **verbatim** — the supervisor scores
-   drift against that exact text, and it carries the scope fence and the output
-   contract.
-3. `supervisor_report(run_id, agent_id, result)` with the agent's JSON exactly
-   as produced. Do not tidy, complete or improve a weak answer; the supervisor
-   needs to see it in order to correct it.
+2. Run each returned packet, **together** rather than one after another. A
+   packet carries paths: have the agent read `brief_path` in full and write its
+   answer to `result_path`. Do not relay the brief through your own context, do
+   not work from `brief_digest`, and **do not write the result file yourself** —
+   it is the agent's answer. (`brief`/`schema` populated instead means the
+   inline form; use those.)
+3. `supervisor_report(run_id, agent_id, result_path=...)` — by path, so the
+   answer never enters your context. Use `result=` only for an inline packet or
+   an agent that answered in the conversation. Do not tidy, complete or improve
+   a weak answer; the supervisor needs to see it in order to correct it.
 4. `supervisor_advance(run_id)` once every packet is reported.
 5. At `await_approval`, show the user each proposed task with its action,
    motivation and definition of done, plus anything in `task_notes`. Let the
@@ -37,5 +48,8 @@ directly. You execute; the harness plans, supervises and verifies.
 - If a sub-agent dies or its packet cannot be run, call
   `supervisor_abandon(run_id, agent_id, reason)`. The harness sees silence, not
   a crash, and will otherwise re-issue that packet on every advance.
-- Use `supervisor_resume` for an interrupted run; state is persisted per run.
+- Use `supervisor_resume` for an interrupted run; state is persisted per run,
+  and asking the harness is the only way to find it.
+- Print the `ledger` line on each response before dispatching: it is the only
+  thing telling the user a slow run from a stuck one.
 - Skip the harness entirely for trivial edits. It is for work worth supervising.
