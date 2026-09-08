@@ -7,8 +7,9 @@
 > 3 ([#55](https://github.com/Lorkster/supervisor-harness/pull/55)) and
 > 4 ([#56](https://github.com/Lorkster/supervisor-harness/pull/56)) and
 > 5 ([#57](https://github.com/Lorkster/supervisor-harness/pull/57)) and
-> 6 ([#58](https://github.com/Lorkster/supervisor-harness/pull/58)) are merged.
-> Batch 7 is open. Nothing below has been edited to match what happened;
+> 6 ([#58](https://github.com/Lorkster/supervisor-harness/pull/58)) and
+> 7 ([#59](https://github.com/Lorkster/supervisor-harness/pull/59)) are merged.
+> Batch 8 is open. Nothing below has been edited to match what happened;
 > where a batch measured something the plan only estimated, the measurement
 > is added beneath it and the estimate is left standing.
 
@@ -471,6 +472,26 @@ there is currently assumed and nowhere asserted.
 A small batch, mostly tests and a documented invariant. It is the one that makes
 the control-plane claim checkable rather than argued.
 
+> **Done**, and it was a small batch that found a real defect, which is the
+> argument for the batch.
+>
+> The invariant already held everywhere -- every enforcing handler failed
+> closed, every observer was isolated -- except one. `store/progress.py` was
+> documented as never raising and caught `OSError` alone, so an unserialisable
+> payload raised `TypeError` out of it and would have taken a run with it. An
+> observing surface isolated from only *some* of its own failures is not
+> isolated: the guarantee is what the caller relies on, and a caller cannot know
+> which kind of failure it is about to get.
+>
+> The test that found it was itself written the wrong way round first. Replacing
+> `progress.append` wholesale tests whether the *caller* guards a call it is
+> entitled not to guard -- a different question with a different answer. Broken
+> from the inside instead, which is the guarantee the module actually makes.
+>
+> The broad-suppression allow-list is the part most likely to pay off later. It
+> is the same shape as the guard against synchronous `emit` in an async
+> function: adding a broad `except` to an enforcing module is now a build
+> failure rather than a decision nobody sees.
 ## Batch 9 — Reactive supervision
 
 *Inspired by `nooa.runtime.channels` and `nooa.runtime.producers`. Largest, and
