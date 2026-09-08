@@ -114,6 +114,39 @@ def test_every_shipped_instruction_says_how_to_find_a_run_already_in_flight(
     )
 
 
+#: This repository drives the harness on itself, so `supervisor init` has been
+#: run here and its output is committed. Those copies are the ones a session
+#: working in *this* repo actually reads.
+DOGFOODED = {
+    "claude_code/SKILL.md": ".claude/skills/supervise/SKILL.md",
+    "claude_code/supervise.md": ".claude/commands/supervise.md",
+}
+
+ROOT = INTEGRATIONS.parent.parent.parent
+
+
+@pytest.mark.parametrize(("source", "installed"), sorted(DOGFOODED.items()))
+def test_this_repository_is_running_the_instructions_it_ships(
+    source: str, installed: str
+) -> None:
+    """The same staleness, one copy further on, and the checks above miss it.
+
+    `supervisor init` copies these in once and never overwrites them without
+    `--force`, so a committed copy drifts from its source silently -- and it is
+    the copy a session working in this repository actually reads. The
+    integration files were fixed and these were still two batches behind
+    minutes later, which is how this test came to exist.
+
+    Byte-for-byte, because they are copies. Anything worth saying differently
+    here belongs in the source that every user gets.
+    """
+    assert (ROOT / installed).read_text(encoding="utf-8") == _text(source), (
+        f"{installed} has drifted from {source}. It is a copy: re-copy it rather "
+        "than editing it, or every user gets instructions this repository does not "
+        "follow itself."
+    )
+
+
 def test_the_fields_the_instructions_must_name_are_really_on_the_packet() -> None:
     """Guards the guard. A renamed field must fail here, not silently pass.
 
