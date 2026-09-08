@@ -22,6 +22,7 @@ say so rather than inventing one.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -64,6 +65,24 @@ def _own_files_excluded(status: str) -> list[str]:
         line for line in status.splitlines()
         if line[3:].lstrip('"').split("/")[0] != STORE_DIRECTORY
     ]
+
+
+def commit_from_fact(fact: str) -> str:
+    """The bare commit out of the sentence :func:`git_baseline` wrote.
+
+    Lives here rather than at the reader, beside the function that formats it,
+    for the reason `BASELINE_FACT` lives beside the dict it keys: a parser that
+    drifts from its formatter fails silently, and the two are only safe to
+    change together if they are next to each other.
+
+    The fact is a sentence because it is written for an agent to read -- "the
+    tree already had four modified files" is part of what a baseline means. A
+    caller that wants to *run git against it* needs only the first token, and
+    handing it the whole sentence produces `fatal: ambiguous argument`, which is
+    exactly how this function came to exist.
+    """
+    match = re.search(r"`([0-9a-f]{7,40})`", str(fact))
+    return match.group(1) if match else ""
 
 
 def git_baseline(workspace: Path) -> str:

@@ -6,8 +6,9 @@
 > 2 ([#54](https://github.com/Lorkster/supervisor-harness/pull/54)) and
 > 3 ([#55](https://github.com/Lorkster/supervisor-harness/pull/55)) and
 > 4 ([#56](https://github.com/Lorkster/supervisor-harness/pull/56)) and
-> 5 ([#57](https://github.com/Lorkster/supervisor-harness/pull/57)) are merged.
-> Batch 6 is open. Nothing below has been edited to match what happened;
+> 5 ([#57](https://github.com/Lorkster/supervisor-harness/pull/57)) and
+> 6 ([#58](https://github.com/Lorkster/supervisor-harness/pull/58)) are merged.
+> Batch 7 is open. Nothing below has been edited to match what happened;
 > where a batch measured something the plan only estimated, the measurement
 > is added beneath it and the estimate is left standing.
 
@@ -427,6 +428,29 @@ tasks that touched none of the files they cite.
 This pairs with the reconciliation artifact, and it is the one class of check an
 agent cannot write for itself.
 
+> **Done**, and the plan understated how sharp the advertising trap is here.
+> Every brief this harness writes *contains the prohibited git command list* --
+> the shared-tree rule names eight of them in full, in the text handed to every
+> agent. A scanner that searched briefs would report every agent in every run for
+> having read its instructions. So the rule is stated as an invariant and tested
+> first: a brief, a scope and a task's action are never evidence.
+>
+> That rules out the plan's "git commands the shared-tree rule prohibits" as a
+> text scan. The honest version reads *recorded commands* -- a criterion's
+> `command` field is what was run to prove it -- which catches the real case and
+> cannot be fooled by an agent quoting its own instructions back.
+>
+> One scanner beyond the plan's list: `unclaimed_changes`, comparing the tree
+> against the baseline. Every other check shares the blind spot self-reporting
+> has -- an agent that changed a file and did not mention it is invisible to all
+> of them -- so the one check that reaches ground truth is worth the git call.
+> It is skipped, loudly, where there is no repository.
+>
+> `commit_from_fact` exists because the baseline is recorded as a *sentence* for
+> an agent to read ("`1bfe4e1a` on `main`, working tree clean"), and feeding that
+> to `git diff` produces `fatal: ambiguous argument`. The parser lives beside the
+> formatter in `core/baseline.py`, for the reason `BASELINE_FACT` lives beside
+> the dict it keys.
 ## Batch 8 — Enforce versus observe
 
 *Inspired by `skills/nooa-middleware-hooks/SKILL.md`.*
