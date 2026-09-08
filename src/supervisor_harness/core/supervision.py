@@ -52,6 +52,7 @@ from .drift import (
     merge_assessments,
     status_after,
 )
+from .facts import anchor_fact
 from .lifecycle import Lifecycle
 from .packets import Packets
 from .reporting import Reporting
@@ -116,7 +117,13 @@ class Supervision:
         # carry; a verifier writing into the record it is judging against is the
         # conflict of interest batch 7 was about, in a different costume.
         established = (
-            parse_established(payload, agent)
+            [
+                # Stamped at the moment of recording, which is the only moment
+                # the anchor's "before" is available: by the time another agent
+                # reads this fact, the file may already be three edits along.
+                anchor_fact(fact, self.packets.workspace)
+                for fact in parse_established(payload, agent)
+            ]
             if agent.kind is AgentKind.ANALYSIS else []
         )
 

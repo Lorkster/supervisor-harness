@@ -4,8 +4,9 @@
 
 > **Progress.** Batches 1 ([#53](https://github.com/Lorkster/supervisor-harness/pull/53))
 > 2 ([#54](https://github.com/Lorkster/supervisor-harness/pull/54)) and
-> 3 ([#55](https://github.com/Lorkster/supervisor-harness/pull/55)) are merged.
-> Batch 4 is open. Nothing below has been edited to match what happened;
+> 3 ([#55](https://github.com/Lorkster/supervisor-harness/pull/55)) and
+> 4 ([#56](https://github.com/Lorkster/supervisor-harness/pull/56)) are merged.
+> Batch 5 is open. Nothing below has been edited to match what happened;
 > where a batch measured something the plan only estimated, the measurement
 > is added beneath it and the estimate is left standing.
 
@@ -331,6 +332,27 @@ instinct applied to time instead of to authorship.
 Take their security rule verbatim as a rule, not just as an implementation
 detail: **strict name lookup, never eval**, precisely because fact content
 originates from other agents.
+
+> **Done**, with three corrections to this plan.
+>
+> The plan said "a file path, a symbol, a command's output". Only the file is
+> taken. A symbol or a line range *under*-reports exactly when it matters --
+> the edit that invalidates "the counters live here" is usually the one that
+> moved them somewhere else in the same file -- and re-running a command to
+> check a fact would have the harness executing model-named commands on every
+> brief, which `allow_command_execution` exists to refuse.
+>
+> Their two states needed a third. NOOA's targets vanish; ours mostly get
+> *edited*, so `changed` is its own answer and is the common case. A fourth,
+> `unreadable`, exists so that "not checkable" can never be mistaken for
+> "unchanged" -- a fact recorded without a digest must not default to live.
+>
+> The plan named a verifier as the reader this protects. It is not:
+> `build_verification_brief` carries no shared context at all, deliberately,
+> because a verifier inheriting its peers' readings checks the story rather than
+> the tree. The reader is an **execution agent**, briefed during `executing`
+> long after the analysis. Found by a test written against the plan's claim, and
+> the design is right as it stands -- it was the plan that was wrong.
 
 ## Batch 6 — Lessons that decay and consolidate
 

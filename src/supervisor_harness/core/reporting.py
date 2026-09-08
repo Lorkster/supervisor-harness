@@ -33,6 +33,7 @@ from ..store.runstore import RunSession, RunStore
 from . import phases
 from .blackboard import contested_keys
 from .envelope import stale_reason
+from .facts import Liveness, liveness
 from .journal import RunJournal, build_journal
 from .responses import SupervisorResponse
 from .timing import clock, measure
@@ -101,7 +102,13 @@ class Reporting:
             # them keyed a claim the same way and said different things.
             "established": [
                 {"key": f.key, "statement": f.statement, "evidence": f.evidence,
-                 "by": f.role or f.agent_id}
+                 "by": f.role or f.agent_id, "anchor": f.anchor,
+                 # Against the workspace the run recorded, which is the only one
+                 # a status read knows about. A run resumed somewhere else
+                 # reports `unreadable` rather than a confident answer about a
+                 # tree it cannot see, which is the honest reading.
+                 "liveness": str(liveness(f, state.workspace)) if state.workspace
+                 else str(Liveness.UNANCHORED)}
                 for f in state.established
             ],
             "contested_facts": sorted(contested_keys(state.established)),

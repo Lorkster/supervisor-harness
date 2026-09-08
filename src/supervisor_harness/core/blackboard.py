@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..models import (
     BROADCAST,
@@ -29,6 +30,7 @@ from ..models import (
     Severity,
 )
 from .drift import tokens
+from .facts import liveness, stamp
 
 # Messages the supervisor should look at rather than pass through untouched.
 _ESCALATING_KINDS = frozenset({MessageKind.CONTRADICTION, MessageKind.WARNING})
@@ -82,10 +84,28 @@ def contested_keys(established: list[Fact]) -> dict[str, list[Fact]]:
     }
 
 
+def _claim_line(fact: Fact, workspace: Path | str, indent: str = "") -> str:
+    """One agent's claim, stamped when the thing it is about has moved.
+
+    Only a fact whose anchor has changed or gone says anything extra. A live or
+    unanchored one reads exactly as it did before, deliberately: annotating
+    every line with "(still true)" would train a reader to skip the line that
+    says otherwise, which is the only line here that matters.
+    """
+    attribution = fact.role or fact.agent_id
+    line = f"{indent}- {fact.statement} ({attribution}"
+    if fact.evidence:
+        line += f", evidence: {fact.evidence}"
+    line += ")"
+    note = stamp(fact, liveness(fact, workspace)) if workspace else ""
+    return f"{line}\n{indent}  - **Stale:** {note}." if note else line
+
+
 def render_context(
     shared_context: str,
     facts: dict[str, str],
     established: list[Fact] | None = None,
+    workspace: Path | str = "",
 ) -> str:
     """Format the run's shared context for inclusion in a brief.
 
@@ -94,6 +114,11 @@ def render_context(
     needs no evidence and cannot be wrong about itself; the second is one
     agent's reading, and an agent inheriting it should be able to see whose, on
     what, and whether anyone disagreed.
+
+    ``workspace`` enables the third of those: whether the file a claim is about
+    still looks the way it did when the claim was made. Optional, and omitted
+    means "do not check" rather than "nothing has changed" -- a caller without a
+    workspace cannot tell the difference, and should not imply one.
     """
     parts = [shared_context] if shared_context else []
     if facts:
@@ -110,21 +135,17 @@ def render_context(
             claims = [f for f in established if f.key == key]
             if key in contested:
                 lines.append(f"- **{key}** -- agents disagree, treat as open:")
-                lines.extend(
-                    f"    - {c.statement} ({c.role or c.agent_id}"
-                    + (f", evidence: {c.evidence}" if c.evidence else "") + ")"
-                    for c in claims
-                )
+                lines.extend(_claim_line(c, workspace, indent="    ") for c in claims)
             else:
                 first = claims[0]
-                lines.append(
-                    f"- {key}: {first.statement} ({first.role or first.agent_id}"
-                    + (f", evidence: {first.evidence}" if first.evidence else "") + ")"
-                )
+                body = _claim_line(first, workspace)
+                lines.append(f"- {key}: {body[2:]}")
         parts.append(
             "Established by other agents in this run. Each is one agent's "
             "reading, not a rule: check it against what you can see, and say so "
-            "if you find otherwise.\n" + "\n".join(lines)
+            "if you find otherwise. A claim marked **Stale** is one whose file "
+            "has moved since it was made: it is the writer's snapshot, not the "
+            "current state of the tree.\n" + "\n".join(lines)
         )
     return "\n\n".join(parts)
 

@@ -176,6 +176,15 @@ ANALYSIS_TURN_SCHEMA: dict[str, Any] = {
                     "key": {"type": "string", "description": "What it is about"},
                     "statement": {"type": "string", "description": "What you established"},
                     "evidence": {"type": "string", "description": "file:line, or real output"},
+                    "anchor": {
+                        "type": "string",
+                        "description": (
+                            "The one file this is about, if it is about a file. "
+                            "Other agents are editing this tree while you work, "
+                            "so naming it lets a later reader be told the file "
+                            "changed after you looked."
+                        ),
+                    },
                 },
                 "required": ["key", "statement", "evidence"],
             },
@@ -667,6 +676,11 @@ def parse_established(data: dict[str, Any], agent: Any) -> list[Fact]:
                 key=key,
                 statement=statement,
                 evidence=evidence,
+                # Taken as written; resolved against the workspace by
+                # `core.facts.anchor_fact` at the point the fact is recorded,
+                # which is where the workspace is known. Anything that does not
+                # land inside the tree is dropped there rather than here.
+                anchor=str(raw.get("anchor", "")).strip(),
                 agent_id=getattr(agent, "id", ""),
                 role=getattr(agent, "role", ""),
             )

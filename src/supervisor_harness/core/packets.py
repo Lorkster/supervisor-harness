@@ -172,7 +172,8 @@ class Packets:
             brief = build_analysis_brief(
                 state, agent, ROLES_BY_ID.get(agent.role), peers, schema,
                 shared_context=render_context(
-                    state.shared_context, state.facts, state.established
+                    state.shared_context, state.facts, state.established,
+                    workspace=self.workspace,
                 ),
                 lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
                 tools=tools,
@@ -190,7 +191,8 @@ class Packets:
                 state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
                 ROLES_BY_ID.get(agent.role), peers, schema,
                 shared_context=render_context(
-                    state.shared_context, state.facts, state.established
+                    state.shared_context, state.facts, state.established,
+                    workspace=self.workspace,
                 ),
                 lessons=self._lessons_for(agent) if self.config.policy.apply_lessons else [],
                 supporting_findings=findings,

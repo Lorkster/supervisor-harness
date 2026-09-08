@@ -300,6 +300,15 @@ class Fact:
     evidence: str = ""
     agent_id: str = ""
     role: str = ""
+    # The file this claim is about, workspace-relative, and how it looked when
+    # the claim was made. Agents write into one tree at once, so a fact read
+    # three phases later may be describing a file that has since been rewritten
+    # -- and rendered without these it reads exactly like one that has not. See
+    # `core/facts.py`; both are resolved there, by strict path lookup and never
+    # by evaluating anything, because a fact is model-written and other agents
+    # read it.
+    anchor: str = ""
+    anchor_digest: str = ""
     ts: str = field(default_factory=now_iso)
 
 
