@@ -653,10 +653,14 @@ python tools/where_the_time_went.py <workspace>/.supervisor/runs/<run_id>/events
 ```
 
 ```
-by phase                 elapsed   in dispatches      idle
-  synthesizing            420.0s      415.0s        5.0s
-  analyzing               180.0s       48.0s      132.0s
+by phase                 elapsed      busy      idle   agent-s   conc
+  analyzing              1391.6s   1391.6s      0.0s   1364.8s   0.98
+  synthesizing            447.6s    446.8s      0.8s    446.8s   1.00
 ```
+
+`conc` is the column to read first: the average number of agents actually
+running at once. Four independent lenses reporting `conc 0.98` ran one after
+another, whatever the dispatch asked for.
 
 No prompt, no findings, no task titles, no file paths — the output is safe to
 read out loud, which is the point of it. Standard library only and no import of

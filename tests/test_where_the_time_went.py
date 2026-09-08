@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -100,19 +101,23 @@ def test_the_output_is_only_numbers_stage_names_and_kinds(tmp_path: Path) -> Non
         _event("turn_recorded", "2026-09-08T10:00:05Z", {"turn": {"agent_id": "agt_1"}}),
     ]
 
+    # Words, not whitespace-separated tokens: punctuation must not be able to
+    # smuggle one past the check by fusing it to a bracket.
     words = set()
     for line in wtw.summarise(events):
-        words.update(w.strip(",()") for w in line.split())
+        words.update(re.findall(r"[A-Za-z][A-Za-z-]*", line))
 
     allowed = {
-        "events", "total", "elapsed", "in", "dispatches", "across", "never", "answered",
-        "by", "phase", "kind", "idle", "n", "slowest",
+        # the labels
+        "events", "total", "elapsed", "busy", "agent-seconds", "across", "dispatch",
+        "es", "never", "answered", "by", "phase", "kind", "idle", "agent-s", "conc",
+        "n", "slowest", "s",
+        # the sentence explaining `busy`
+        "wall", "time", "with", "at", "least", "one", "agent", "out",
+        # the only run-derived words there are: a phase name and an agent kind
         "analyzing", "analysis",
     }
-    unexpected = {
-        w for w in words
-        if w and w not in allowed and not w.replace(".", "").replace("s", "").isdigit()
-    }
+    unexpected = {w for w in words if w not in allowed}
 
     assert not unexpected, f"unexpected words in the output: {sorted(unexpected)}"
 
@@ -131,8 +136,8 @@ def test_a_dispatch_is_measured_from_handout_to_answer() -> None:
     rendered = "\n".join(wtw.summarise(events))
 
     assert "total elapsed         40.0s" in rendered
-    assert "in dispatches         30.0s  across 1" in rendered
-    assert "analyzing                40.0s       30.0s      10.0s" in rendered
+    assert "agent-seconds         30.0s  across 1 dispatch(es)" in rendered
+    assert "analyzing                40.0s     30.0s     10.0s     30.0s   1.00" in rendered
 
 
 def test_a_phase_far_above_its_dispatches_shows_as_idle() -> None:
@@ -166,7 +171,7 @@ def test_an_unanswered_dispatch_is_counted_rather_than_timed() -> None:
     rendered = "\n".join(wtw.summarise(events))
 
     assert "never answered    1" in rendered
-    assert "across 0" in rendered
+    assert "across 0 dispatch(es)" in rendered
 
 
 def test_a_packet_handed_out_twice_is_measured_from_the_re_issue() -> None:
@@ -178,7 +183,53 @@ def test_a_packet_handed_out_twice_is_measured_from_the_re_issue() -> None:
         _event("turn_recorded", "2026-09-08T10:01:00Z", {"turn": {"agent_id": "agt_1"}}),
     ]
 
-    assert "in dispatches         10.0s  across 1" in "\n".join(wtw.summarise(events))
+    assert "agent-seconds         10.0s  across 1 dispatch(es)" in "\n".join(
+        wtw.summarise(events)
+    )
+
+
+def _fan_out(serial: bool) -> list[dict[str, object]]:
+    """Four independent lenses dispatched together, run one way or the other."""
+    events = [_event("phase_changed", "2026-09-08T10:00:00Z", {"phase": "analyzing"})]
+    for i in range(4):
+        start = f"2026-09-08T10:{i * 5 if serial else 0:02d}:00Z"
+        end = f"2026-09-08T10:{(i + 1) * 5 if serial else 5:02d}:00Z"
+        events.append(_event("agent_dispatched", start,
+                             {"agent_id": f"a{i}", "kind": "analysis"}))
+        events.append(_event("turn_recorded", end, {"turn": {"agent_id": f"a{i}"}}))
+    return events
+
+
+def test_a_fan_out_that_did_not_fan_out_reads_as_concurrency_one() -> None:
+    """The column this tool exists for, and the reason it was rewritten.
+
+    A real run reported `analyzing` at 1391.6s elapsed against 1364.8 seconds of
+    agent time across four independent lenses. Those numbers say the lenses ran
+    one after another -- but only if you happen to divide them, and the first
+    version of this tool made a reader do that arithmetic in their head. The
+    ratio is a column now: `conc 1.00` against `conc 4.00` is the difference
+    between a fan-out that fanned out and one that did not.
+    """
+    serial = "\n".join(wtw.summarise(_fan_out(serial=True)))
+    parallel = "\n".join(wtw.summarise(_fan_out(serial=False)))
+
+    assert "1200.0s   1200.0s      0.0s   1200.0s   1.00" in serial
+    assert "300.0s    300.0s      0.0s   1200.0s   4.00" in parallel
+    # Same work either way; the difference is entirely in the wall clock.
+    assert "agent-seconds       1200.0s" in serial
+    assert "agent-seconds       1200.0s" in parallel
+    assert "total elapsed       1200.0s" in serial
+    assert "total elapsed        300.0s" in parallel
+
+
+def test_overlapping_dispatches_never_produce_negative_idle() -> None:
+    """The defect this replaced. `elapsed - sum(dispatches)` is fine until two
+
+    agents overlap, and then it reports parallelism as minus five minutes of
+    idle -- a number that reads as a bug in the run rather than a feature of it.
+    """
+    for line in wtw.summarise(_fan_out(serial=False)):
+        assert "-" not in line.replace("agent-s", "").replace("agent-seconds", ""), line
 
 
 # -- surviving a log it was handed rather than one it made -----------------
@@ -228,7 +279,7 @@ def test_it_runs_over_a_real_file(tmp_path: Path, capsys: pytest.CaptureFixture[
     ])
 
     assert wtw.main(["where_the_time_went.py", str(path)]) == 0
-    assert "in dispatches" in capsys.readouterr().out
+    assert "agent-seconds" in capsys.readouterr().out
 
 
 def test_a_missing_file_is_refused_rather_than_raised(
@@ -278,6 +329,6 @@ async def test_it_reads_a_log_this_harness_actually_wrote(tmp_path: Path) -> Non
         wtw.summarise(wtw.read_log(store.run_dir(started.run_id) / "events.jsonl"))
     )
 
-    assert "across 1" in rendered, "the planning dispatch was not paired with its turn"
+    assert "across 1 dispatch(es)" in rendered, "the planning dispatch was not paired with its turn"
     assert "planning" in rendered
     assert "Tidy the imports" not in rendered, "the prompt is in the log and not in the output"
