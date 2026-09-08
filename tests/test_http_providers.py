@@ -1,6 +1,6 @@
 """The three HTTP providers: what they send, and what they make of the answer.
 
-Finding **Q-C3** of `docs/quality-assessment.md`. `openrouter` sat at 26%,
+Finding **Q-C3** of `docs/history/quality-assessment.md`. `openrouter` sat at 26%,
 `ollama` at 27% and `anthropic` at 30% -- request building, response mapping and
 error translation almost entirely unexercised, while `providers/bedrock.py`,
 written to the current bar, was at 93%.

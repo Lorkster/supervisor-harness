@@ -101,7 +101,7 @@ class Event:
 
 # A dispatch table by nature, and the longest function in the codebase: 123
 # statements across 48 branches. Recorded as finding Q-A2 rather than
-# suppressed -- see docs/quality-assessment.md.
+# suppressed -- see docs/history/quality-assessment.md.
 def _orphan(state: RunState, event_type: EventType, target: str) -> None:
     """Record an event whose branch exists but whose target does not.
 

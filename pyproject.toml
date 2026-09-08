@@ -42,7 +42,7 @@ supervisor_harness = ["integrations/*.json", "integrations/*/*.md", "integration
 
 # Ruff, configured in batch 4a and driven to **zero findings** in 4b-4. CI runs
 # `ruff check` and fails on anything, which it can only do because the set is
-# actually clean -- see docs/quality-assessment.md for how it was chosen.
+# actually clean -- see docs/quality-standard.md for the set and why it is that one.
 #
 # Widening the set later means driving the new rule to zero in the same batch.
 # Do not reintroduce a tolerated baseline: a permanent backlog is not a

@@ -7,7 +7,7 @@ the same thing by a term. Both true, and both downstream of the real gap:
 keys, and no schema anywhere let an agent contribute one. Two agents could not
 disagree about a term because neither could state one.
 
-`docs/shared-context-spec.md` is the design this implements, including the three
+`docs/history/shared-context-spec.md` is the design this implements, including the three
 choices that were open when it was written.
 """
 

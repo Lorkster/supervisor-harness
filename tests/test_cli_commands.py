@@ -1,6 +1,6 @@
 """Every CLI command, through `main()`, at the level a user actually types.
 
-Findings **Q-C2** and **Q-A3** of `docs/quality-assessment.md`. `cli.py` was the
+Findings **Q-C2** and **Q-A3** of `docs/history/quality-assessment.md`. `cli.py` was the
 second-largest module, **42% covered**, and the least tested of the large ones --
 while being, with `mcp_server.py`, one of the two boundaries a user touches
 directly.

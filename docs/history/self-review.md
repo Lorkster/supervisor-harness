@@ -12,7 +12,7 @@
 >
 > For what is true now, read [`../reasoning-control-plane.md`](../reasoning-control-plane.md)
 > (what the harness is), [`../architecture.md`](../architecture.md) (how a run
-> works) and [`../quality-assessment.md`](../quality-assessment.md) (the standard
+> works) and [`../quality-standard.md`](../quality-standard.md) (the standard
 > it is held to).
 
 A working document, meant to be picked up by a session that was not present when
@@ -1403,7 +1403,7 @@ Landed on `feat/shared-context`. The last open dimension of the control-plane
 assessment. **The design was specified before any code**, per the note that
 scheduled it; the spec, the three choices it left open, what was decided and
 where the implementation departed from it are all in
-`docs/shared-context-spec.md`.
+`docs/history/shared-context-spec.md`.
 
 ## The assessment described a consistency problem in an empty store
 
