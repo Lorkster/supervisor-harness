@@ -148,7 +148,9 @@ def test_a_dispatch_is_measured_from_handout_to_answer() -> None:
     timing = measure(events, now="2026-09-07T10:00:40Z")
 
     assert timing.total_seconds == 40
-    assert timing.dispatched_seconds == 30
+    assert timing.busy_seconds == 30
+    assert timing.agent_seconds == 30, "one dispatch: effort and wall clock agree"
+    assert timing.idle_seconds == 10
     assert timing.by_kind == {"analysis": 30.0}
     assert timing.slowest is not None and timing.slowest.agent_id == "agt_1"
 
@@ -168,10 +170,91 @@ def test_an_unanswered_dispatch_is_waiting_rather_than_elapsed() -> None:
     timing = measure(events, now="2026-09-07T10:05:10Z")
 
     assert timing.dispatches == []
-    assert timing.dispatched_seconds == 0
+    assert timing.busy_seconds == 0
+    assert timing.agent_seconds == 0
     assert [s.agent_id for s in timing.waiting] == ["agt_gone"]
     assert timing.waiting[0].seconds == 300
     assert "1 still out" in timing.summary()
+
+
+def _fan_out(*, serial: bool) -> list[Event]:
+    """Four lenses dispatched together, run one way or the other.
+
+    Same work, same agent-seconds; the only difference is the wall clock.
+    """
+    events = [_event(0, EventType.PHASE_CHANGED, "2026-09-07T10:00:00Z",
+                     {"phase": "analyzing"})]
+    for i in range(4):
+        start = f"2026-09-07T10:{i * 5 if serial else 0:02d}:00Z"
+        end = f"2026-09-07T10:{(i + 1) * 5 if serial else 5:02d}:00Z"
+        events.append(_event(2 * i + 1, EventType.AGENT_DISPATCHED, start,
+                             {"agent_id": f"agt_{i}", "kind": "analysis"}))
+        events.append(_event(2 * i + 2, EventType.TURN_RECORDED, end,
+                             {"turn": {"agent_id": f"agt_{i}"}}))
+    return events
+
+
+def test_overlapping_dispatches_are_unioned_rather_than_added() -> None:
+    """The defect this module shipped with, as the number that exposed it.
+
+    `dispatched_seconds` was the sum, and the sum of overlapping intervals is
+    not a duration -- four lenses working five minutes each in parallel reported
+    twenty minutes of a five-minute run. Nothing raised: the figure it produced
+    for a real 53-minute run was a plausible 98.6% of wall clock against a true
+    52.8%, and every conclusion drawn from it pointed the wrong way.
+    """
+    timing = measure(_fan_out(serial=False), now="2026-09-07T10:05:00Z")
+
+    assert timing.total_seconds == 300
+    assert timing.busy_seconds == 300
+    assert timing.agent_seconds == 1200, "the effort really was twenty minutes"
+    assert timing.idle_seconds == 0, "the sum would have made this minus fifteen minutes"
+    assert timing.concurrency == 4.0
+
+
+def test_the_same_work_run_one_at_a_time_reads_as_concurrency_one() -> None:
+    """Busy and idle cannot tell these apart; concurrency is the column that can.
+
+    A fan-out that fanned out and one the host queued cost the same agent
+    seconds and leave the same trace in every other number here.
+    """
+    timing = measure(_fan_out(serial=True), now="2026-09-07T10:20:00Z")
+
+    assert timing.total_seconds == 1200
+    assert timing.busy_seconds == 1200
+    assert timing.agent_seconds == 1200
+    assert timing.concurrency == 1.0
+
+
+def test_busy_never_exceeds_the_run_however_many_agents_are_out() -> None:
+    """The invariant the sum broke, stated so a future change cannot re-break it.
+
+    An idle time derived from a busy time above elapsed is negative, which is
+    how this was eventually noticed -- in the offline tool, not here.
+    """
+    for serial in (True, False):
+        timing = measure(_fan_out(serial=serial))
+        assert timing.busy_seconds <= timing.total_seconds
+        assert timing.idle_seconds >= 0
+
+
+def test_a_dispatch_wholly_inside_another_adds_nothing_to_busy() -> None:
+    """Containment, not just partial overlap: the case a naive merge miscounts."""
+    events = [
+        _event(1, EventType.AGENT_DISPATCHED, "2026-09-07T10:00:00Z",
+               {"agent_id": "agt_long", "kind": "analysis"}),
+        _event(2, EventType.AGENT_DISPATCHED, "2026-09-07T10:00:10Z",
+               {"agent_id": "agt_short", "kind": "analysis"}),
+        _event(3, EventType.TURN_RECORDED, "2026-09-07T10:00:20Z",
+               {"turn": {"agent_id": "agt_short"}}),
+        _event(4, EventType.TURN_RECORDED, "2026-09-07T10:01:00Z",
+               {"turn": {"agent_id": "agt_long"}}),
+    ]
+
+    timing = measure(events, now="2026-09-07T10:01:00Z")
+
+    assert timing.busy_seconds == 60
+    assert timing.agent_seconds == 70
 
 
 def test_phases_are_measured_between_their_changes() -> None:

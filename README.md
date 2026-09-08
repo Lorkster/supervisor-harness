@@ -663,9 +663,12 @@ are this project's, and pinning to another project's evolving version would buy
 compatibility with consumers that do not exist yet.
 
 `supervisor status` adds two things worth reading afterwards. **`timing`** says
-where the wall clock went — total, how much of it was agents working, per phase,
-per kind, and the slowest dispatch — folded from the log's own timestamps rather
-than recorded separately. **`assists`** counts what the harness had to repair
+where the wall clock went — total, busy, idle, agent-seconds, concurrency, per
+phase, per kind, and the slowest dispatch — folded from the log's own timestamps
+rather than recorded separately. Busy and agent-seconds are separate numbers on
+purpose: dispatches overlap, so their sum measures effort and only their union
+measures wall clock, and dividing one by the other says how many agents were
+really running at once. **`assists`** counts what the harness had to repair
 before each answer could be used: JSON dug out of prose, a list boxed into an
 object, a dependency named by title and resolved to an id. Those repairs are all
 the right behaviour, and they were all invisible; a run where the harness fixed
@@ -682,19 +685,46 @@ python tools/where_the_time_went.py <workspace>/.supervisor/runs/<run_id>/events
 
 ```
 by phase                 elapsed      busy      idle   agent-s   conc
-  analyzing              1391.6s   1391.6s      0.0s   1364.8s   0.98
+  analyzing              1391.6s   1364.8s     26.8s   1364.8s   1.00
   synthesizing            447.6s    446.8s      0.8s    446.8s   1.00
 ```
 
 `conc` is the column to read first: the average number of agents actually
-running at once. Four independent lenses reporting `conc 0.98` ran one after
-another, whatever the dispatch asked for.
+running at once. Four independent lenses reporting `conc 1.00` ran one after
+another, whatever the dispatch asked for — `busy` equal to `agent-s` is the same
+fact stated twice.
 
 No prompt, no findings, no task titles, no file paths — the output is safe to
 read out loud, which is the point of it. Standard library only and no import of
 this package, so it also runs on a machine with an older build, or none. The
 `idle` column is what it is for: a phase close to the dispatches inside it was
 busy, and one far above them was waiting.
+
+Its companion answers the other question — not why a run was slow but why it
+stopped moving:
+
+```bash
+python tools/where_the_turns_went.py <workspace>/.supervisor/runs/<run_id>/events.jsonl
+```
+
+```
+by agent            sent   turns  repeat  said-done  status      directives
+  analysis#1           6     6/6        5          0  stopped     continue x6
+  analysis#2           6     6/6        0          0  stopped     refocus x2, continue x4
+  execution#1          3     0/10       0          0  unknown     -
+```
+
+Three different stalls, one table. `analysis#1` spent a six-turn budget on one
+answer reported six times — an orchestrator that lost track of what it had
+already handed back, which is what a context compaction does to one. `analysis#2`
+did six turns of real work and was never accepted. `execution#1` was handed the
+same packet three times and never answered at all, which costs no budget and so
+appears nowhere else.
+
+Same promise as the timing tool, and one more: an agent's `role` is written by
+the planning model out of your prompt, so the table shows kinds and ordinals
+(`analysis#1`) and never roles or ids. Turn contents are hashed to count
+repeats and never printed.
 
 Because the reasoning is on disk, you can ask cross-run questions:
 

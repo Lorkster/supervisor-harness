@@ -529,11 +529,21 @@ the wall clock actually goes.
 > evidence is what changed.
 >
 > A real run under Claude Code, 53 minutes, 344 events
-> ([#62](https://github.com/Lorkster/supervisor-harness/issues/62)):
-> **98.6% of the wall clock was inside dispatches.** The only idle in the run was
-> `awaiting_approval` at 338s, which is a person reading. There is nothing for
-> `race()` to save, and the reactive half of this batch is **declined** — not
-> deferred again. See "Decided against".
+> ([#62](https://github.com/Lorkster/supervisor-harness/issues/62)): **at most
+> 83% of the wall clock was inside dispatches**, and the largest single idle was
+> `awaiting_approval` at 338s, which is a person reading. There is nothing much
+> for `race()` to save, and the reactive half of this batch is **declined** —
+> not deferred again. See "Decided against".
+>
+> > **Corrected 2026-09-08.** This said 98.6%, from adding the dispatches up:
+> > 3132.7s of a 3176.4s run. The dispatches overlap, so their sum is not a
+> > duration — `executing` alone reported 1145.2s of dispatch inside an 822.1s
+> > phase, which is where the arithmetic showed itself as *minus* 323 seconds of
+> > idle. Bounding each phase's busy time by the smaller of its sum and its
+> > elapsed time gives at most 2633.7s, or 83%. The conclusion is unchanged and
+> > the margin is smaller than it read. `core/timing.py` had the same defect and
+> > is fixed; the numbers below are per-phase and were never summed across
+> > phases, so they stand.
 >
 > What the same measurement found instead is below, as batch 9 rewritten. The
 > process-group discipline survives unchanged: it was always justified on
@@ -637,11 +647,11 @@ terms of its own judgement. The narrow version worth revisiting later is letting
 a *verified* check be promoted into the definition-of-done check library under a
 gate of the same kind.
 
-**Reactive supervision (`race()`)** — measured at approximately zero. Batch 9
+**Reactive supervision (`race()`)** — measured at close to zero. Batch 9
 originally deferred it pending evidence; the evidence arrived
-([#62](https://github.com/Lorkster/supervisor-harness/issues/62)) and says
-98.6% of a real run's wall clock is inside dispatches, with the only idle being
-a person at the approval gate. Deterministic pull-based delivery stays, and it
+([#62](https://github.com/Lorkster/supervisor-harness/issues/62)) and bounds a
+real run's dispatched time at 83% of its wall clock, with the largest idle by
+far being a person at the approval gate. Deterministic pull-based delivery stays, and it
 keeps the property that made it worth defending: the whole conversation replays
 from the log. Revisit only if a run ever shows a phase far longer than the
 dispatches inside it — the `idle` column exists to say so.
