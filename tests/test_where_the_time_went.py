@@ -111,7 +111,7 @@ def test_the_output_is_only_numbers_stage_names_and_kinds(tmp_path: Path) -> Non
         # the labels
         "events", "total", "elapsed", "busy", "agent-seconds", "across", "dispatch",
         "es", "never", "answered", "by", "phase", "kind", "idle", "agent-s", "conc",
-        "n", "slowest", "s",
+        "n", "slowest", "issued", "over", "s",
         # the sentence explaining `busy`
         "wall", "time", "with", "at", "least", "one", "agent", "out",
         # the only run-derived words there are: a phase name and an agent kind
@@ -220,6 +220,21 @@ def test_a_fan_out_that_did_not_fan_out_reads_as_concurrency_one() -> None:
     assert "agent-seconds       1200.0s" in parallel
     assert "total elapsed       1200.0s" in serial
     assert "total elapsed        300.0s" in parallel
+
+
+def test_the_spread_of_handouts_says_who_serialised_a_fan_out() -> None:
+    """`conc 1.0` says a fan-out did not fan out. It does not say whose fault
+
+    that is, and the two answers live in different repositories. Four lenses
+    handed out together and run one at a time were serialised by the host; four
+    handed out twenty minutes apart were serialised by the harness. The spread
+    between first and last handout separates them.
+    """
+    serial = "\n".join(wtw.summarise(_fan_out(serial=True)))
+    parallel = "\n".join(wtw.summarise(_fan_out(serial=False)))
+
+    assert "analysis          1200.0s    4     300.0s      900.0s" in serial
+    assert "analysis          1200.0s    4     300.0s        0.0s" in parallel
 
 
 def test_overlapping_dispatches_never_produce_negative_idle() -> None:

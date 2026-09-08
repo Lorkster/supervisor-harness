@@ -54,6 +54,12 @@ which is fine until dispatches overlap and then goes negative -- reporting
 parallelism as a mystery. The union is the honest figure and the sum is the
 useful one beside it.
 
+**issued over** is the spread between the first and last handout of that kind,
+and it says whose serialisation a low `conc` is. Four lenses issued over 0.0s
+and run one at a time were handed out together and serialised by the host. Four
+issued over twenty minutes were serialised by the harness, one packet at a time,
+and that is a different bug in a different place.
+
 One thing the log cannot say, and that no amount of reading it will fix: both
 ends of a dispatch are stamped when the *host* calls the harness. A sub-agent
 that thought for seven minutes and a sub-agent that finished in two whose caller
@@ -218,14 +224,18 @@ def summarise(events: list[dict[str, object]]) -> list[str]:
             f"{seconds:8.1f}s {conc:6.2f}"
         )
 
-    out += ["", "by kind             total    n    slowest"]
+    out += ["", "by kind             total    n    slowest    issued over"]
     by_kind: dict[str, list[float]] = collections.defaultdict(list)
+    issued: dict[str, list[str]] = collections.defaultdict(list)
     for agent_kind, _, start, end in spans:
         by_kind[agent_kind].append(_elapsed(start, end))
+        issued[agent_kind].append(start)
     for agent_kind, seconds_list in sorted(by_kind.items(), key=lambda kv: -sum(kv[1])):
+        handouts = sorted(issued[agent_kind])
+        spread = _elapsed(handouts[0], handouts[-1]) if len(handouts) > 1 else 0.0
         out.append(
             f"  {agent_kind:<16} {sum(seconds_list):7.1f}s "
-            f"{len(seconds_list):4d} {max(seconds_list):9.1f}s"
+            f"{len(seconds_list):4d} {max(seconds_list):9.1f}s {spread:10.1f}s"
         )
     return out
 
