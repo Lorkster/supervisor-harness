@@ -17,9 +17,10 @@ import os
 import shutil
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from ..ids import now_iso
 from ..ids import older_than as _older_than
@@ -30,6 +31,8 @@ from .eventlog import EventLog, FileLock
 from .events import Event, EventType, _apply_contained, fold
 from .index import RunIndex
 from .redaction import redact
+
+T = TypeVar("T")
 
 HOME_ENV = "SUPERVISOR_HOME"
 DEFAULT_DIRNAME = ".supervisor"
@@ -401,6 +404,17 @@ class RunStore:
                     prior.statement.strip().lower() == lesson.statement.strip().lower()
                     and prior.target == lesson.target
                 ):
+                    if prior.archived:
+                        # Learned again after being retired. The evidence has
+                        # changed, so the judgement should: reviving is right,
+                        # and the row keeps the fact that it happened.
+                        prior.archived = False
+                        prior.archived_reason = (
+                            f"revived after being re-learned; previously: "
+                            f"{prior.archived_reason}"
+                        )
+                        prior.confidence = max(prior.confidence, 0.5)
+                    prior.runs_since_confirmed = 0
                     prior.occurrences = min(max_occurrences, prior.occurrences + 1)
                     prior.confidence = min(1.0, max(prior.confidence, lesson.confidence) + 0.05)
                     prior.updated_at = now_iso()
@@ -423,6 +437,28 @@ class RunStore:
             encoding="utf-8",
         )
         tmp.replace(self.lessons_path)
+
+    def update_lessons(
+        self, transform: Callable[[list[Lesson]], tuple[list[Lesson], T]]
+    ) -> T:
+        """Read-modify-rewrite the library under its lock, and return what the
+        transform decided.
+
+        The lock is the same advisory one `add_lesson` takes, for the same
+        reason: this is a read-modify-rewrite of one file, and two runs
+        finishing at once would otherwise have the second discard the first's
+        work.
+
+        A callback rather than a method that knows what consolidation *is*.
+        `store` sits below `core` and must not reach up into it -- durability
+        that depended on supervision would be untestable on its own, and
+        `tests/test_architecture.py` enforces it. So the store owns the file and
+        the lock, and the caller owns the policy for what a library should keep.
+        """
+        with FileLock(self.lessons_path.with_suffix(".jsonl.lock")):
+            kept, result = transform(self.lessons())
+            self._rewrite_lessons(kept)
+        return result
 
     def prune_lessons(self, *, max_age_days: int = DEFAULT_LESSON_MAX_AGE_DAYS) -> int:
         """Drop lessons past the age cap. Returns how many went.
@@ -467,6 +503,10 @@ class RunStore:
         hits = [
             le for le in self.lessons()
             if le.target.lower() in wanted
+            # An archived lesson keeps its row so the library can say it was
+            # once learned and later retired. It does not reach a brief: that
+            # is what retiring it meant.
+            and not le.archived
             and not _older_than(le.updated_at or le.created_at, max_age_days)
         ]
         here = str(workspace or "")

@@ -85,8 +85,16 @@ removed since — so the statement reads as the writer's snapshot rather than as
 the current state. Resolution is strict path lookup and never evaluation: a fact
 is written by a model onto a board other agents read.
 
-**6. It learns.** Failures that better briefing would have prevented become
-lessons, stored across runs and injected into future briefs for that role.
+**6. It learns, and forgets.** Failures that better briefing would have
+prevented become lessons, stored across runs and injected into future briefs for
+that role. At the end of each run the library is consolidated: rows saying the
+same thing are folded together, a lesson this run re-learned has its clock
+reset, and one that has gone unconfirmed for long enough loses confidence and is
+eventually retired — kept, with the reason, so that "never learned" and "learned
+and later judged stale" stay different facts. The clock is **runs since last
+confirmed** in a workspace that knows the lesson, not wall-clock age: a lesson
+about a subsystem nobody has touched is not less true for having been left
+alone, and a run in a project that never learned it is not evidence about it.
 
 ---
 
@@ -250,7 +258,7 @@ shorthand for something the CLI will not tell you itself.
 | `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
 | `trajectory [RUN]` | export the run as a portable trajectory document | `-o FILE` |
 | `runs` | list recent runs in this store | `-n/--limit` (default 20) |
-| `lessons` | show what previous runs taught the harness | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit` |
+| `lessons` | show what previous runs taught the harness, including the ones it has retired | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit`; `--live-only` to hide retired ones |
 | `providers` | show stage routing and whether each provider answers | — |
 | `reindex` | rebuild `index.sqlite3` from the event logs | — |
 | `delete [RUN]` | **remove runs from disk** and their rows from the index | a run id, or `--older-than DAYS`; `--keep-last N` never deletes the N most recent (default 5) |
@@ -636,6 +644,9 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |
 | `allow_command_execution` | false | Let the harness run commands itself |
 | `apply_lessons` | true | Inject past lessons into briefs |
+| `lesson_decay_after_runs` | 10 | Runs a lesson may go unconfirmed before its confidence falls |
+| `lesson_decay_per_run` | 0.05 | How much it falls per run past that |
+| `lesson_confidence_floor` | 0.15 | Below this a lesson is retired — kept, with the reason, but not briefed |
 
 One setting sits beside `policy` rather than inside it, because it decides how
 a packet is carried rather than how hard the supervisor pushes back:
@@ -691,6 +702,7 @@ src/supervisor_harness/
     envelope.py    the run's scope grant, and attenuation down the delegation chain
     facts.py       whether a fact one agent established is still true when another reads it
     blackboard.py  shared context, message routing, contradiction detection
+    consolidate.py keeping the lessons library worth reading: merge, decay, retire
     journal.py     the decision journal `supervisor explain` renders
     tools.py       sandboxed workspace tools for autonomous agents
     paths.py       path normalisation and scope matching
