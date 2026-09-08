@@ -532,20 +532,33 @@ def test_an_mcp_file_the_user_already_has_keeps_its_other_servers(
     assert (cwd / ".mcp.json").read_text(encoding="utf-8") == "{ not json at all"
 
 
-def test_init_does_not_overwrite_without_force(
+def test_init_refreshes_a_component_but_never_the_users_config(
     cwd: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A user's edited skill file is theirs; clobbering it silently is not on."""
+    """This test used to assert the opposite, and the opposite was the bug.
+
+    It read: "a user's edited skill file is theirs; clobbering it silently is
+    not on", and treated the skill as configuration. It is not. It is the
+    harness's instructions to the host, shipped with the package and read on
+    every run, so a copy that stays behind a release quietly drives the wrong
+    protocol -- which is what happened, at a cost of three context compactions
+    in one run. `--keep-integrations` is now how someone claims a component as
+    their own.
+
+    Kept here because this is where a user meets `init`; the split between
+    component, registration and settings is worked through in
+    `tests/test_init_refresh.py`.
+    """
     assert run_cli(cwd, "init", "--host", "claude") == 0
     skill = cwd / ".claude" / "skills" / "supervise" / "SKILL.md"
     skill.write_text("my own notes\n", encoding="utf-8")
+    config = (cwd / "supervisor.config.json").read_text(encoding="utf-8")
     capsys.readouterr()
 
     assert run_cli(cwd, "init", "--host", "claude") == 0
-    assert skill.read_text(encoding="utf-8") == "my own notes\n"
 
-    assert run_cli(cwd, "init", "--host", "claude", "--force") == 0
     assert skill.read_text(encoding="utf-8") != "my own notes\n"
+    assert (cwd / "supervisor.config.json").read_text(encoding="utf-8") == config
 
 
 # -- main() itself -----------------------------------------------------------
