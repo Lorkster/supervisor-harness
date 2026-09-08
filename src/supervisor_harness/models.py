@@ -644,6 +644,20 @@ class Lesson:
     target: str = ""         # role id, "supervisor", "dod", or a skill name
     confidence: float = 0.5
     occurrences: int = 1
+    # Runs in a workspace that knows this lesson which did not re-learn it.
+    # The clock consolidation decays against, and deliberately not wall-clock
+    # time: a lesson about a subsystem nobody has touched is not less true for
+    # having been left alone, while the same lesson under daily churn may be
+    # stale in a fortnight. Only workspaces that learned it count -- a run
+    # elsewhere had no opportunity to re-learn it, so its silence says nothing.
+    runs_since_confirmed: int = 0
+    # Retired rather than removed. The library is a record of what the harness
+    # has learned, and deleting a row would make "never learned" and "learned,
+    # then judged stale" indistinguishable -- and leave the next run free to
+    # learn it again with nothing saying it had already been retired once.
+    archived: bool = False
+    archived_at: str = ""
+    archived_reason: str = ""
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
 
@@ -760,6 +774,9 @@ class RunState:
     # report describes, and it is the sharpest signal there is about a provider.
     # Totals only -- the per-answer detail stays on the log. See `assists`.
     assists: dict[str, int] = field(default_factory=dict)
+    # What the last consolidation pass over the lessons library did. Written at
+    # the end of a run, when the library is what this run left it as.
+    consolidation: dict[str, Any] = field(default_factory=dict)
     checkpoints: list[Checkpoint] = field(default_factory=list)
     lessons: list[Lesson] = field(default_factory=list)
     # Files the run wrote, latest write per path, so replay can recover them

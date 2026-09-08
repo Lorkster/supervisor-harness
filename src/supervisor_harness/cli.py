@@ -789,6 +789,12 @@ def cmd_lessons(args: argparse.Namespace) -> int:
             store.lessons_for([args.target], args.limit, workspace=workspace)
             if args.target else store.lessons()
         )
+        # `lessons_for` already withholds retired rows, because withholding them
+        # from a brief is what retiring one means. The unfiltered listing
+        # answers a different question -- what has this library learned, ever --
+        # so retired rows appear there, marked, unless the reader says otherwise.
+        if args.live_only:
+            lessons = [le for le in lessons if not le.archived]
         if args.json:
             from .serde import to_jsonable
 
@@ -799,12 +805,20 @@ def cmd_lessons(args: argparse.Namespace) -> int:
             return 0
         for lesson in sorted(lessons, key=lambda le: (le.occurrences, le.confidence), reverse=True):
             origin = lesson.origin_label(workspace)
-            print(f"\n[{lesson.category}] -> {lesson.target}  "
+            state = "RETIRED " if lesson.archived else ""
+            unconfirmed = (
+                f", {lesson.runs_since_confirmed} run(s) unconfirmed"
+                if lesson.runs_since_confirmed else ""
+            )
+            print(f"\n{state}[{lesson.category}] -> {lesson.target}  "
                   f"(seen {lesson.occurrences}x, confidence {lesson.confidence:.2f}, "
-                  f"learned {'here' if origin == 'here' else 'in ' + origin})")
+                  f"learned {'here' if origin == 'here' else 'in ' + origin}"
+                  f"{unconfirmed})")
             print(f"  {lesson.statement}")
             if lesson.how_to_apply:
                 print(f"  apply: {lesson.how_to_apply}")
+            if lesson.archived_reason:
+                print(f"  retired: {lesson.archived_reason}")
         return 0
 
 
@@ -1030,6 +1044,8 @@ def _add_read_commands(sub: Any, common: argparse.ArgumentParser) -> None:
                    help="filter to a role id, 'supervisor', 'dod', or '*'")
     p.add_argument("-n", "--limit", type=int, default=20,
                    help="how many to show, most recent first (default: 20)")
+    p.add_argument("--live-only", action="store_true",
+                   help="hide lessons that have been retired")
     p.set_defaults(func=cmd_lessons)
 
     p = sub.add_parser("providers", parents=[common], help="show model routing and provider health")

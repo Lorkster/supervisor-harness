@@ -5,8 +5,9 @@
 > **Progress.** Batches 1 ([#53](https://github.com/Lorkster/supervisor-harness/pull/53))
 > 2 ([#54](https://github.com/Lorkster/supervisor-harness/pull/54)) and
 > 3 ([#55](https://github.com/Lorkster/supervisor-harness/pull/55)) and
-> 4 ([#56](https://github.com/Lorkster/supervisor-harness/pull/56)) are merged.
-> Batch 5 is open. Nothing below has been edited to match what happened;
+> 4 ([#56](https://github.com/Lorkster/supervisor-harness/pull/56)) and
+> 5 ([#57](https://github.com/Lorkster/supervisor-harness/pull/57)) are merged.
+> Batch 6 is open. Nothing below has been edited to match what happened;
 > where a batch measured something the plan only estimated, the measurement
 > is added beneath it and the estimate is left standing.
 
@@ -376,6 +377,33 @@ here — a lesson about a subsystem nobody has touched in three months is not le
 true. Decay against *runs in that workspace since the lesson was last
 confirmed*, and let a lesson contradicted by a later run be superseded rather
 than merely faded.
+
+> **Done.** The clock is runs-since-confirmed, counted only in workspaces that
+> *know* the lesson -- a run in project B is not evidence about a lesson learned
+> in project A, because it had no opportunity to re-learn it. Wall-clock age
+> stays as the outer bound that removes rows, so the library still cannot grow
+> forever in a store nobody runs against.
+>
+> Superseding turned out to be the one step that cannot be deterministic:
+> contradiction is not mechanically detectable, and two sentences disagreeing
+> about how to scope a brief look exactly like two sentences about different
+> things. So it is the optional reasoner step, and the pipeline is ordered so
+> that it is the *only* step that needs a judgement. Every other step, and
+> twenty-one of the twenty-two tests, run with no model involved.
+>
+> Merging is still exact-after-normalisation -- case, whitespace, trailing
+> punctuation -- and deliberately no fuzzier. "Do not X" and "Don't X" stay two
+> rows. `normalise_fact_key` refuses a similarity merge one module over because
+> a bad merge silently destroys a distinction while fragmentation is merely
+> visible; a lesson is a sentence rather than a key, so the temptation is
+> stronger and the argument is identical.
+>
+> Two guards caught real mistakes on the way. Putting consolidation on the store
+> made `store` depend on `core`, which `test_architecture.py` refuses --
+> durability must not depend on supervision, so the store now takes a transform
+> callback and the policy stays in `core`. And reading which lessons a run
+> confirmed by scanning the log tripped the guard against full-log rescans; the
+> fold already keeps exactly that in `state.lessons`.
 
 ## Batch 7 — `supervisor audit`
 

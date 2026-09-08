@@ -64,6 +64,7 @@ class EventType(StrEnum):
     REPORT_WRITTEN = "report_written"
     CHECKPOINT_RECORDED = "checkpoint_recorded"
     LESSON_LEARNED = "lesson_learned"
+    LESSONS_CONSOLIDATED = "lessons_consolidated"
     ARTIFACT_WRITTEN = "artifact_written"
     NOTE = "note"
     RUN_ENDED = "run_ended"
@@ -249,6 +250,16 @@ def _on_assists_recorded(state: RunState, event: Event) -> None:
         state.assists[str(kind)] = state.assists.get(str(kind), 0) + int(count)
 
 
+def _on_lessons_consolidated(state: RunState, event: Event) -> None:
+    """The last consolidation pass, kept whole rather than accumulated.
+
+    One pass per run, at the end of it, so there is nothing to sum: what the
+    reader wants is what this run's pass did, and a running total across
+    resumes would answer a question nobody asked.
+    """
+    state.consolidation = {k: v for k, v in event.payload.items() if k != "ops"}
+
+
 def _on_message_sent(state: RunState, event: Event) -> None:
     p = event.payload
     _upsert(state.messages, from_jsonable(p["message"], Message))
@@ -379,6 +390,7 @@ _HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
     EventType.FINDING_ADDED: _on_finding_added,
     EventType.DIRECTIVE_ISSUED: _on_directive_issued,
     EventType.DRIFT_ASSESSED: _on_drift_assessed,
+    EventType.LESSONS_CONSOLIDATED: _on_lessons_consolidated,
     EventType.ASSISTS_RECORDED: _on_assists_recorded,
     EventType.MESSAGE_SENT: _on_message_sent,
     EventType.MESSAGE_DELIVERED: _on_message_delivered,

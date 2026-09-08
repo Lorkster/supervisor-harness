@@ -84,6 +84,7 @@ from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import phases
 from .baseline import git_baseline
+from .consolidate import consolidate
 from .dod import verify_criterion
 from .drift import (
     should_escalate,
@@ -867,7 +868,7 @@ class Supervisor:
     async def _run_improvement(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
         if not self.config.policy.learn_from_failures:
-            return self.reporting._complete(session)
+            return self._finish(session)
 
         for lesson in phases.mechanical_lessons(state):
             self._record_lesson(session, lesson)
@@ -879,7 +880,7 @@ class Supervisor:
             a.role == "improver" and a.status is AgentStatus.DONE for a in state.agents.values()
         )
         if already_ran:
-            return self.reporting._complete(session)
+            return self._finish(session)
 
         if self.lifecycle._delegated(stage):
             agent = await self.lifecycle._stage_agent(session, "improver", stage)
@@ -889,7 +890,7 @@ class Supervisor:
                 await session.anote(
                     "improvement stage abandoned; ending with the mechanical lessons"
                 )
-                return self.reporting._complete(session)
+                return self._finish(session)
             system, user = phases.lessons_prompt(state, checkpoint)
             packet = self.packets._stage_packet(
                 session, agent, system, user, LESSONS_SCHEMA, "improvement"
@@ -905,15 +906,51 @@ class Supervisor:
             data = await self.supervision._call(stage, system, user, LESSONS_SCHEMA)
         except Exception as exc:  # noqa: BLE001 - never fail a run over the learning pass
             await session.anote(f"improvement stage skipped: {exc}")
-            return self.reporting._complete(session)
+            return self._finish(session)
 
         for lesson in parse_lessons(data, state.id, state.workspace):
             self._record_lesson(session, lesson)
-        return self.reporting._complete(session)
+        return self._finish(session)
 
     def _record_lesson(self, session: RunSession, lesson: Any) -> None:
         stored = self.store.add_lesson(lesson)
         session.emit(EventType.LESSON_LEARNED, {"lesson": to_jsonable(stored)})
+
+    def _finish(self, session: RunSession) -> SupervisorResponse:
+        """Consolidate what the library now holds, then complete the run.
+
+        Here rather than on a schedule because this is the moment the library
+        changed and the moment the run's own contribution to it is known: which
+        lessons this run re-learned is what resets their clock, and nothing
+        outside the run can reconstruct that afterwards.
+
+        Never fatal. A run that produced verified work does not fail because the
+        pass that tidies the lesson library could not run.
+        """
+        # From the fold, not from the log. `_on_lesson_learned` upserts exactly
+        # the lessons this run recorded, so `state.lessons` already *is* the
+        # answer -- and rescanning the largest file the harness writes to
+        # recover something the projection kept is the regression
+        # `test_the_supervisor_reads_turns_from_state_not_by_rescanning_the_log`
+        # exists to catch. It caught this.
+        confirmed = [le.id for le in session.state.lessons if le.id]
+        try:
+            report = self.store.update_lessons(
+                lambda library: consolidate(
+                    library,
+                    policy=self.config.policy,
+                    workspace=session.state.workspace,
+                    confirmed=[c for c in confirmed if c],
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - tidying is not the run's job
+            session.note(f"lesson consolidation skipped: {exc}")
+        else:
+            if report:
+                session.emit(
+                    EventType.LESSONS_CONSOLIDATED, report.to_payload()
+                )
+        return self.reporting._complete(session)
 
     # ------------------------------------------------------------------
     # Turn reporting and supervision

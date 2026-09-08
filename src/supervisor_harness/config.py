@@ -128,6 +128,15 @@ class Policy:
     # Improvement loop
     learn_from_failures: bool = True
     apply_lessons: bool = True
+    # How consolidation ages the library. The clock is runs-since-confirmed in a
+    # workspace that knows the lesson, not wall-clock time -- see
+    # `core/consolidate.py` for why. Nothing decays inside the grace period: a
+    # lesson is not weaker for having fired in the previous run and not this one.
+    lesson_decay_after_runs: int = 10
+    lesson_decay_per_run: float = 0.05
+    # Below this, a lesson is archived. Not deleted: `lesson_max_age_days` is
+    # still the outer bound that actually removes rows.
+    lesson_confidence_floor: float = 0.15
     max_lessons_in_brief: int = 6
     # Bounds on the shared lessons library. It is deliberately cross-workspace,
     # so it needs an edge: a lesson older than this is not applied and is dropped
