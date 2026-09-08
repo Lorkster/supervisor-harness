@@ -644,6 +644,26 @@ the right behaviour, and they were all invisible; a run where the harness fixed
 forty answers is not the run the report otherwise describes, and it is the
 sharpest signal there is about a provider.
 
+Where a run's data cannot leave the machine it happened on, there is a tool that
+reads the log and prints **only** durations, counts, phase names and agent
+kinds:
+
+```bash
+python tools/where_the_time_went.py <workspace>/.supervisor/runs/<run_id>/events.jsonl
+```
+
+```
+by phase                 elapsed   in dispatches      idle
+  synthesizing            420.0s      415.0s        5.0s
+  analyzing               180.0s       48.0s      132.0s
+```
+
+No prompt, no findings, no task titles, no file paths — the output is safe to
+read out loud, which is the point of it. Standard library only and no import of
+this package, so it also runs on a machine with an older build, or none. The
+`idle` column is what it is for: a phase close to the dispatches inside it was
+busy, and one far above them was waiting.
+
 Because the reasoning is on disk, you can ask cross-run questions:
 
 ```sql
