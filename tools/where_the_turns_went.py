@@ -25,11 +25,15 @@ Kind is a fixed vocabulary; role is not.
 ## The columns
 
 **sent** is how many packets were handed out to the agent, and **turns** is how
-many came back, against the agent's budget. Equal turns and budget are an agent
-that used everything it had, which is the case this tool is for. `sent` well
-above `turns` is the other stall: a packet issued over and over to an agent that
-never answered it, which costs no budget at all and looks identical from
-outside.
+many came back, against the agent's budget. `sent` well above `turns` is one
+stall: a packet issued over and over to an agent that never answered it, which
+costs no budget at all and looks identical from outside.
+
+An agent at its budget is only counted as **out of turns** if it was also never
+settled -- no terminal directive, no finishing status. Synthesizers and
+verifiers have a budget of one, so counting every agent at its budget made two
+thirds of a normal run look like a stall, which is a count that cannot report
+the thing it was written for.
 
 **repeat** counts turns whose reported content is byte-for-byte a turn this
 agent already reported. The harness cannot reject those: the turn contract
@@ -50,6 +54,12 @@ the column that separates the two ways a budget is spent: `continue x5` is an
 agent that kept being told it was fine and was never accepted, while
 `refocus x2, reject x1` is a supervisor that kept sending work back. They are
 different bugs in different places.
+
+**drift signals** is the section to read when the directive tally is full of
+corrections. A directive says what the supervisor did; the signal says what it
+was reacting to -- a scope violation, an objective left uncovered, a turn
+repeating the last one. The kinds are fixed strings in `core/drift.py`; the
+`detail` beside them names files and is never read here.
 
 ## What it cannot tell you
 
@@ -74,6 +84,7 @@ READS = (
     "agent_dispatched.agent_id",
     "turn.agent_id", "turn.claimed_status", "turn.output", "turn.reasoning",
     "directive.agent_id", "directive.kind",
+    "assessment.signals[].kind",
     "agent_id", "status",
 )
 
@@ -81,6 +92,10 @@ READS = (
 #: harness's own list of the opposite (`ACTIVE_AGENT_STATUSES`) is not imported,
 #: because this file must run where the package is not installed.
 SETTLED = ("done", "blocked", "failed", "stopped")
+
+#: Directives that end an agent. An agent whose last directive is one of these
+#: was settled deliberately, however much of its budget it had used.
+TERMINAL = ("accept", "stop", "escalate")
 
 
 def _payload(event: dict[str, object]) -> dict[str, object]:
@@ -116,6 +131,7 @@ class Agent:
         self.said_done = 0
         self.status = "unknown"
         self.directives: list[str] = []
+        self.signals: list[str] = []
         self._seen: set[str] = set()
 
     def record(self, turn: dict[str, object]) -> None:
@@ -129,7 +145,28 @@ class Agent:
 
     @property
     def exhausted(self) -> bool:
-        return bool(self.budget) and self.turns >= self.budget
+        """Used the whole budget *and* was never settled.
+
+        The first version of this called any agent at its budget exhausted,
+        which made every one-turn agent -- every synthesizer, every verifier --
+        a suspect. On the first real log it read that was eight of twenty
+        agents, none of which had run out of anything: a budget of one, spent
+        once, is the design working. A count that fires on the normal case
+        cannot report the abnormal one.
+
+        Settled means a terminal directive, or, for the agents that are never
+        issued one, a status that says they finished.
+        """
+        if not self.budget or self.turns < self.budget:
+            return False
+        if self.directives:
+            return self.directives[-1] not in TERMINAL
+        return self.status not in SETTLED
+
+    @property
+    def killed(self) -> bool:
+        """Stopped by the supervisor rather than by its own budget."""
+        return bool(self.directives) and self.directives[-1] == "stop"
 
 
 def fold(events: list[dict[str, object]]) -> tuple[dict[str, Agent], str]:
@@ -162,29 +199,55 @@ def fold(events: list[dict[str, object]]) -> tuple[dict[str, Agent], str]:
                 budget=int(budget) if isinstance(budget, int) else 0,
             )
 
-        elif kind_of_event == "agent_dispatched":
-            agent = agents.get(str(payload.get("agent_id", "")))
-            if agent is not None:
-                agent.sent += 1
-
-        elif kind_of_event == "turn_recorded":
-            turn = _sub(payload, "turn")
-            agent = agents.get(str(turn.get("agent_id", "")))
-            if agent is not None:
-                agent.record(turn)
-
-        elif kind_of_event == "directive_issued":
-            directive = _sub(payload, "directive")
-            agent = agents.get(str(directive.get("agent_id", "")))
-            if agent is not None:
-                agent.directives.append(str(directive.get("kind", "")))
-
-        elif kind_of_event == "agent_status":
-            agent = agents.get(str(payload.get("agent_id", "")))
-            if agent is not None:
-                agent.status = str(payload.get("status", ""))
+        else:
+            _attach(agents, kind_of_event, payload)
 
     return agents, phase
+
+
+def _attach(
+    agents: dict[str, Agent], kind_of_event: str, payload: dict[str, object]
+) -> None:
+    """Fold one agent-scoped event into the agent it names.
+
+    Every branch here shares the same two steps -- find the agent id, find the
+    agent -- and an event naming an agent this log never spawned is dropped: a
+    log copied mid-run can begin after a spawn, and half an agent's history is
+    worse than none of it.
+    """
+    if kind_of_event == "agent_dispatched":
+        agent = agents.get(str(payload.get("agent_id", "")))
+        if agent is not None:
+            agent.sent += 1
+        return
+
+    if kind_of_event == "turn_recorded":
+        turn = _sub(payload, "turn")
+        agent = agents.get(str(turn.get("agent_id", "")))
+        if agent is not None:
+            agent.record(turn)
+        return
+
+    if kind_of_event == "directive_issued":
+        directive = _sub(payload, "directive")
+        agent = agents.get(str(directive.get("agent_id", "")))
+        if agent is not None:
+            agent.directives.append(str(directive.get("kind", "")))
+        return
+
+    if kind_of_event == "drift_assessed":
+        agent = agents.get(str(payload.get("agent_id", "")))
+        signals = _sub(payload, "assessment").get("signals")
+        if agent is not None and isinstance(signals, list):
+            agent.signals += [
+                str(s.get("kind", "")) for s in signals if isinstance(s, dict)
+            ]
+        return
+
+    if kind_of_event == "agent_status":
+        agent = agents.get(str(payload.get("agent_id", "")))
+        if agent is not None:
+            agent.status = str(payload.get("status", ""))
 
 
 def _tally(kinds: list[str]) -> str:
@@ -227,13 +290,16 @@ def summarise(events: list[dict[str, object]]) -> list[str]:
     repeats = sum(a.repeats for a in ordered)
     exhausted = [a for a in ordered if a.exhausted]
 
+    killed = [a for a in ordered if a.killed]
     out = [
         f"events            {len(events)}",
         f"last phase        {phase or 'unknown'}",
         f"agents            {len(ordered)}",
         f"turns recorded    {turns}",
         f"repeat turns      {repeats}  identical to an earlier turn of the same agent",
-        f"out of turns      {len(exhausted)}  agent(s) that used the whole budget",
+        f"out of turns      {len(exhausted)}  agent(s) that spent the budget "
+        "without settling",
+        f"stopped           {len(killed)}  agent(s) halted by the supervisor",
     ]
     if exhausted:
         wasted = sum(a.repeats for a in exhausted)
@@ -262,6 +328,19 @@ def summarise(events: list[dict[str, object]]) -> list[str]:
         every += agent.directives
     if every:
         out += ["", f"directives        {_tally(every)}"]
+
+    # Why the corrections were issued, which the directive tally cannot say. A
+    # run full of `refocus` is a supervisor that kept sending work back, and the
+    # question it raises immediately is what it was reacting to.
+    signalled = [a for a in ordered if a.signals]
+    if signalled:
+        counts: dict[str, list[str]] = {}
+        for agent in signalled:
+            for signal in agent.signals:
+                counts.setdefault(signal, []).append(agent.label)
+        out += ["", "drift signals         n   agents"]
+        for signal, labels in sorted(counts.items(), key=lambda kv: -len(kv[1])):
+            out.append(f"  {signal:<18} {len(labels):>3} {len(set(labels)):>8}")
     return out
 
 
