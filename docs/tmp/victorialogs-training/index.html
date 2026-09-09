@@ -446,7 +446,8 @@ Most people only ever find the second one.</p>
 `, notes:`Live-demo this act if the instance is reachable; fall back to these mocks if not.`});
 
 /* ------------------------------------------------------------------ 8 */
-S({title:'Overview tab — start here', act:'Act II', railr:'Overview tab', html:`
+S({title:'Overview tab — start here', act:'Act II', railr:'Overview tab',
+  flag:'VERIFY against our vmui', html:`
 <h2>Overview: what is in here at all?</h2>
 <p class="sub">The tab everyone skips. It answers <em>what fields exist, how often are they populated, and what
 values do they take</em> &mdash; without writing a single query.</p>
@@ -491,7 +492,8 @@ values do they take</em> &mdash; without writing a single query.</p>
 your logs, and nothing warns you. Demo: pick a field, look at its values, then say "now I know exactly what to type".`});
 
 /* ------------------------------------------------------------------ 9 */
-S({title:'Query tab — anatomy', act:'Act II', railr:'Query tab', html:`
+S({title:'Query tab — anatomy', act:'Act II', railr:'Query tab',
+  flag:'VERIFY against our vmui', html:`
 <h2>Query: the six controls that matter</h2>
 <p class="sub">The query box is the obvious part. The five controls around it are where most of the speed and most
 of the confusion live.</p>
@@ -559,7 +561,8 @@ useful".</p>
 Live mode is also the fastest way to confirm a deploy is emitting logs at all.`});
 
 /* ----------------------------------------------------------------- 11 */
-S({title:'The click-to-filter loop', act:'Act II', railr:'Filters sidebar', html:`
+S({title:'The click-to-filter loop', act:'Act II', railr:'Filters sidebar',
+  flag:'VERIFY against our vmui', html:`
 <h2>Do not type the first query. Click it.</h2>
 <p class="sub"><b>Show filters</b> opens the stream-fields panel: every stream field with a live count, expandable
 into its values. Ticking a value writes the filter into the query box for you.</p>
@@ -604,7 +607,8 @@ into its values. Ticking a value writes the filter into the query box for you.</
 `, notes:`Demo this rather than describe it. The moment where a tick fills in the query box is what converts people.`});
 
 /* ----------------------------------------------------------------- 12 */
-S({title:'The hits chart is a diagnostic', act:'Act II', railr:'Hits chart', html:`
+S({title:'The hits chart is a diagnostic', act:'Act II', railr:'Hits chart',
+  flag:'VERIFY control names', html:`
 <h2>The histogram is not decoration</h2>
 <p class="sub">Above the results sits a bar chart of matching logs over time, with its own controls. Used well it
 answers "when did this start" before you have any idea "what this is".</p>
@@ -1275,6 +1279,9 @@ needs someone with access to the services and the live instance.</p>
     <li><b>Services</b> &mdash; the <span class="k">{...}</span> selector for each, and what its logs look like.</li>
     <li><b>Cookbook</b> &mdash; six real queries for six real questions.</li>
     <li><b>Traps</b> &mdash; the things that have already cost someone an hour.</li>
+    <li><b>The UI slides.</b> Slides 8, 9, 11 and 12 are schematics drawn from the public playground, not from our
+      instance &mdash; every control name on them is a claim to check, and better still to replace with a real
+      screenshot.</li>
    </ul>
    <p class="note" style="margin-top:9px">All of it lives in the <span class="k">CONFIG</span> object at the top of
    <span class="k">index.html</span>. Nothing else needs editing. See <span class="k">HANDOFF.md</span>.</p></div>
@@ -1304,7 +1311,8 @@ var stage=document.getElementById('stage'), cur=0;
 SLIDES.forEach(function(s,i){
   var el=document.createElement('section');
   el.className='slide'+(s.cls?' '+s.cls:'');
-  var rail = s.hero?'':'<div class="rail"><span><b>'+(s.act||'')+'</b>'+(s.act&&s.railr?' &nbsp;/&nbsp; ':'')+(s.railr||'')+'</span><span>'+(i+1)+' / '+SLIDES.length+'</span></div>';
+  var flag = s.flag?'<span class="fill" style="letter-spacing:0;text-transform:none">'+esc(s.flag)+'</span>&nbsp;&nbsp;':'';
+  var rail = s.hero?'':'<div class="rail"><span><b>'+(s.act||'')+'</b>'+(s.act&&s.railr?' &nbsp;/&nbsp; ':'')+(s.railr||'')+'</span><span>'+flag+(i+1)+' / '+SLIDES.length+'</span></div>';
   el.innerHTML = rail + s.html;
   stage.appendChild(el);
 });

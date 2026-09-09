@@ -56,6 +56,43 @@ Use the hosted `mcp-victorialogs` MCP server. Every read tool requires `start` a
 
 ---
 
+## The UI slides need checking — this is a real task, not a polish pass
+
+Slides 8, 9, 11 and 12 carry a **`VERIFY` chip** in the top-right corner. They contain hand-drawn schematic mocks
+of vmui, reconstructed from the **public playground** at `play-vmlogs.victoriametrics.com`, not from our instance.
+They are approximations of layout and control names, not screenshots. Treat every label on them as a claim to be
+checked.
+
+Our instance may differ because of: a different VictoriaLogs version (controls get added and renamed between
+releases — the hits-chart toggles in particular), a theme or a reverse proxy in front of vmui, a Grafana-embedded
+view instead of vmui, or auth that changes what the landing screen shows.
+
+**What to do:**
+
+1. Open our vmui at `vmuiUrl` and screenshot the Overview tab, the Query tab, the filters sidebar expanded, and
+   the hits chart with its controls visible.
+2. Compare against each slide control by control. Specifically confirm these exist and are named as written:
+   - **Slide 8 (Overview):** the three counters (Total logs / Logs per second / Unique log streams), the
+     Fields and Streams sub-tabs, and the **Coverage %** column. The coverage column is load-bearing for the
+     teaching point — if our version does not have it, rewrite that legend item rather than leaving it.
+   - **Slide 9 (Query):** the Limit box, `Show filters`, `Query examples`, `Autocomplete`, `History`, `Execute`,
+     the tenant selector, the time-range picker, and the auto-refresh control.
+   - **Slide 11 (Sidebar):** that the panel is headed **Stream fields**, that each field shows a hit count, that
+     expanding a field lists its values with counts, and that ticking a value writes the filter into the query box.
+     If our sidebar shows all fields rather than only stream fields, fix the slide text.
+   - **Slide 12 (Hits chart):** `Interval`, `Group by`, and the `Cumulative` / `Stats view` / `Stacked` toggles.
+3. Fix what is wrong. Preferred order: **(a)** replace the mock with a real base64-embedded PNG of our UI, keeping
+   the numbered legend beside it and renumbering the badges to match; **(b)** failing that, correct the labels and
+   positions in the existing mock HTML; **(c)** if a control genuinely does not exist for us, delete that legend
+   item rather than teaching a control nobody can find.
+4. Remove the `flag:` line from each slide once it is verified. The counter on slide 1 will drop accordingly.
+
+The **teaching points** on these slides — start from Overview, limit does not make a query cheaper, group the hits
+chart by service to find the culprit — are sound regardless of skin. Keep them. It is the chrome that needs
+checking.
+
+---
+
 ## Rules
 
 1. **Every value comes from a query you actually ran.** Not from the shipper config, not from a manifest, not
@@ -84,6 +121,7 @@ These are not required, but they raise the deck from good to genuinely ours:
 ## Acceptance checklist
 
 - [ ] `grep -c 'FILL' index.html` returns 0 matches inside `CONFIG` and slide prose
+- [ ] Slides 8, 9, 11, 12 checked against our live vmui; every `flag:` line removed
 - [ ] Slide 1 counter reads `All placeholders filled`
 - [ ] Every query in `cookbook[]` has been run against the live instance and returned rows
 - [ ] Every field name mentioned appears in `field_names` output for a real time range
