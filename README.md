@@ -708,18 +708,32 @@ python tools/where_the_turns_went.py <workspace>/.supervisor/runs/<run_id>/event
 ```
 
 ```
+out of turns      0  agent(s) that spent the budget without settling
+stopped           1  agent(s) halted by the supervisor
+
 by agent            sent   turns  repeat  said-done  status      directives
-  analysis#1           6     6/6        5          0  stopped     continue x6
-  analysis#2           6     6/6        0          0  stopped     refocus x2, continue x4
-  execution#1          3     0/10       0          0  unknown     -
+  execution#1          1     3/10       0          3  stopped     narrow, refocus, stop
+  execution#2          1     8/10       0          8  done        refocus x7, accept
+  execution#3          1     1/10       0          1  done        accept
+
+drift signals         n   agents
+  objective_coverage   8        2
+  scope_paths          2        1
 ```
 
-Three different stalls, one table. `analysis#1` spent a six-turn budget on one
-answer reported six times — an orchestrator that lost track of what it had
-already handed back, which is what a context compaction does to one. `analysis#2`
-did six turns of real work and was never accepted. `execution#1` was handed the
-same packet three times and never answered at all, which costs no budget and so
-appears nowhere else.
+Endings that look alike from outside and want different fixes. `execution#1` was
+*halted*, not exhausted: two corrections and a drift score above the hard
+threshold is a stop, with seven turns still on the clock. `execution#2` was
+corrected seven times and accepted on the eighth. `execution#3` did it in one.
+The `said-done` column shows all three claiming they had finished on every
+turn, which is what a one-shot host sub-agent always claims.
+
+The `drift signals` section is the one to read when the directive tally is full
+of corrections: a directive says what the supervisor did, and the signal says
+what it was reacting to. A `repeat` above zero is a different story again — an
+orchestrator reporting the same answer twice, which the harness cannot detect
+because the turn contract carries no turn identifier, and which is exactly what
+a context compaction does to one.
 
 Same promise as the timing tool, and one more: an agent's `role` is written by
 the planning model out of your prompt, so the table shows kinds and ordinals

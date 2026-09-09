@@ -114,7 +114,8 @@ def test_the_output_is_only_numbers_kinds_statuses_and_phase_names() -> None:
         "events", "last", "phase", "agents", "turns", "recorded", "repeat",
         "identical", "to", "an", "earlier", "turn", "of", "the", "same", "agent",
         "out", "budget", "their", "were", "repeats", "by", "said-done", "status",
-        "directives", "s", "whole", "used", "that", "x", "sent",
+        "directives", "s", "x", "sent", "that", "spent", "without", "settling",
+        "halted", "supervisor", "drift", "signals", "n",
         "never", "answered", "handed", "a", "packet", "back", "returned",
         # the only run-derived words there are
         "analyzing", "analysis", "continue", "stopped",
@@ -149,6 +150,87 @@ def test_an_agent_that_used_its_whole_budget_is_counted() -> None:
 
     assert "out of turns      1" in rendered
     assert "3/3" in next(le for le in wtt.summarise(events) if "analysis#1" in le)
+
+
+def test_an_agent_at_its_budget_that_was_accepted_did_not_run_out_of_turns() -> None:
+    """The count's first version fired on the normal case.
+
+    A synthesizer and a verifier are given one turn each, on purpose. Counting
+    every agent at its budget as exhausted made eight of the twenty agents in
+    the first real log this read a suspect, none of which had run out of
+    anything -- and the count exists to find the ones that did.
+    """
+    events = [
+        _spawn("agt_1", "synthesis", 1),
+        _turn("agt_1", "the plan", claimed="done"),
+        _event("agent_status", {"agent_id": "agt_1", "status": "done"}),
+    ]
+
+    assert "out of turns      0" in "\n".join(wtt.summarise(events))
+
+
+def test_an_agent_at_its_budget_still_being_corrected_did_run_out() -> None:
+    """The case it is for: the budget ended the agent, not the supervisor."""
+    events = [
+        _spawn("agt_1", "execution", 2),
+        _turn("agt_1", "one"), _directive("agt_1", "refocus"),
+        _turn("agt_1", "two"), _directive("agt_1", "refocus"),
+    ]
+
+    assert "out of turns      1" in "\n".join(wtt.summarise(events))
+
+
+def test_an_agent_the_supervisor_stopped_is_counted_separately() -> None:
+    """Halted and exhausted are different endings and want different fixes.
+
+    A stop is the drift rules firing twice; running out is a budget that was
+    too small for the work. Folding them together would send anyone reading
+    this to the wrong file.
+    """
+    events = [
+        _spawn("agt_1", "execution", 10),
+        _turn("agt_1", "one"), _directive("agt_1", "narrow"),
+        _turn("agt_1", "two"), _directive("agt_1", "refocus"),
+        _turn("agt_1", "three"), _directive("agt_1", "stop"),
+    ]
+
+    rendered = "\n".join(wtt.summarise(events))
+
+    assert "stopped           1" in rendered
+    assert "out of turns      0" in rendered, "it had seven turns left"
+
+
+def test_the_drift_signals_say_what_the_corrections_were_reacting_to() -> None:
+    """A directive says what the supervisor did; a signal says why.
+
+    `refocus x7` is a fact about the supervisor. Whether it was reacting to a
+    scope violation or to objectives left uncovered is the fact that decides
+    where a fix goes, and it lives one event earlier.
+    """
+    events = [
+        _spawn("agt_1", "analysis", 6),
+        _spawn("agt_2", "analysis", 6),
+        _event("drift_assessed", {"agent_id": "agt_1", "assessment": {"signals": [
+            {"kind": "scope_paths", "detail": "src/acme/secret_ledger.py", "score": 0.85},
+        ]}}),
+        _event("drift_assessed", {"agent_id": "agt_2", "assessment": {"signals": [
+            {"kind": "scope_paths", "detail": "src/acme/secret_ledger.py", "score": 0.85},
+            {"kind": "repetition", "detail": "84% the same", "score": 0.8},
+        ]}}),
+    ]
+
+    rendered = "\n".join(wtt.summarise(events))
+
+    assert "scope_paths          2        2" in rendered
+    assert "repetition           1        1" in rendered
+    assert "secret_ledger" not in rendered, "the detail names files and is not read"
+
+
+def test_a_run_with_no_assessments_prints_no_signal_section() -> None:
+    """An empty table under a heading reads as a finding. It is not one."""
+    assert "drift signals" not in "\n".join(
+        wtt.summarise([_spawn("agt_1", "analysis", 2), _turn("agt_1", "one")])
+    )
 
 
 def test_a_repeated_turn_is_counted_as_a_repeat() -> None:
