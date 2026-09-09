@@ -1,0 +1,1374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Searching Our Logs with VictoriaLogs</title>
+<style>
+:root{
+  --bg:#080b16; --panel:#111730; --panel2:#182042; --panel3:#1f2950;
+  --line:#2a3563; --line2:#3a4880;
+  --ink:#eaeefb; --muted:#98a5c8; --dim:#6a769f;
+  --brand:#7c8cff; --cyan:#2ad4ee; --amber:#fbbf24; --emerald:#34d399;
+  --rose:#fb7185; --violet:#b79cff; --lime:#a3e635;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+body{display:flex;align-items:center;justify-content:center}
+
+#stage{position:relative;width:1280px;height:720px;transform-origin:center center;flex:none}
+.slide{position:absolute;inset:0;background:
+   radial-gradient(1100px 620px at 88% -12%, rgba(124,140,255,.16), transparent 62%),
+   radial-gradient(760px 520px at -8% 108%, rgba(42,212,238,.10), transparent 60%),
+   linear-gradient(180deg,#0c1122 0%, #080b16 100%);
+  border:1px solid var(--line);border-radius:14px;padding:40px 52px 46px;
+  display:none;flex-direction:column;overflow:hidden}
+.slide.on{display:flex;animation:in .28s ease}
+@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.rail{display:flex;align-items:center;justify-content:space-between;font-size:11px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--dim);margin-bottom:12px;flex:none}
+.rail b{color:var(--brand);font-weight:600}
+h1{font-size:50px;line-height:1.06;margin:0 0 12px;letter-spacing:-.022em;font-weight:700}
+h2{font-size:31px;line-height:1.14;margin:0 0 6px;letter-spacing:-.018em;font-weight:650}
+.sub{color:var(--muted);font-size:16px;line-height:1.5;margin:0 0 16px;max-width:104ch}
+.sub em{color:var(--cyan);font-style:normal}
+.body{flex:1;min-height:0;display:flex;flex-direction:column;gap:12px}
+
+.card{background:linear-gradient(180deg,rgba(24,32,66,.9),rgba(17,23,48,.9));border:1px solid var(--line);
+  border-radius:11px;padding:14px 16px}
+.card h3{margin:0 0 7px;font-size:14.5px;letter-spacing:.01em;color:var(--ink);font-weight:640;
+  display:flex;align-items:center;gap:8px}
+.card p{margin:0;font-size:13px;line-height:1.5;color:var(--muted)}
+.card p+p{margin-top:6px}
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-family:var(--mono);
+  padding:3px 9px;border-radius:20px;border:1px solid var(--line2);color:var(--muted);background:rgba(31,41,80,.6)}
+ul.tight{margin:0;padding-left:17px;font-size:13px;line-height:1.6;color:var(--muted)}
+ul.tight li{margin-bottom:3px}
+ul.tight li::marker{color:var(--brand)}
+ul.tight b,.card p b{color:var(--ink);font-weight:600}
+.k{font-family:var(--mono);font-size:12.5px;color:var(--cyan);background:rgba(42,212,238,.09);
+  padding:1px 5px;border-radius:4px;border:1px solid rgba(42,212,238,.2)}
+.note{font-size:12.5px;color:var(--dim);line-height:1.5}
+
+pre.q{font-family:var(--mono);font-size:13px;line-height:1.6;margin:0;padding:10px 12px;
+  background:#070b18;border:1px solid var(--line);border-left:3px solid var(--brand);
+  border-radius:8px;color:#cdd6f4;overflow-x:auto;white-space:pre-wrap;word-break:break-word}
+pre.q.sm{font-size:12px;padding:9px 11px;line-height:1.55}
+pre.q.good{border-left-color:var(--emerald)}
+pre.q.bad{border-left-color:var(--rose);opacity:.92}
+.t-pipe{color:var(--violet);font-weight:600}
+.t-fn{color:var(--amber)}
+.t-sf{color:var(--cyan);font-weight:600}
+.t-str{color:var(--lime)}
+.t-kw{color:var(--rose)}
+.t-op{color:#7d8ab5}
+.t-cm{color:#4d5a85;font-style:italic}
+
+.fill{font-family:var(--mono);font-size:.9em;color:#0a0d18;background:linear-gradient(90deg,#fbbf24,#fcd34d);
+  padding:1px 7px;border-radius:5px;font-weight:600;box-shadow:0 0 0 1px rgba(251,191,36,.4)}
+
+table.t{width:100%;border-collapse:collapse;font-size:12.5px}
+table.t th{text-align:left;font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);
+  padding:0 9px 6px;font-weight:600;border-bottom:1px solid var(--line)}
+table.t td{padding:6px 9px;border-bottom:1px solid rgba(42,53,99,.5);vertical-align:top;color:var(--muted);line-height:1.42}
+table.t tr:last-child td{border-bottom:none}
+table.t code{font-family:var(--mono);font-size:11.8px;color:#a9b8ff;white-space:nowrap}
+table.t td b{color:var(--ink)}
+
+.act{align-items:center;justify-content:center;text-align:center}
+.act .num{font-family:var(--mono);font-size:14px;letter-spacing:.4em;color:var(--brand);margin-bottom:16px}
+.act h1{font-size:58px;max-width:20ch}
+.act .sub{font-size:18px;max-width:58ch;margin:12px auto 0;text-align:center}
+
+.hero{justify-content:center}
+.hero .eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.28em;text-transform:uppercase;
+  color:var(--cyan);margin-bottom:20px}
+.hero h1{font-size:64px;max-width:19ch}
+.hero .sub{font-size:18.5px;max-width:64ch}
+.hero .meta{display:flex;gap:10px;margin-top:24px;flex-wrap:wrap}
+
+.ladder{display:flex;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+.ladder div{flex:1;padding:8px 8px;font-size:11px;text-align:center;font-family:var(--mono);
+  color:#0a0d18;font-weight:650}
+
+.ui{border:1px solid var(--line2);border-radius:9px;overflow:hidden;background:#0b1020;font-size:11px}
+.ui .bar{background:linear-gradient(90deg,#3c4bb8,#4f5fd6);padding:6px 11px;display:flex;align-items:center;
+  gap:12px;color:#fff;font-size:11px;font-weight:600}
+.ui .bar .sp{flex:1}
+.ui .bar .chip{background:rgba(255,255,255,.16);padding:3px 9px;border-radius:5px;font-weight:500}
+.ui .row{display:flex;gap:8px;padding:8px 11px;border-bottom:1px solid var(--line);align-items:center}
+.ui .inp{flex:1;background:#070b18;border:1px solid var(--line2);border-radius:5px;padding:5px 9px;
+  font-family:var(--mono);color:#cdd6f4;font-size:11px}
+.ui .btn{background:var(--brand);color:#0a0d18;padding:4px 12px;border-radius:5px;font-weight:700;font-size:10.5px}
+.ui .btn.gh{background:transparent;border:1px solid var(--line2);color:var(--muted);font-weight:500}
+.ui .tabs{display:flex;gap:2px;padding:6px 11px 0}
+.ui .tabs span{padding:5px 13px;border-radius:6px 6px 0 0;color:var(--dim);font-size:10.5px}
+.ui .tabs span.a{background:var(--panel2);color:var(--cyan);border:1px solid var(--line);border-bottom:none;font-weight:600}
+.ui .hist{display:flex;align-items:flex-end;gap:2.5px;height:46px;padding:8px 11px;background:#0a0f1f}
+.ui .hist i{flex:1;background:linear-gradient(180deg,#4a5ad0,#2b3670);border-radius:2px 2px 0 0}
+.ui .logs{padding:7px 11px;font-family:var(--mono);font-size:10px;color:var(--dim);line-height:1.75}
+.ui .logs b{color:var(--emerald);font-weight:500}
+.ui .side{width:146px;border-right:1px solid var(--line);padding:8px;flex:none}
+.ui .side div{padding:3px 6px;border-radius:4px;color:var(--muted);font-size:10px;display:flex;justify-content:space-between}
+.ui .side div span{color:var(--dim)}
+
+.badge{width:19px;height:19px;border-radius:50%;background:var(--amber);color:#0a0d18;font-size:11px;
+  font-weight:800;display:inline-flex;align-items:center;justify-content:center;flex:none;font-family:var(--mono)}
+.legend{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--muted);line-height:1.42}
+.legend div{display:flex;gap:9px;align-items:flex-start}
+.legend b{color:var(--ink);font-weight:600}
+
+.flow{display:flex;align-items:stretch}
+.step{flex:1;background:linear-gradient(180deg,rgba(24,32,66,.95),rgba(17,23,48,.95));
+  border:1px solid var(--line);padding:12px}
+.step:first-child{border-radius:10px 0 0 10px}
+.step:last-child{border-radius:0 10px 10px 0}
+.step+.step{border-left:none}
+.step .n{font-family:var(--mono);font-size:10px;color:var(--brand);letter-spacing:.14em;margin-bottom:5px}
+.step h4{margin:0 0 5px;font-size:13.5px;font-weight:640}
+.step p{margin:0;font-size:11.8px;line-height:1.48;color:var(--muted)}
+.step code{font-family:var(--mono);font-size:11px;color:var(--cyan);display:block;margin-top:6px;word-break:break-all}
+
+#hud{position:fixed;bottom:10px;right:14px;display:flex;align-items:center;gap:11px;
+  font-family:var(--mono);font-size:11px;color:var(--dim);z-index:40}
+#hud kbd{border:1px solid var(--line2);border-radius:4px;padding:1px 5px;color:var(--muted);font-size:10px}
+#prog{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--brand),var(--cyan));z-index:41;transition:width .25s}
+#notes{position:fixed;left:0;right:0;bottom:0;max-height:40vh;overflow:auto;background:rgba(11,16,32,.96);
+  border-top:1px solid var(--line2);padding:16px 26px;font-size:14px;line-height:1.6;color:var(--muted);
+  z-index:50;display:none}
+#notes b{color:var(--ink)}
+#notes .h{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand);margin-bottom:6px}
+#grid{position:fixed;inset:0;background:rgba(8,11,22,.97);z-index:60;overflow:auto;padding:24px;
+  display:none;grid-template-columns:repeat(5,1fr);gap:11px;align-content:start}
+#grid.on{display:grid}
+#grid .th{border:1px solid var(--line);border-radius:7px;padding:10px;cursor:pointer;background:var(--panel);
+  font-size:11px;line-height:1.35;color:var(--muted);min-height:60px}
+#grid .th:hover{border-color:var(--brand);color:var(--ink)}
+#grid .th i{font-family:var(--mono);color:var(--brand);font-style:normal;font-size:9.5px;display:block;margin-bottom:4px}
+#grid .th.cur{border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan)}
+
+@media print{
+  html,body{overflow:visible;height:auto;display:block}
+  #hud,#prog,#notes,#grid{display:none!important}
+  #stage{transform:none!important;width:1280px;height:auto}
+  .slide{display:flex!important;position:relative;page-break-after:always;margin:0 0 10px;border-radius:0;
+    width:1280px;height:720px}
+}
+</style>
+</head>
+<body>
+<div id="prog"></div>
+<div id="stage"></div>
+<div id="notes"></div>
+<div id="grid"></div>
+<div id="hud">
+  <span><kbd>&larr;</kbd><kbd>&rarr;</kbd></span>
+  <span><kbd>g</kbd> grid</span>
+  <span><kbd>n</kbd> notes</span>
+  <span id="count">1 / 1</span>
+</div>
+<script>
+/* =====================================================================
+   EDIT ME.  Everything site-specific about OUR deployment lives here.
+   Replace every {{FILL: ...}} with the real value.  Nothing else in this
+   file needs to change.  See HANDOFF.md next to this file.
+   ===================================================================== */
+const CONFIG = {
+  org:            "{{FILL: team or org name}}",
+  vlUrl:          "{{FILL: https://logs.internal.example.com}}",
+  vmuiUrl:        "{{FILL: https://logs.internal.example.com/select/vmui/}}",
+  mcpUrl:         "{{FILL: https://vl-mcp.internal.example.com/mcp}}",
+  tenant:         "{{FILL: 0:0 or the AccountID:ProjectID we use}}",
+  retention:      "{{FILL: e.g. 30d}}",
+  volume:         "{{FILL: e.g. ~40 GB/day, ~120M entries/day}}",
+  clusterOrSingle:"{{FILL: single-node or cluster}}",
+  shipper:        "{{FILL: e.g. OpenTelemetry Collector / Vector / Fluent Bit}}",
+
+  // The fields that actually form _stream in our deployment, most-used first.
+  streamFields: [
+    { name: "{{FILL: stream field 1}}", desc: "{{FILL: what it identifies}}", card: "{{FILL: approx cardinality}}" },
+    { name: "{{FILL: stream field 2}}", desc: "{{FILL: what it identifies}}", card: "{{FILL: approx cardinality}}" },
+    { name: "{{FILL: stream field 3}}", desc: "{{FILL: what it identifies}}", card: "{{FILL: approx cardinality}}" }
+  ],
+
+  // Non-stream fields people search on constantly.
+  keyFields: [
+    { name: "{{FILL: level field, e.g. log.level}}", vals: "{{FILL: e.g. debug|info|warn|error}}", desc: "{{FILL}}" },
+    { name: "{{FILL: trace/correlation id field}}",  vals: "{{FILL: format}}",  desc: "{{FILL}}" },
+    { name: "{{FILL: http status field}}",           vals: "{{FILL: e.g. 200..599}}", desc: "{{FILL}}" },
+    { name: "{{FILL: latency field + unit}}",        vals: "{{FILL: e.g. ms as number}}", desc: "{{FILL}}" }
+  ],
+
+  // Is _msg structured JSON, logfmt, or free text? Per service if it varies.
+  msgShape: "{{FILL: describe _msg — JSON already unpacked at ingest? logfmt? free text?}}",
+
+  // Our services, as they appear in the stream fields above.
+  services: [
+    { name: "{{FILL: service}}", stream: "{{FILL: {app=\"...\"} selector}}", notes: "{{FILL: what its logs look like}}" },
+    { name: "{{FILL: service}}", stream: "{{FILL: {app=\"...\"} selector}}", notes: "{{FILL: what its logs look like}}" },
+    { name: "{{FILL: service}}", stream: "{{FILL: {app=\"...\"} selector}}", notes: "{{FILL: what its logs look like}}" }
+  ],
+
+  // Real queries for real questions we ask. Keep the "why" short and concrete.
+  cookbook: [
+    { q: "{{FILL: LogsQL for 'what is erroring right now'}}",              why: "{{FILL: when to reach for it}}" },
+    { q: "{{FILL: LogsQL for 'follow one request across services'}}",      why: "{{FILL}}" },
+    { q: "{{FILL: LogsQL for 'error rate per service over the last day'}}",why: "{{FILL}}" },
+    { q: "{{FILL: LogsQL for 'slowest endpoints'}}",                       why: "{{FILL}}" },
+    { q: "{{FILL: LogsQL for 'what changed after the deploy at T'}}",      why: "{{FILL}}" },
+    { q: "{{FILL: LogsQL for 'noisiest log line, candidates for dropping'}}", why: "{{FILL}}" }
+  ],
+
+  gotchas: [
+    "{{FILL: a real trap in our logs — a field that is a string not a number, a service that double-encodes JSON, a renamed field, a shipper that drops a field, etc.}}",
+    "{{FILL: second gotcha}}",
+    "{{FILL: third gotcha}}"
+  ]
+};
+
+/* =====================================================================
+   Rendering engine.  You should not need to touch anything below here.
+   ===================================================================== */
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+
+/* {{FILL: ...}} -> highlighted chip */
+function fills(s){
+  return String(s).replace(/\{\{FILL:?\s*([^}]*)\}\}/g, function(_,t){
+    return '<span class="fill">'+esc(t.trim()||'FILL')+'</span>';
+  });
+}
+
+/* LogsQL syntax highlighting */
+var HL_RE = new RegExp([
+  '(#[^\\n]*)',
+  '("[^"]*"|\'[^\']*\')',
+  '(\\|\\s*[a-z_]+)',
+  '(\\b(?:_time|_msg|_stream_id|_stream)\\b)',
+  '(\\b(?:count_uniq_hash|count_uniq|count_empty|count|sum_len|sum|avg|min|max|median|quantile|stddev|rate_sum|rate|histogram|uniq_values|json_values|values|row_any|row_min|row_max|field_min|field_max|round|abs|ceil|floor)\\s*\\()',
+  '(\\b(?:AND|OR|NOT|by|as|if|in|not_in|offset|desc|asc|from|with|hits|rank|partition|options|where|before|after|time_window|preserve_keys|keep_original_fields|skip_empty_results|result_prefix)\\b)'
+].join('|'),'g');
+
+function hl(src){
+  var stash=[], i=0;
+  var s = String(src).replace(/\{\{FILL:?\s*([^}]*)\}\}/g,function(_,t){
+    stash.push(t.trim()||'FILL'); return ''+(i++)+'';
+  });
+  s = esc(s).replace(HL_RE, function(m,cm,str,pipe,sf,fn,kw){
+    if(cm!==undefined) return '<span class="t-cm">'+cm+'</span>';
+    if(str!==undefined) return '<span class="t-str">'+str+'</span>';
+    if(pipe!==undefined){
+      var bar=pipe.slice(0,1), rest=pipe.slice(1);
+      return '<span class="t-op">'+bar+'</span><span class="t-pipe">'+rest+'</span>';
+    }
+    if(sf!==undefined) return '<span class="t-sf">'+sf+'</span>';
+    if(fn!==undefined) return '<span class="t-fn">'+fn+'</span>';
+    if(kw!==undefined) return '<span class="t-kw">'+kw+'</span>';
+    return m;
+  });
+  return s.replace(/(\d+)/g,function(_,n){
+    return '<span class="fill">'+esc(stash[+n])+'</span>';
+  });
+}
+function q(code,cls){return '<pre class="q '+(cls||'')+'">'+hl(code)+'</pre>';}
+function qs(code,cls){return '<pre class="q sm '+(cls||'')+'">'+hl(code)+'</pre>';}
+
+var SLIDES=[];
+function S(o){SLIDES.push(o);}
+
+/* text helper: escape then turn {{FILL}} into a chip */
+function F(s){return fills(esc(s));}
+
+/* ------------------------------------------------------------------ 1 */
+S({title:'Title', hero:true, cls:'hero', html:`
+<div class="eyebrow">Internal training &middot; VictoriaLogs</div>
+<h1>Searching our logs<br>without guessing</h1>
+<p class="sub">A working knowledge of the VictoriaLogs UI, the LogsQL query language, and how to point an
+agent at our logs so it finds the answer in three calls instead of thirty.</p>
+<div class="meta">
+  <span class="pill">${F(CONFIG.vmuiUrl)}</span>
+  <span class="pill">retention ${F(CONFIG.retention)}</span>
+  <span class="pill">${F(CONFIG.volume)}</span>
+  <span class="pill">MCP ${F(CONFIG.mcpUrl)}</span>
+</div>
+<div style="margin-top:22px"><span id="fillcount" class="pill" style="border-width:1px">&nbsp;</span></div>
+`, notes:`Open with the pain: someone pastes a stack trace in Slack and three people start grepping different places.
+The promise of this session is that by the end everyone can go from a symptom to the exact log line, and can hand the
+same job to an agent. <b>Housekeeping:</b> arrows to move, <b>g</b> for the slide grid, <b>n</b> for these notes.`});
+
+/* ------------------------------------------------------------------ 2 */
+S({title:'What you will leave with', act:'Agenda', html:`
+<h2>Four things, in order</h2>
+<p class="sub">Each act stands on the one before it. The mental model is short but it is the part that makes
+everything else obvious &mdash; do not skip it.</p>
+<div class="body">
+  <div class="grid g4" style="flex:1">
+    <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>I &middot; Model</h3>
+      <p>What a log <b>is</b> to VictoriaLogs: a flat JSON object, four special fields, and a <b>stream</b>.
+      Streams are the whole performance story.</p></div>
+    <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>II &middot; The UI</h3>
+      <p>The two screens in <b>vmui</b>: <b>Overview</b> to find out what exists, <b>Query</b> to interrogate it.
+      Four result modes and when each one is right.</p></div>
+    <div class="card"><h3><span class="dot" style="background:var(--violet)"></span>III &middot; LogsQL</h3>
+      <p><b>Filters</b> pick the logs, <b>pipes</b> transform and count them. A ladder of filters from fastest to
+      slowest, and the pipes worth memorising.</p></div>
+    <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>IV &middot; Agents</h3>
+      <p>The 13 MCP tools, the discovery loop that keeps an agent cheap and honest, and the prompt patterns that
+      stop it dumping 10,000 lines into its context.</p></div>
+  </div>
+  <p class="note">Everything specific to our deployment is highlighted <span class="fill">like this</span>.
+  Those values live in one <span class="k">CONFIG</span> block at the top of this file.</p>
+</div>
+`, notes:`Set expectations on timing: roughly 10 / 15 / 25 / 15 minutes. Tell people the deck is a file in the repo,
+so it doubles as the reference they will come back to.`});
+
+/* ------------------------------------------------------------------ 3 */
+S({title:'Act I — the mental model', cls:'act', act:'', html:`
+<div class="num">ACT I</div>
+<h1>The mental model</h1>
+<p class="sub">Three ideas. If you hold these, LogsQL stops being syntax you look up and starts being
+something you can reason about.</p>
+`, notes:`Deliberately slow down here. Most bad queries come from a wrong model of the storage, not from a typo.`});
+
+/* ------------------------------------------------------------------ 4 */
+S({title:'A log entry is flat JSON + 4 special fields', act:'Act I', railr:'Data model', html:`
+<h2>Every log entry is one flat JSON object</h2>
+<p class="sub">Nested JSON is flattened at ingest by joining keys with dots. Numbers, booleans and arrays become
+strings. <em>Every field is indexed</em>, so filtering on a field is always cheaper than searching the message text.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div>
+   ${q(`{
+  "_time":   "2026-09-09T10:14:22.581Z",
+  "_msg":    "upstream timeout after 30s",
+  "_stream": "{app=\\"checkout\\",pod=\\"checkout-7d9\\"}",
+  "_stream_id": "0000007b000001c850d99...",
+
+  "log.level":  "error",
+  "trace_id":   "9c3f1a0e77b4",
+  "http.status": "504",
+  "duration_ms": "30014"
+}`)}
+   <p class="note" style="margin-top:10px">A shipper sent <span class="k">{"http":{"status":504}}</span>;
+   VictoriaLogs stored it as <span class="k">http.status="504"</span>.</p>
+  </div>
+  <div class="grid" style="gap:10px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>_time</h3>
+     <p>The timestamp. Drives every time filter and lets VictoriaLogs skip whole days of data without reading them.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>_msg</h3>
+     <p>The message. Searched by default when you type a bare word. In our logs: ${F(CONFIG.msgShape)}</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>_stream / _stream_id</h3>
+     <p>Which instance emitted this. <b>The index that makes queries fast</b> &mdash; next slide.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>everything else</h3>
+     <p>Ordinary fields. <b>Prefer them over text search</b>: <span class="k">trace_id:="9c3f"</span> beats hunting
+     for the id inside <span class="k">_msg</span>.</p></div>
+  </div>
+ </div>
+</div>
+`, notes:`The flattening rule surprises people: they look for <b>http.status</b> and type <b>http:status</b>.
+Also stress the last card — the single most common inefficiency is full-text searching for something that is
+already a field.`});
+
+/* ------------------------------------------------------------------ 5 */
+S({title:'Log streams are the index', act:'Act I', railr:'Streams', html:`
+<h2>Log streams: the one lever that changes query cost</h2>
+<p class="sub">Logs are stored grouped <em>per stream, ordered by time</em>. A stream filter lets VictoriaLogs skip
+entire blocks instead of scanning them. A time filter plus a stream filter is the difference between milliseconds
+and minutes.</p>
+<div class="body">
+ <div class="grid g3" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>What belongs in a stream</h3>
+    <p>Fields that <b>identify an instance and never change during its life</b>: app, namespace, pod, node, container.</p>
+    ${qs(`{app="checkout", pod="checkout-7d9"}`,'good')}</div>
+  <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>What must never be</h3>
+    <p>High-cardinality values: <b>ip, user_id, trace_id, request_id</b>. Putting them in a stream degrades
+    memory, CPU, disk and query speed &mdash; badly.</p>
+    ${qs(`{trace_id="9c3f1a0e77b4"}   # never`,'bad')}</div>
+  <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>How you use it</h3>
+    <p>The <span class="k">{...}</span> filter goes anywhere in the query and is always worth adding. It is
+    equivalent to <span class="k">app:="checkout"</span> but far faster.</p>
+    ${qs(`_time:1h {app="checkout"} error`,'good')}</div>
+ </div>
+ <div class="card" style="border-color:var(--line2)">
+  <h3><span class="dot" style="background:var(--amber)"></span>Our stream fields</h3>
+  <table class="t"><thead><tr><th>Field</th><th>Identifies</th><th>Approx. distinct values</th></tr></thead><tbody>
+  ${CONFIG.streamFields.map(function(f){return '<tr><td><code>'+F(f.name)+'</code></td><td>'+F(f.desc)+'</td><td>'+F(f.card)+'</td></tr>';}).join('')}
+  </tbody></table>
+ </div>
+</div>
+`, notes:`Analogy that lands: a stream is a single log file on a single machine. VictoriaLogs keeps one sorted file
+per stream; naming the stream is telling it which files to open. Ask the room to name a field they would be
+tempted to add to the stream and why it would be a disaster.`});
+
+/* ------------------------------------------------------------------ 6 */
+S({title:'Our deployment', act:'Act I', railr:'Our setup', html:`
+<h2>What we actually run</h2>
+<p class="sub">The numbers that decide whether a query is reasonable, and the fields you will type most often.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div class="card">
+   <h3><span class="dot" style="background:var(--brand)"></span>Instance</h3>
+   <table class="t"><tbody>
+    <tr><td><b>UI</b></td><td>${F(CONFIG.vmuiUrl)}</td></tr>
+    <tr><td><b>API base</b></td><td>${F(CONFIG.vlUrl)}</td></tr>
+    <tr><td><b>Topology</b></td><td>${F(CONFIG.clusterOrSingle)}</td></tr>
+    <tr><td><b>Tenant</b></td><td>${F(CONFIG.tenant)}</td></tr>
+    <tr><td><b>Retention</b></td><td>${F(CONFIG.retention)}</td></tr>
+    <tr><td><b>Volume</b></td><td>${F(CONFIG.volume)}</td></tr>
+    <tr><td><b>Shipper</b></td><td>${F(CONFIG.shipper)}</td></tr>
+   </tbody></table>
+  </div>
+  <div class="card">
+   <h3><span class="dot" style="background:var(--cyan)"></span>Fields you will use every day</h3>
+   <table class="t"><thead><tr><th>Field</th><th>Values</th><th>Use it for</th></tr></thead><tbody>
+   ${CONFIG.keyFields.map(function(f){return '<tr><td><code>'+F(f.name)+'</code></td><td>'+F(f.vals)+'</td><td>'+F(f.desc)+'</td></tr>';}).join('')}
+   </tbody></table>
+  </div>
+ </div>
+ <div class="card" style="border-color:rgba(251,191,36,.35)">
+  <h3><span class="dot" style="background:var(--amber)"></span>Traps in our data &mdash; learn these before you lose an hour</h3>
+  <ul class="tight">${CONFIG.gotchas.map(function(g){return '<li>'+F(g)+'</li>';}).join('')}</ul>
+ </div>
+</div>
+`, notes:`This is the slide people will screenshot. Read the traps out loud; each one is an hour someone already lost.`});
+
+/* ------------------------------------------------------------------ 7 */
+S({title:'Act II — the UI', cls:'act', html:`
+<div class="num">ACT II</div>
+<h1>Driving vmui</h1>
+<p class="sub">Two screens. One tells you what exists, the other lets you ask questions about it.
+Most people only ever find the second one.</p>
+`, notes:`Live-demo this act if the instance is reachable; fall back to these mocks if not.`});
+
+/* ------------------------------------------------------------------ 8 */
+S({title:'Overview tab — start here', act:'Act II', railr:'Overview tab', html:`
+<h2>Overview: what is in here at all?</h2>
+<p class="sub">The tab everyone skips. It answers <em>what fields exist, how often are they populated, and what
+values do they take</em> &mdash; without writing a single query.</p>
+<div class="body">
+ <div class="grid" style="grid-template-columns:1.35fr 1fr;flex:1">
+  <div class="ui">
+   <div class="bar"><span>VMUI</span><span style="opacity:.7">Query</span><span style="border-bottom:2px solid #fff">Overview</span><span class="sp"></span><span class="chip">${F(CONFIG.tenant)}</span><span class="chip">Last 5 minutes</span></div>
+   <div class="row" style="gap:11px">
+     <div style="flex:1;border:1px solid var(--line);border-radius:6px;padding:7px 9px"><div style="color:var(--dim);font-size:9.5px">TOTAL LOGS</div><div style="font-size:17px;font-weight:700">2,115</div></div>
+     <div style="flex:1;border:1px solid var(--line);border-radius:6px;padding:7px 9px"><div style="color:var(--dim);font-size:9.5px">LOGS/SEC (AVG)</div><div style="font-size:17px;font-weight:700">7.05</div></div>
+     <div style="flex:1;border:1px solid var(--line);border-radius:6px;padding:7px 9px"><div style="color:var(--dim);font-size:9.5px">UNIQUE STREAMS</div><div style="font-size:17px;font-weight:700">28</div></div>
+   </div>
+   <div class="hist"><i style="height:40%"></i><i style="height:72%"></i><i style="height:55%"></i><i style="height:88%"></i><i style="height:61%"></i><i style="height:47%"></i><i style="height:95%"></i><i style="height:66%"></i><i style="height:52%"></i><i style="height:78%"></i><i style="height:44%"></i><i style="height:69%"></i></div>
+   <div class="tabs"><span class="a">Fields</span><span>Streams</span></div>
+   <div style="display:flex;border-top:1px solid var(--line)">
+     <div style="flex:1;padding:8px 11px">
+       <div style="color:var(--dim);font-size:9.5px;margin-bottom:5px">FIELD NAME &nbsp;&nbsp; HITS &nbsp;&nbsp; COVERAGE %</div>
+       <div class="logs" style="padding:0">collector <b>2,115</b> &nbsp; 100%<br>host.name <b>1,440</b> &nbsp; 68%<br>k8s.namespace.name <b>1,440</b> &nbsp; 68%<br>k8s.pod.name <b>1,440</b> &nbsp; 68%<br>log.level <b>1,982</b> &nbsp; 94%</div>
+     </div>
+     <div style="flex:1;padding:8px 11px;border-left:1px solid var(--line)">
+       <div style="color:var(--dim);font-size:9.5px;margin-bottom:5px">FIELD VALUES &nbsp; MODE: TOP &nbsp; TOP N: 10</div>
+       <div class="logs" style="padding:0;color:var(--dim)">select a field name to see values</div>
+     </div>
+   </div>
+  </div>
+  <div class="legend" style="justify-content:center">
+   <div><span class="badge">1</span><span><b>Three counters.</b> Total logs, logs/sec and <b>unique streams</b> for the
+     selected range. A sudden jump in unique streams usually means someone put a high-cardinality field into the stream.</span></div>
+   <div><span class="badge">2</span><span><b>Hits histogram.</b> Volume over time. Use it to spot the moment
+     something started before you know what it is.</span></div>
+   <div><span class="badge">3</span><span><b>Fields table.</b> Every field name with hit count and
+     <b>coverage %</b> &mdash; how many logs actually carry it. Coverage tells you whether a field is safe to
+     filter on or will silently drop most of your logs.</span></div>
+   <div><span class="badge">4</span><span><b>Field values.</b> Click a field, get its top values. This is how you
+     learn that our level field says <span class="k">WARN</span> and not <span class="k">warning</span>.</span></div>
+   <div><span class="badge">5</span><span><b>Streams tab.</b> The list of live streams &mdash; your menu of
+     <span class="k">{...}</span> selectors.</span></div>
+  </div>
+ </div>
+</div>
+`, notes:`The coverage column is the hidden gem. Filtering on a field with 68% coverage silently excludes a third of
+your logs, and nothing warns you. Demo: pick a field, look at its values, then say "now I know exactly what to type".`});
+
+/* ------------------------------------------------------------------ 9 */
+S({title:'Query tab — anatomy', act:'Act II', railr:'Query tab', html:`
+<h2>Query: the six controls that matter</h2>
+<p class="sub">The query box is the obvious part. The five controls around it are where most of the speed and most
+of the confusion live.</p>
+<div class="body">
+ <div class="grid" style="grid-template-columns:1.35fr 1fr;flex:1">
+  <div class="ui">
+   <div class="bar"><span>VMUI</span><span style="border-bottom:2px solid #fff">Query</span><span style="opacity:.7">Overview</span><span class="sp"></span><span class="chip">${F(CONFIG.tenant)}</span><span class="chip">Last 5 minutes</span><span class="chip">auto-refresh: Off</span></div>
+   <div class="row"><div class="inp">_time:1h {app="checkout"} error | stats by (log.level) count()</div>
+     <div style="width:64px"><div style="color:var(--dim);font-size:9px">LIMIT</div><div class="inp" style="padding:3px 6px">50</div></div></div>
+   <div class="row"><span class="btn gh">Show filters</span><span class="sp" style="flex:1"></span>
+     <span class="btn gh">Query examples</span><span class="btn gh">Autocomplete: Off</span><span class="btn gh">History</span><span class="btn">Execute</span></div>
+   <div class="row" style="border-bottom:none;padding-bottom:2px"><span class="pill" style="font-size:10px">Total: 2,255</span>
+     <span class="pill" style="font-size:10px">Interval: 15s</span><span class="pill" style="font-size:10px">Group by: none</span>
+     <span class="sp" style="flex:1"></span><span class="pill" style="font-size:10px">Cumulative</span><span class="pill" style="font-size:10px">Stats view</span><span class="pill" style="font-size:10px">Stacked</span></div>
+   <div class="hist"><i style="height:38%"></i><i style="height:70%"></i><i style="height:52%"></i><i style="height:91%"></i><i style="height:58%"></i><i style="height:44%"></i><i style="height:80%"></i><i style="height:63%"></i><i style="height:49%"></i><i style="height:74%"></i><i style="height:41%"></i><i style="height:66%"></i></div>
+   <div class="tabs" style="border-top:1px solid var(--line)"><span class="a">Group</span><span>Table</span><span>JSON</span><span>Live</span></div>
+   <div class="logs" style="border-top:1px solid var(--line)">10:14:22.581 <b>ERROR</b> upstream timeout after 30s<br>10:14:22.604 <b>ERROR</b> circuit breaker open for payments<br>10:14:23.110 <b>WARN</b>&nbsp; retry 2/3 for POST /checkout</div>
+  </div>
+  <div class="legend" style="justify-content:center">
+   <div><span class="badge">1</span><span><b>Time range picker</b> (top right). Set it <b>before</b> you think about
+     the query &mdash; it is the biggest single factor in how long the query takes.</span></div>
+   <div><span class="badge">2</span><span><b>Limit.</b> Caps rows returned. It does <b>not</b> make the search cheaper,
+     it only truncates the answer. Narrow the filter instead.</span></div>
+   <div><span class="badge">3</span><span><b>Show filters.</b> Opens the stream-fields sidebar &mdash; the click-to-filter
+     loop on the next slide.</span></div>
+   <div><span class="badge">4</span><span><b>History</b> and <b>Query examples.</b> History is per-browser and is the
+     fastest way back to last week's query. Autocomplete is off by default; turn it on while you are learning.</span></div>
+   <div><span class="badge">5</span><span><b>Hits bar.</b> Interval, <b>Group by</b>, and the Cumulative / Stats view /
+     Stacked toggles. Explained two slides on.</span></div>
+   <div><span class="badge">6</span><span><b>Result modes.</b> Group / Table / JSON / Live &mdash; next slide.</span></div>
+  </div>
+ </div>
+</div>
+`, notes:`Hammer point 2. People set limit=10 and think they made the query cheap. The query still scans the same
+range; limit only decides how much comes back.`});
+
+/* ----------------------------------------------------------------- 10 */
+S({title:'Four result modes', act:'Act II', railr:'Result modes', html:`
+<h2>Group, Table, JSON, Live &mdash; pick deliberately</h2>
+<p class="sub">Same query, four presentations. Choosing the wrong one is why people think a query "returned nothing
+useful".</p>
+<div class="body">
+ <div class="grid g4" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>Group</h3>
+    <p>Rows grouped by <b>stream fields</b>. The default, and right for reading a narrative: you see which
+    instance said what, in order.</p>
+    <p><b>Use when</b> you are following one incident.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>Table</h3>
+    <p>Flat table, one column per field. Pair it with <span class="k">| fields</span> to get exactly the columns
+    you want and nothing else.</p>
+    <p><b>Use when</b> comparing many logs on a few attributes, or after a <span class="k">stats</span> pipe.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--violet)"></span>JSON</h3>
+    <p>The raw response from <span class="k">/select/logsql/query</span>. Every field, unformatted.</p>
+    <p><b>Use when</b> a field is missing and you need to know whether it was never sent or is just not displayed.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>Live</h3>
+    <p>Live tail, like <span class="k">tail -f</span>. Backed by <span class="k">/select/logsql/tail</span>.</p>
+    <p><b>Constraint:</b> no <span class="k">stats</span>, <span class="k">sort</span>, <span class="k">limit</span>
+    or <span class="k">offset</span> pipes &mdash; it is a stream, so it cannot aggregate.</p></div>
+ </div>
+ <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>The trap</h3>
+  <p>Logs come back in <b>arbitrary order</b> unless you ask for order. If a result set looks shuffled, you forgot
+  <span class="k">| sort by (_time)</span> &mdash; the storage is not obliged to hand them over chronologically.</p></div>
+</div>
+`, notes:`The arbitrary-order point catches everyone once. It is a deliberate performance choice, not a bug.
+Live mode is also the fastest way to confirm a deploy is emitting logs at all.`});
+
+/* ----------------------------------------------------------------- 11 */
+S({title:'The click-to-filter loop', act:'Act II', railr:'Filters sidebar', html:`
+<h2>Do not type the first query. Click it.</h2>
+<p class="sub"><b>Show filters</b> opens the stream-fields panel: every stream field with a live count, expandable
+into its values. Ticking a value writes the filter into the query box for you.</p>
+<div class="body">
+ <div class="grid" style="grid-template-columns:.85fr 1.15fr;flex:1">
+  <div class="ui" style="display:flex">
+   <div class="side">
+     <div style="color:var(--dim);font-size:9.5px;margin-bottom:6px;padding:0 6px">STREAM FIELDS</div>
+     <div>collector <span>2.1K</span></div>
+     <div style="background:var(--panel2)">k8s.namespace.name <span>1.5K</span></div>
+     <div style="padding-left:16px;color:var(--cyan)">&#9744; play-otel <span>1.4K</span></div>
+     <div>k8s.pod.name <span>1.5K</span></div>
+     <div>service.name <span>1.5K</span></div>
+     <div>kubernetes.container_name <span>669</span></div>
+     <div>kubernetes.pod_name <span>669</span></div>
+   </div>
+   <div style="flex:1">
+     <div class="row" style="border-top:none"><div class="inp">_stream:{k8s.namespace.name="play-otel"}</div></div>
+     <div class="hist" style="height:38px"><i style="height:50%"></i><i style="height:80%"></i><i style="height:62%"></i><i style="height:94%"></i><i style="height:57%"></i><i style="height:71%"></i><i style="height:45%"></i><i style="height:66%"></i></div>
+     <div class="logs">10:14:22 <b>INFO</b>&nbsp; Product Found<br>10:14:22 <b>INFO</b>&nbsp; Targeted ad request received<br>10:14:23 <b>WARN</b>&nbsp; no baggage found in context</div>
+   </div>
+  </div>
+  <div>
+   <div class="flow">
+     <div class="step"><div class="n">01</div><h4>Widen</h4><p>Start from <span class="k">*</span> over a short
+       range. You are looking for the shape of the data, not the answer.</p></div>
+     <div class="step"><div class="n">02</div><h4>Narrow by clicking</h4><p>Tick namespace, then service, then pod.
+       Each tick rewrites the query.</p></div>
+     <div class="step"><div class="n">03</div><h4>Take over</h4><p>Once the stream selector is right, add the
+       text and field filters by hand.</p></div>
+   </div>
+   <div class="card" style="margin-top:12px"><h3><span class="dot" style="background:var(--emerald)"></span>Why this beats typing</h3>
+     <p>The counts next to each value are <b>real hit counts for your current query and time range</b>. You learn
+     the cardinality and the exact spelling of every value before you commit to a filter &mdash; no more
+     <span class="k">service="checkout"</span> returning zero because it is really
+     <span class="k">checkout-api</span>.</p></div>
+   <p class="note" style="margin-top:10px">Same information, programmatically: the <span class="k">streams</span>,
+   <span class="k">field_values</span> and <span class="k">facets</span> MCP tools. Act IV.</p>
+  </div>
+ </div>
+</div>
+`, notes:`Demo this rather than describe it. The moment where a tick fills in the query box is what converts people.`});
+
+/* ----------------------------------------------------------------- 12 */
+S({title:'The hits chart is a diagnostic', act:'Act II', railr:'Hits chart', html:`
+<h2>The histogram is not decoration</h2>
+<p class="sub">Above the results sits a bar chart of matching logs over time, with its own controls. Used well it
+answers "when did this start" before you have any idea "what this is".</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>Interval</h3>
+   <p>Bucket width. Widen it to see a day-shaped trend, narrow it to find the exact minute something began.
+   Backed by the <span class="k">step</span> parameter of the <span class="k">/hits</span> API.</p>
+   <h3 style="margin-top:12px"><span class="dot" style="background:var(--cyan)"></span>Group by</h3>
+   <p>Split the bars by a field &mdash; by service, by level, by status. <b>This is the single most useful control
+   on the page</b>: one glance tells you whether the spike is one service or all of them.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--violet)"></span>Cumulative &middot; Stacked &middot; Stats view</h3>
+   <p><b>Stacked</b> shows composition &mdash; who contributes what to the total.</p>
+   <p><b>Cumulative</b> turns bursts into a running total; a straight line means a steady rate, a knee means
+   something changed.</p>
+   <p><b>Stats view</b> switches the panel to render the output of a <span class="k">stats</span> pipe as a chart
+   rather than counting raw log lines.</p>
+   <p class="note" style="margin-top:8px">Zero bars with results below means your time picker and your
+   <span class="k">_time</span> filter disagree. The picker wins for the chart.</p></div>
+ </div>
+ <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>The move</h3>
+  <p>Symptom at 10:14. Set range to the hour, <b>Group by</b> the service field, and read which series has the
+  spike. Then click into that service's stream and start reading actual lines. Two controls, no query written yet.</p></div>
+</div>
+`, notes:`Walk the room through the move at the bottom. It is the fastest incident triage path in the tool and
+almost nobody discovers it on their own.`});
+
+/* ----------------------------------------------------------------- 13 */
+S({title:'Act III — LogsQL', cls:'act', html:`
+<div class="num">ACT III</div>
+<h1>LogsQL</h1>
+<p class="sub">One rule of grammar, a ladder of filters, and about a dozen pipes worth remembering.</p>
+`, notes:`This is the long act. Promise them a cheat sheet at the end so they stop trying to memorise.`});
+
+/* ----------------------------------------------------------------- 14 */
+S({title:'Filters pick, pipes transform', act:'Act III', railr:'Grammar', html:`
+<h2>The whole grammar in one line</h2>
+<div class="body">
+ ${q(`filter filter filter | pipe | pipe | pipe`)}
+ <p class="sub" style="margin:2px 0 0">Filters come first, space-separated, and are implicitly <span class="k">AND</span>ed.
+ Then any number of pipes, each taking the previous step's rows. <em>A query must contain at least one filter.</em></p>
+ <div class="grid g2" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>Reading a real one</h3>
+   ${qs(`_time:1h {app="checkout"} error -"health check"
+  | stats by (log.level) count() n
+  | sort by (n desc)`)}
+   <ul class="tight" style="margin-top:10px">
+    <li><b>last hour</b>, <b>only the checkout stream</b>, containing the word <b>error</b>, excluding the phrase
+      <b>health check</b></li>
+    <li>count the survivors per level</li>
+    <li>biggest first</li>
+   </ul></div>
+  <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>Two things that trip people up</h3>
+   <p><b>A bare word searches <span class="k">_msg</span> only.</b> Typing <span class="k">checkout</span> will not
+   match a <span class="k">service=checkout</span> field. Use <span class="k">field:value</span> for fields, or
+   <span class="k">*:checkout</span> to search every field.</p>
+   <p><b>Words, not substrings.</b> Values are split on punctuation and whitespace into words, so
+   <span class="k">error</span> matches <span class="k">"fatal error:"</span> but not
+   <span class="k">"errors"</span>. That is what makes word search fast.</p>
+   <p class="note">Comments with <span class="k">#</span> and multi-line queries are both supported &mdash; use
+   them for anything you are going to paste into a ticket.</p></div>
+ </div>
+</div>
+`, notes:`The word-not-substring rule explains 90% of "why did my search miss it". Prefix filter <b>err*</b> is the
+answer when you want errors and errored too.`});
+
+/* ----------------------------------------------------------------- 15 */
+S({title:'Time filters', act:'Act III', railr:'Filters', html:`
+<h2>Always start with time</h2>
+<p class="sub">Cheapest filter there is: it lets VictoriaLogs skip whole partitions without reading them.
+<em>Type it first, every time.</em></p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div>
+   <table class="t"><thead><tr><th>Form</th><th>Means</th></tr></thead><tbody>
+    <tr><td><code>_time:5m</code></td><td>the last 5 minutes &mdash; <code>(now-5m, now]</code></td></tr>
+    <tr><td><code>_time:2h30m</code></td><td>any duration: <code>s m h d w y</code></td></tr>
+    <tr><td><code>_time:2026-09-09Z</code></td><td>that whole day, UTC</td></tr>
+    <tr><td><code>_time:2026-09Z</code></td><td>that whole month &mdash; also <code>YYYYZ</code>, <code>...THHZ</code>, <code>...THH:MMZ</code></td></tr>
+    <tr><td><code>_time:[t1, t2]</code></td><td>explicit range, inclusive; <code>)</code> excludes the end</td></tr>
+    <tr><td><code>_time:&gt;3d</code></td><td>older than 3 days ago</td></tr>
+    <tr><td><code>_time:5m offset 1h</code></td><td>5 minutes, an hour ago &mdash; <b>the deploy-comparison filter</b></td></tr>
+    <tr><td><code>_time:day_range[08:00,18:00)</code></td><td>only business hours, across every day in range</td></tr>
+    <tr><td><code>_time:week_range[Mon,Fri]</code></td><td>only weekdays</td></tr>
+   </tbody></table>
+  </div>
+  <div class="grid" style="gap:12px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>The before/after trick</h3>
+    <p>Run the same query twice, once with <span class="k">offset</span>, to compare a window against the
+    equivalent window before a deploy:</p>
+    ${qs(`_time:30m {app="checkout"} error | count()`,'good')}
+    ${qs(`_time:30m offset 2h {app="checkout"} error | count()`,'good')}</div>
+   <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>In the UI</h3>
+    <p>The time picker and an explicit <span class="k">_time:</span> filter are <b>both</b> applied. If your typed
+    filter is wider than the picker, the picker still wins. When results confuse you, widen the picker first.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>Absolute times are UTC</h3>
+    <p>The trailing <span class="k">Z</span> is not decoration. Our retention is ${F(CONFIG.retention)} &mdash;
+    a query outside that window returns nothing rather than an error.</p></div>
+  </div>
+ </div>
+</div>
+`, notes:`Make everyone type an offset query once. It is the highest-value habit in the whole deck for incident work.`});
+
+/* ----------------------------------------------------------------- 16 */
+S({title:'Stream filters', act:'Act III', railr:'Filters', html:`
+<h2>Then narrow to a stream</h2>
+<p class="sub">The second-cheapest filter, and the one people forget. Put a <span class="k">{...}</span> in every
+query you expect to run more than once.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div>
+   <table class="t"><thead><tr><th>Form</th><th>Means</th></tr></thead><tbody>
+    <tr><td><code>{app="checkout"}</code></td><td>exact stream-label match</td></tr>
+    <tr><td><code>_stream:{app="checkout"}</code></td><td>identical, just explicit about the field</td></tr>
+    <tr><td><code>{app!="checkout"}</code></td><td>everything except</td></tr>
+    <tr><td><code>{app=~"checkout|cart"}</code></td><td>regexp over the label</td></tr>
+    <tr><td><code>{app in ("checkout","cart")}</code></td><td>set membership &mdash; values escaped for you</td></tr>
+    <tr><td><code>{app not_in ("test","dev")}</code></td><td>set exclusion</td></tr>
+    <tr><td><code>{ns="prod", app="checkout"}</code></td><td>several labels, ANDed</td></tr>
+    <tr><td><code>_stream_id:0000007b...</code></td><td>one exact stream, by id</td></tr>
+   </tbody></table>
+   <p class="note" style="margin-top:10px">Use <b>one</b> <span class="k">{...}</span> at the top level of the query.
+   Nesting stream filters inside <span class="k">OR</span> branches is legal but gives up the optimisation.</p>
+  </div>
+  <div class="grid" style="gap:12px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>Same result, wrong speed</h3>
+    ${qs(`_time:1h app:="checkout" error`,'bad')}
+    <p style="margin-top:7px">Correct, but it scans every stream and compares a field on every row.</p>
+    ${qs(`_time:1h {app="checkout"} error`,'good')}
+    <p style="margin-top:7px">Skips every block that does not belong to that stream.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>Our selectors</h3>
+    <table class="t"><thead><tr><th>Service</th><th>Selector</th></tr></thead><tbody>
+    ${CONFIG.services.map(function(s){return '<tr><td><b>'+F(s.name)+'</b></td><td><code>'+F(s.stream)+'</code></td></tr>';}).join('')}
+    </tbody></table></div>
+  </div>
+ </div>
+</div>
+`, notes:`Only fields that were declared as stream fields at ingest can go inside the braces. Anything else must be a
+normal field filter — that is the most common syntax error people hit here.`});
+
+/* ----------------------------------------------------------------- 17 */
+S({title:'The text-filter ladder', act:'Act III', railr:'Filters', html:`
+<h2>Six ways to match text, fastest to slowest</h2>
+<p class="sub">Climb down this ladder only as far as you have to. Every rung costs more than the one above it.</p>
+<div class="body">
+ <div class="ladder">
+  <div style="background:#34d399">word</div><div style="background:#6ee7b7">phrase</div>
+  <div style="background:#a3e635">exact</div><div style="background:#fcd34d">prefix</div>
+  <div style="background:#fb923c">substring</div><div style="background:#fb7185">regexp</div>
+ </div>
+ <table class="t"><thead><tr><th style="width:23%">Filter</th><th style="width:30%">Syntax</th><th>Matches / costs</th></tr></thead><tbody>
+  <tr><td><b>Word</b></td><td><code>error</code> &nbsp; <code>log.level:error</code></td>
+    <td>One whole word, index-backed. The default and the fastest.</td></tr>
+  <tr><td><b>Phrase</b></td><td><code>"connection refused"</code></td>
+    <td>Adjacent words in order. Nearly as fast as a word.</td></tr>
+  <tr><td><b>Exact</b></td><td><code>log.level:="error"</code></td>
+    <td>The <b>entire field value</b>, not a word inside it. Use for enums, ids, status codes.</td></tr>
+  <tr><td><b>Prefix</b></td><td><code>err*</code> &nbsp; <code>"unexpected fail"*</code></td>
+    <td>Word or phrase prefix. Reads more of the index; still reasonable.</td></tr>
+  <tr><td><b>Substring</b></td><td><code>*ampl*</code></td>
+    <td>Anywhere inside a value. <b>Cannot use the word index</b> &mdash; it scans.</td></tr>
+  <tr><td><b>Regexp</b></td><td><code>~"err|warn"</code> &nbsp; <code>!~"..."</code></td>
+    <td>Full regexp. Slowest. Often replaceable by <code>in(...)</code> or a couple of <code>OR</code>ed words.</td></tr>
+ </tbody></table>
+ <div class="grid g2">
+  <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>Reach for this less</h3>
+   ${qs(`_time:1h ~"timeout|timed out|deadline"`,'bad')}</div>
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>Prefer this</h3>
+   ${qs(`_time:1h (timeout OR "timed out" OR deadline)`,'good')}</div>
+ </div>
+ <p class="note">Also available: <span class="k">i(error)</span> case-insensitive,
+ <span class="k">seq("start","fail")</span> ordered sequence,
+ <span class="k">contains_all(f,"a b")</span> / <span class="k">contains_any(f,"a b")</span>, and
+ <span class="k">pattern_match("user_id=&lt;N&gt;, ip=&lt;IP4&gt;")</span> for structured-looking text.</p>
+</div>
+`, notes:`The bottom comparison is the takeaway. Three ORed word filters beat one alternation regexp, every time.`});
+
+/* ----------------------------------------------------------------- 18 */
+S({title:'Field, range and set filters', act:'Act III', railr:'Filters', html:`
+<h2>Filters on values, not text</h2>
+<p class="sub">If the information is already in a field, never go looking for it in the message.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <table class="t"><thead><tr><th style="width:44%">Syntax</th><th>Means</th></tr></thead><tbody>
+   <tr><td><code>log.level:error</code></td><td>word match within that field</td></tr>
+   <tr><td><code>log.level:="error"</code></td><td>whole value equals</td></tr>
+   <tr><td><code>log.level:in("error","fatal")</code></td><td>any of a set &mdash; beats a regexp</td></tr>
+   <tr><td><code>status:&gt;=500</code></td><td>numeric comparison; also <code>&gt; &lt; &lt;=</code></td></tr>
+   <tr><td><code>duration_ms:range[100, 500]</code></td><td>numeric range &mdash; <code>()</code> excludes bounds, <code>[]</code> includes</td></tr>
+   <tr><td><code>user:""</code></td><td>field is empty or absent</td></tr>
+   <tr><td><code>user:*</code></td><td>field has any non-empty value</td></tr>
+   <tr><td><code>_msg:len_range(1000, inf)</code></td><td>value length range</td></tr>
+   <tr><td><code>ip:ipv4_range("10.0.0.0/8")</code></td><td>CIDR membership</td></tr>
+   <tr><td><code>user_id:value_type(uint64)</code></td><td>guard against a field that is sometimes a string</td></tr>
+  </tbody></table>
+  <div class="grid" style="gap:12px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>Search across fields</h3>
+    <p><span class="k">*:9c3f1a0e</span> searches every field &mdash; the right first move when you have an id and
+    do not know which field carries it.</p>
+    <p><span class="k">k8s.*:checkout</span> searches every field with that prefix. Convenient, but slower than
+    naming the field: prefer the full name once you know it.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--violet)"></span>Subquery filters</h3>
+    <p>Feed the results of one query into another &mdash; the closest thing LogsQL has to a join at filter time:</p>
+    ${qs(`_time:1h {app="payments"}
+  user_id:in(_time:1d admin | fields user_id)`)}</div>
+   <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>Careful with numbers</h3>
+    <p>Everything is stored as a string. <span class="k">range()</span> only matches values that are <b>purely</b>
+    numeric &mdash; <span class="k">"took 4.2 seconds"</span> will not match, and a latency written as
+    <span class="k">"30.0s"</span> will not either. Extract the number first, or fix it at ingest.</p></div>
+  </div>
+ </div>
+</div>
+`, notes:`The <b>*:id</b> tip is the one to repeat. It turns "which field is the trace id in?" from a research task
+into one query.`});
+
+/* ----------------------------------------------------------------- 19 */
+S({title:'Combining filters', act:'Act III', railr:'Filters', html:`
+<h2>Boolean logic, and the two gotchas</h2>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div>
+   ${q(`_time:1h {app="checkout"}
+  (error OR fatal)
+  -"health check"
+  AND NOT log.level:debug`)}
+   <table class="t" style="margin-top:12px"><tbody>
+    <tr><td><code>a b</code></td><td>implicit <b>AND</b> &mdash; a space is a conjunction</td></tr>
+    <tr><td><code>a AND b</code></td><td>the same thing, spelled out</td></tr>
+    <tr><td><code>a OR b</code></td><td>either</td></tr>
+    <tr><td><code>NOT a</code> &nbsp; <code>-a</code></td><td>negation; the dash is the common form</td></tr>
+    <tr><td><code>(a OR b) c</code></td><td>parentheses, because precedence is not obvious</td></tr>
+   </tbody></table>
+  </div>
+  <div class="grid" style="gap:12px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>Gotcha 1 &mdash; AND binds tighter than OR</h3>
+    ${qs(`error OR warn AND checkout`,'bad')}
+    <p style="margin-top:7px">Reads as <span class="k">error OR (warn AND checkout)</span>. Almost never what
+    was meant.</p>
+    ${qs(`(error OR warn) AND checkout`,'good')}
+    <p style="margin-top:7px"><b>Rule: if you type OR, type brackets.</b></p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>Gotcha 2 &mdash; a negation alone is not a query</h3>
+    ${qs(`-"health check"`,'bad')}
+    <p style="margin-top:7px">A query needs something positive to select from. Pair every negation with a time
+    filter at minimum.</p>
+    ${qs(`_time:1h -"health check"`,'good')}</div>
+   <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>Order matters for speed</h3>
+    <p>Put the most selective word and phrase filters <b>first</b>. Time and stream filters are exempt &mdash; they
+    are optimised wherever they appear.</p></div>
+  </div>
+ </div>
+</div>
+`, notes:`Gotcha 1 is worth a show of hands: ask what the bad query means before revealing it.`});
+
+/* ----------------------------------------------------------------- 20 */
+S({title:'Pipes I — shaping rows', act:'Act III', railr:'Pipes', html:`
+<h2>Pipes that change what a row looks like</h2>
+<p class="sub">There are around fifty pipes. These seven cover almost everything you will do.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div class="grid" style="gap:11px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>fields &mdash; choose your columns</h3>
+    ${qs(`_time:1h {app="checkout"} error
+  | fields _time, log.level, trace_id, _msg`)}
+    <p style="margin-top:7px">Also a genuine speed win: fewer fields read and unpacked from disk.
+    <span class="k">delete</span>, <span class="k">rename</span> and <span class="k">copy</span> are its siblings.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>extract &mdash; pull values out of text</h3>
+    ${qs(`_time:1h | extract "ip=<ip> " from _msg | top 10 by (ip)`)}
+    <p style="margin-top:7px">The pattern uses <span class="k">&lt;name&gt;</span> placeholders, <b>not</b> regexp
+    groups. <span class="k">from _msg</span> can be omitted. For real regexps use
+    <span class="k">extract_regexp "(?P&lt;ip&gt;...)"</span>.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--violet)"></span>unpack_json / unpack_logfmt</h3>
+    ${qs(`_time:5m | unpack_json from payload result_prefix "p_"`)}
+    <p style="margin-top:7px">Parses a field of encoded JSON into real fields. If you only need one value,
+    <span class="k">extract '"ip":&lt;ip&gt;'</span> is much cheaper than parsing the whole object.</p></div>
+  </div>
+  <div class="grid" style="gap:11px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>filter &mdash; filter again, after a pipe</h3>
+    ${qs(`_time:1h error
+  | stats by (host) count() n
+  | filter n:>1000`)}
+    <p style="margin-top:7px"><span class="k">where</span> is a synonym, and the keyword can be dropped entirely
+    when the filter cannot be confused with a pipe name.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>math &mdash; arithmetic on fields</h3>
+    ${qs(`_time:1h | math round(duration_msecs / 1000) as duration_secs`)}</div>
+   <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>format &mdash; build a new string</h3>
+    ${qs(`_time:5m | format "<service> <status> in <duration_ms>ms" as summary`)}
+    <p style="margin-top:7px">Turns scattered fields into one readable line &mdash; useful right before pasting
+    into a ticket.</p></div>
+  </div>
+ </div>
+</div>
+`, notes:`Emphasise that <b>extract</b> and <b>extract_regexp</b> are different languages. Everyone tries regexp syntax
+in extract on their first go.`});
+
+/* ----------------------------------------------------------------- 21 */
+S({title:'Pipes II — counting', act:'Act III', railr:'Pipes', html:`
+<h2>Pipes that turn logs into numbers</h2>
+<p class="sub">This is where LogsQL stops being a search box. <span class="k">stats</span> is the pipe worth
+learning properly.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div class="grid" style="gap:11px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>stats &mdash; group and aggregate</h3>
+    ${qs(`_time:1d error
+  | stats by (service.name) count() errors, count_uniq(trace_id) traces
+  | sort by (errors desc) | limit 10`)}
+    <p style="margin-top:7px">The <span class="k">as</span> keyword is optional; so is the word
+    <span class="k">by</span>.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>stats over time buckets</h3>
+    ${qs(`_time:1d error | stats by (_time:1h) count() n | sort by (_time)`)}
+    <p style="margin-top:7px"><span class="k">by (_time:1h)</span> is how you get a time series out of logs &mdash;
+    the same shape a dashboard wants.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--violet)"></span>conditional aggregation</h3>
+    ${qs(`_time:1d
+  | stats by (service.name)
+      count() total,
+      count() if (log.level:error) errors`)}
+    <p style="margin-top:7px">Two numbers, one pass. Feed them to <span class="k">math</span> for an error rate.</p></div>
+  </div>
+  <div class="grid" style="gap:11px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>top / uniq / facets &mdash; the quick ones</h3>
+    ${qs(`_time:5m | top 10 by (service.name)
+_time:5m | uniq by (host, path) with hits
+_time:1h error | facets 5`)}
+    <p style="margin-top:7px"><span class="k">facets</span> is the whole-haystack move: top values for
+    <b>every</b> field at once. Run it first when you have no idea what you are looking at.</p></div>
+   <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>The functions worth knowing</h3>
+    <p><span class="k">count()</span> <span class="k">count_uniq()</span> <span class="k">sum()</span>
+    <span class="k">avg()</span> <span class="k">min()</span> <span class="k">max()</span>
+    <span class="k">median()</span> <span class="k">quantile(0.99, f)</span> <span class="k">rate()</span>
+    <span class="k">histogram()</span> <span class="k">uniq_values()</span> <span class="k">values()</span>
+    <span class="k">row_max()</span> <span class="k">field_max()</span></p>
+    <p class="note" style="margin-top:7px"><span class="k">row_max(duration, _msg)</span> returns the whole row
+    that held the maximum &mdash; not just the number. That is usually what you actually wanted.</p></div>
+  </div>
+ </div>
+</div>
+`, notes:`The p99 recipe: <b>| stats by (endpoint) quantile(0.99, duration_ms) p99 | sort by (p99 desc)</b>.
+Have it ready if someone asks.`});
+
+/* ----------------------------------------------------------------- 22 */
+S({title:'Investigation moves', act:'Act III', railr:'Pipes', html:`
+<h2>Four moves for reading an incident</h2>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>stream_context &mdash; grep -A / -B</h3>
+   <p>Find a needle, then read what happened around it <b>in the same stream</b>. The single most useful pipe
+   during an incident.</p>
+   ${qs(`_time:5m panic | stream_context before 5 after 20`)}
+   <p class="note" style="margin-top:7px">Chunks are separated by <span class="k">---</span>. Default look-around
+   window is one hour; widen with <span class="k">time_window 1w</span>.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>first / last &mdash; top-N in one step</h3>
+   <p>Shorthand for sort-then-limit, and it does its own top-N selection instead of sorting everything.</p>
+   ${qs(`_time:1h | first 10 by (duration_ms desc)
+_time:1h | first 3 by (_time) partition by (service.name)`)}
+   <p class="note" style="margin-top:7px"><span class="k">partition by</span> gives you N per group &mdash;
+   the first error from each service.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--violet)"></span>sort &mdash; because order is not free</h3>
+   <p>Results are unordered by default. Ask explicitly:</p>
+   ${qs(`_time:1h {app="checkout"} error | sort by (_time)`)}
+   <p class="note" style="margin-top:7px">Do not sort millions of rows. Narrow first, sort second &mdash; or use
+   <span class="k">first</span>.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>len &mdash; find the monster lines</h3>
+   <p>Chasing ingest cost or a truncated message:</p>
+   ${qs(`_time:1d | len(_msg) as n | sort by (n desc) | limit 5`)}
+   <p class="note" style="margin-top:7px">Pairs well with <span class="k">| top by (service.name)</span> to find
+   who is producing your volume.</p></div>
+ </div>
+</div>
+`, notes:`stream_context is the "oh" moment for most teams. Demo it against a real panic if you have one.`});
+
+/* ----------------------------------------------------------------- 23 */
+S({title:'The speed rules', act:'Act III', railr:'Performance', html:`
+<h2>Six rules that decide whether a query takes 40ms or 40s</h2>
+<p class="sub">Straight from the VictoriaLogs performance guidance, in the order you should apply them.</p>
+<div class="body">
+ <table class="t" style="flex:1"><thead><tr><th style="width:5%"></th><th style="width:31%">Rule</th><th>Why</th></tr></thead><tbody>
+  <tr><td><span class="badge">1</span></td><td><b>Narrow the time range</b></td>
+    <td>The cheapest filter that exists. Whole days of data get skipped without being read.</td></tr>
+  <tr><td><span class="badge">2</span></td><td><b>Add a stream filter</b></td>
+    <td>Use the most specific <code>{...}</code> that still covers what you need. Prefer one, at the top level.</td></tr>
+  <tr><td><span class="badge">3</span></td><td><b>Most selective filters first</b></td>
+    <td>Word and phrase filters early; each one shrinks what the next has to look at. Time and stream filters are
+    exempt &mdash; they work from anywhere.</td></tr>
+  <tr><td><span class="badge">4</span></td><td><b>Project with <code>| fields</code></b></td>
+    <td>Saves disk IO and CPU unpacking fields you will not look at. Matters most on wide, JSON-heavy logs.</td></tr>
+  <tr><td><span class="badge">5</span></td><td><b>Shrink before you pipe</b></td>
+    <td><code>stats</code> and <code>sort</code> cost in proportion to rows fed in. Filter hard, then aggregate.</td></tr>
+  <tr><td><span class="badge">6</span></td><td><b>Climb the filter ladder</b></td>
+    <td>Word &gt; phrase &gt; exact &gt; prefix &gt; substring &gt; regexp. Replace an alternation regexp with
+    <code>in(...)</code> or ORed words.</td></tr>
+ </tbody></table>
+ <div class="grid g2">
+  <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>Slow</h3>
+   ${qs(`*ampl* ~"5\\d\\d" | sort by (_time) | limit 20`,'bad')}
+   <p style="margin-top:7px">No time filter, no stream filter, substring, regexp, and a global sort.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>Fast</h3>
+   ${qs(`_time:1h {app="checkout"} error status:>=500
+  | fields _time, status, trace_id, _msg
+  | first 20 by (_time desc)`,'good')}</div>
+ </div>
+ <p class="note">Escape hatches when a query is legitimately huge:
+ <span class="k">options(concurrency=2)</span> to be a good citizen on a shared instance,
+ <span class="k">options(parallel_readers=100)</span> when storage is high-latency, and
+ <span class="k">| query_stats</span> to see where the time actually went.</p>
+</div>
+`, notes:`If you only get one slide printed and pinned to the wall, make it this one.`});
+
+/* ----------------------------------------------------------------- 24 */
+S({title:'Act IV — agents', cls:'act', html:`
+<div class="num">ACT IV</div>
+<h1>Pointing an agent<br>at our logs</h1>
+<p class="sub">Everything so far applies unchanged &mdash; an agent writes the same LogsQL you do. What changes is
+the cost of being sloppy, and how you keep it from drowning in its own results.</p>
+`, notes:`Frame it honestly: agents are good at this, but only if you give them the discovery tools instead of
+letting them guess field names.`});
+
+/* ----------------------------------------------------------------- 25 */
+S({title:'The 13 MCP tools', act:'Act IV', railr:'MCP', html:`
+<h2>What the VictoriaLogs MCP server gives an agent</h2>
+<p class="sub">Thirteen <em>read-only</em> tools wrapping the HTTP API. There is no write path &mdash; an agent
+cannot delete, mutate or ingest anything.</p>
+<div class="body">
+ <div class="grid g3" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>Discover &mdash; use these first</h3>
+   <table class="t"><tbody>
+    <tr><td><code>field_names</code></td><td>fields present in a query's results</td></tr>
+    <tr><td><code>field_values</code></td><td>values of one field, with counts</td></tr>
+    <tr><td><code>facets</code></td><td>top values for <b>every</b> field at once</td></tr>
+    <tr><td><code>streams</code></td><td>matching streams, with counts</td></tr>
+    <tr><td><code>stream_field_names</code></td><td>which fields form the stream</td></tr>
+    <tr><td><code>stream_field_values</code></td><td>values of one stream field</td></tr>
+    <tr><td><code>stream_ids</code></td><td>raw stream ids</td></tr>
+   </tbody></table></div>
+  <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>Measure &mdash; before fetching</h3>
+   <table class="t"><tbody>
+    <tr><td><code>hits</code></td><td>counts per time bucket; optional <code>field</code> to split the series</td></tr>
+    <tr><td><code>stats_query</code></td><td>a <code>stats</code> pipe evaluated at one instant</td></tr>
+    <tr><td><code>stats_query_range</code></td><td>the same over a range, Prometheus-shaped</td></tr>
+   </tbody></table>
+   <h3 style="margin-top:12px"><span class="dot" style="background:var(--violet)"></span>Read</h3>
+   <table class="t"><tbody>
+    <tr><td><code>query</code></td><td>run LogsQL, return log entries</td></tr>
+   </tbody></table></div>
+  <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>Support</h3>
+   <table class="t"><tbody>
+    <tr><td><code>documentation</code></td><td>searches embedded VictoriaLogs docs, returns resource URIs the agent
+      then reads. <b>Tell agents to use it</b> instead of recalling LogsQL from memory.</td></tr>
+    <tr><td><code>flags</code></td><td>non-default flags on the instance &mdash; retention, limits, cluster shape</td></tr>
+   </tbody></table>
+   <p class="note" style="margin-top:10px">Our endpoint: ${F(CONFIG.mcpUrl)}<br>Tenant: ${F(CONFIG.tenant)}<br>
+   Individual tools can be switched off server-side via <span class="k">MCP_DISABLED_TOOLS</span>.</p></div>
+ </div>
+ <div class="card" style="border-color:rgba(251,191,36,.35)"><h3><span class="dot" style="background:var(--amber)"></span>The parameter that bites</h3>
+  <p><span class="k">start</span> is <b>required</b> on <span class="k">query</span>, <span class="k">hits</span>,
+  <span class="k">facets</span>, <span class="k">field_names</span>, <span class="k">field_values</span>,
+  <span class="k">streams</span> and both <span class="k">stats_*</span> tools, and it must be
+  <b>RFC3339</b> &mdash; <span class="k">2026-09-09T10:00:00Z</span>, not <span class="k">1h</span>.
+  <span class="k">end</span> is optional and defaults to the newest log. <span class="k">query</span> defaults to
+  <span class="k">limit: 1000</span> &mdash; always lower it.</p></div>
+</div>
+`, notes:`If an agent keeps erroring on these tools, it is nearly always a bad <b>start</b> value. Say so in your
+system prompt and the failure disappears.`});
+
+/* ----------------------------------------------------------------- 26 */
+S({title:'The agent discovery loop', act:'Act IV', railr:'Method', html:`
+<h2>Four calls, not thirty</h2>
+<p class="sub">An agent that goes straight to <span class="k">query</span> guesses field names, gets empty results,
+guesses again, and burns its context. Make it walk the funnel.</p>
+<div class="body">
+ <div class="flow" style="flex:none">
+  <div class="step"><div class="n">STEP 01</div><h4>What exists?</h4>
+   <p>Ground the field names in reality before writing any filter.</p>
+   <code>streams / field_names</code></div>
+  <div class="step"><div class="n">STEP 02</div><h4>What values?</h4>
+   <p>Learn the exact spelling and the cardinality. Use facets when the shape is unknown.</p>
+   <code>field_values / facets</code></div>
+  <div class="step"><div class="n">STEP 03</div><h4>How big, and when?</h4>
+   <p>Counts are cheap; logs are expensive. Find the spike before reading anything.</p>
+   <code>hits (step, field)</code></div>
+  <div class="step"><div class="n">STEP 04</div><h4>Read the few</h4>
+   <p>Now fetch, tightly scoped, projected and limited.</p>
+   <code>query + fields + limit</code></div>
+ </div>
+ <div class="grid g2" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>Worked example &mdash; "checkout is throwing 500s"</h3>
+   ${qs(`1. streams        query: {{FILL: our namespace selector}}
+                  start: 2026-09-09T09:00:00Z     # RFC3339, always
+2. field_values   query: same    field: {{FILL: our status field}}
+3. hits           query: _time:1h {{FILL: selector}} {{FILL: status}}:>=500
+                  step: 5m   field: {{FILL: our service field}}
+4. query          _time:10m {{FILL: selector}} {{FILL: status}}:>=500
+                    | fields _time, {{FILL: trace field}}, _msg
+                    | first 20 by (_time desc)      limit: 20`)}
+   <p class="note" style="margin-top:8px">Step 3 tells the agent <b>which</b> service and <b>which</b> five minutes.
+   Step 4 then reads twenty lines instead of ten thousand.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>Why this is cheaper, concretely</h3>
+   <ul class="tight">
+    <li><b>Counts compress.</b> <span class="k">hits</span> returns a few dozen numbers where
+      <span class="k">query</span> would return megabytes of text.</li>
+    <li><b>No guessing loop.</b> One <span class="k">field_values</span> call removes three rounds of
+      "field not found, try another name".</li>
+    <li><b>Findings stay checkable.</b> Every step is a query you can paste into vmui yourself and verify.</li>
+    <li><b>Context survives.</b> The agent still has room to reason once it reaches the actual log lines.</li>
+   </ul>
+   <p class="note" style="margin-top:9px">Same funnel works by hand: Overview tab &rarr; sidebar counts &rarr;
+   hits chart grouped by service &rarr; read the lines.</p></div>
+ </div>
+</div>
+`, notes:`This is the slide to make people repeat back. It is the difference between an agent that answers in
+30 seconds and one that times out.`});
+
+/* ----------------------------------------------------------------- 27 */
+S({title:'Prompting an agent for log work', act:'Act IV', railr:'Practice', html:`
+<h2>What to put in the prompt, every time</h2>
+<p class="sub">Agents are good at LogsQL and bad at guessing your deployment. Close that gap explicitly.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>A prompt that works</h3>
+   ${qs(`You have the VictoriaLogs MCP server for {{FILL: our instance}}.
+
+Before querying:
+  - call streams/field_names to confirm field names; never guess
+  - timestamps are RFC3339 UTC; start is required
+  - our stream fields are {{FILL: list}}
+  - our level field is {{FILL: name}} with values {{FILL: values}}
+
+Method:
+  - always include a _time filter and a {...} stream filter
+  - use hits/stats before query to locate the window
+  - keep query limit <= 50 and project with | fields
+  - if a query returns nothing, widen the time range before
+    changing the filter
+
+Report: the LogsQL you ran, what it returned, and your
+conclusion -- in that order.`)}</div>
+  <div class="grid" style="gap:11px;align-content:start">
+   <div class="card"><h3><span class="dot" style="background:var(--rose)"></span>Failure modes to guard against</h3>
+    <ul class="tight">
+     <li><b>Invented field names.</b> An agent will happily filter on <span class="k">level</span> when ours is
+       ${F(CONFIG.keyFields[0].name)}. Force a discovery call first.</li>
+     <li><b>Context flooding.</b> Default <span class="k">limit</span> is 1000 entries. On wide JSON logs that is
+       enough to end the conversation.</li>
+     <li><b>Silent empties.</b> Zero results from a typo look exactly like zero results from a healthy system.
+       Make it report the query, so you can tell which.</li>
+     <li><b>Regexp reflex.</b> Models reach for regexp because other log tools need it. Say to prefer word filters
+       and <span class="k">in(...)</span>.</li>
+     <li><b>Stale memory.</b> LogsQL moves; point it at the <span class="k">documentation</span> tool rather than
+       its own recall.</li>
+    </ul></div>
+   <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>Verify before you believe</h3>
+    <p>Every claim an agent makes should arrive with the query that produced it. Paste that query into vmui.
+    If it does not reproduce, the conclusion is worthless regardless of how confident it sounded.</p></div>
+  </div>
+ </div>
+</div>
+`, notes:`The "report the query" rule is what makes agent log work auditable. Without it you are trusting prose.`});
+
+/* ----------------------------------------------------------------- 28 */
+S({title:'Our cookbook', act:'Act IV', railr:'Cookbook', html:`
+<h2>Queries for the questions we actually ask</h2>
+<p class="sub">Copy, adjust the time range, run. These are written against our field names, not generic examples.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1;align-content:start">
+  ${CONFIG.cookbook.map(function(c,i){
+    return '<div class="card"><h3><span class="badge">'+(i+1)+'</span>'+F(c.why)+'</h3>'+qs(c.q)+'</div>';
+  }).join('')}
+ </div>
+</div>
+`, notes:`Ask the room which query is missing, and add it before this deck gets committed. The cookbook is the part
+that decays — keep it honest.`});
+
+/* ----------------------------------------------------------------- 29 */
+S({title:'Beyond the UI', act:'Act IV', railr:'Interfaces', html:`
+<h2>The same queries, four other ways</h2>
+<p class="sub">LogsQL is the constant. The UI is just one client of it.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>HTTP API &mdash; scripts and CI</h3>
+   ${qs(`curl ${'{{FILL: VL base url}}'}/select/logsql/query \\
+  -d 'query=_time:1h {app="checkout"} error | count()'`)}
+   <p style="margin-top:7px">Streams JSON lines as matches are found. <span class="k">format=csv</span> for
+   spreadsheets. Endpoints mirror the MCP tools one-to-one: <span class="k">/query</span>,
+   <span class="k">/hits</span>, <span class="k">/facets</span>, <span class="k">/field_names</span>,
+   <span class="k">/field_values</span>, <span class="k">/streams</span>,
+   <span class="k">/stats_query[_range]</span>, <span class="k">/tail</span>.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>Live tail</h3>
+   ${qs(`curl -N ${'{{FILL: VL base url}}'}/select/logsql/tail \\
+  -d 'query={app="checkout"} error'`)}
+   <p style="margin-top:7px">Same as the <b>Live</b> tab. No <span class="k">stats</span>,
+   <span class="k">sort</span>, <span class="k">limit</span> or <span class="k">offset</span> &mdash; it is an open
+   stream, not a result set.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--cyan)"></span>vlogscli &mdash; the terminal client</h3>
+   <p>An interactive LogsQL shell from the VictoriaLogs distribution: history, paging, output formats. Better than
+   curl for exploratory work, and it will not flood your terminal with a million lines.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--violet)"></span>Grafana</h3>
+   <p>The VictoriaLogs Grafana datasource takes the same LogsQL. A <span class="k">| stats by (_time:5m)</span>
+   query is already a time series &mdash; that is how a log query becomes a panel.</p>
+   <p class="note" style="margin-top:7px">Our dashboards: <span class="fill">FILL: link, or "none yet"</span></p></div>
+ </div>
+</div>
+`, notes:`Mention <b>extra_filters</b> if anyone asks about restricting a team to their own logs — it applies a
+constraint across every subquery.`});
+
+/* ----------------------------------------------------------------- 30 */
+S({title:'Cheat sheet', act:'Reference', railr:'One page', html:`
+<h2>The one page to keep</h2>
+<div class="body">
+ <div class="grid g3" style="flex:1">
+  <div class="card"><h3>Shape</h3>
+   ${qs(`filters | pipe | pipe`)}
+   <p style="margin-top:8px"><b>Always start:</b></p>
+   ${qs(`_time:1h {app="x"}`)}
+   <p style="margin-top:8px"><b>Special fields</b></p>
+   <p><span class="k">_time</span> <span class="k">_msg</span> <span class="k">_stream</span>
+   <span class="k">_stream_id</span></p>
+   <p style="margin-top:8px"><b>Bare word searches <span class="k">_msg</span> only.</b> Words, not substrings.</p></div>
+  <div class="card"><h3>Filters</h3>
+   <table class="t"><tbody>
+    <tr><td><code>error</code></td><td>word</td></tr>
+    <tr><td><code>"conn refused"</code></td><td>phrase</td></tr>
+    <tr><td><code>f:="v"</code></td><td>whole value</td></tr>
+    <tr><td><code>f:in("a","b")</code></td><td>set</td></tr>
+    <tr><td><code>err*</code></td><td>prefix</td></tr>
+    <tr><td><code>~"a|b"</code></td><td>regexp (last resort)</td></tr>
+    <tr><td><code>f:&gt;=500</code></td><td>numeric</td></tr>
+    <tr><td><code>f:*</code> / <code>f:""</code></td><td>present / absent</td></tr>
+    <tr><td><code>*:abc</code></td><td>any field</td></tr>
+    <tr><td><code>-x</code></td><td>not</td></tr>
+    <tr><td><code>(a OR b) c</code></td><td>bracket your ORs</td></tr>
+   </tbody></table></div>
+  <div class="card"><h3>Pipes</h3>
+   <table class="t"><tbody>
+    <tr><td><code>| fields a, b</code></td><td>pick columns</td></tr>
+    <tr><td><code>| sort by (_time)</code></td><td>order is not free</td></tr>
+    <tr><td><code>| first 20 by (f desc)</code></td><td>top N, cheaply</td></tr>
+    <tr><td><code>| stats by (f) count() n</code></td><td>group and count</td></tr>
+    <tr><td><code>| stats by (_time:1h) count()</code></td><td>time series</td></tr>
+    <tr><td><code>| top 10 by (f)</code></td><td>frequent values</td></tr>
+    <tr><td><code>| facets 5</code></td><td>what is in here?</td></tr>
+    <tr><td><code>| extract "ip=&lt;ip&gt; "</code></td><td>pull out a value</td></tr>
+    <tr><td><code>| unpack_json</code></td><td>parse JSON field</td></tr>
+    <tr><td><code>| stream_context after 20</code></td><td>read around a hit</td></tr>
+    <tr><td><code>| filter n:&gt;100</code></td><td>filter after stats</td></tr>
+   </tbody></table></div>
+ </div>
+ <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>If a query is slow or empty</h3>
+  <p><b>Slow:</b> narrow time &rarr; add <span class="k">{...}</span> &rarr; drop the regexp &rarr; add
+  <span class="k">| fields</span> &rarr; filter before you aggregate.
+  &nbsp;&nbsp;<b>Empty:</b> widen the time range first &mdash; then check the field name in the Overview tab,
+  then check coverage %, then check spelling with <span class="k">field_values</span>.</p></div>
+</div>
+`, notes:`Print this one. Two copies, one for the wall.`});
+
+/* ----------------------------------------------------------------- 31 */
+S({title:'Before this ships', act:'Reference', railr:'Open items', html:`
+<h2>What is still a placeholder</h2>
+<p class="sub">This deck is complete on VictoriaLogs and deliberately blank on <em>us</em>. Everything highlighted
+needs someone with access to the services and the live instance.</p>
+<div class="body">
+ <div class="grid g2" style="flex:1">
+  <div class="card"><h3><span class="dot" style="background:var(--amber)"></span>To fill in</h3>
+   <ul class="tight">
+    <li><b>Instance facts</b> &mdash; URLs, tenant, retention, volume, topology, shipper.</li>
+    <li><b>Stream fields</b> &mdash; the real ones, with cardinality. Check with
+      <span class="k">stream_field_names</span>.</li>
+    <li><b>Key fields</b> &mdash; level, trace id, status, latency, and their exact spellings and value sets.</li>
+    <li><b>Services</b> &mdash; the <span class="k">{...}</span> selector for each, and what its logs look like.</li>
+    <li><b>Cookbook</b> &mdash; six real queries for six real questions.</li>
+    <li><b>Traps</b> &mdash; the things that have already cost someone an hour.</li>
+   </ul>
+   <p class="note" style="margin-top:9px">All of it lives in the <span class="k">CONFIG</span> object at the top of
+   <span class="k">index.html</span>. Nothing else needs editing. See <span class="k">HANDOFF.md</span>.</p></div>
+  <div class="card"><h3><span class="dot" style="background:var(--emerald)"></span>How to fill it honestly</h3>
+   <ul class="tight">
+    <li>Every value should come from a <b>query you actually ran</b>, not from reading the shipper config &mdash;
+      what is configured and what is stored differ more often than you would like.</li>
+    <li>Every cookbook query should be <b>executed once</b> and seen to return sensible rows before it goes in.</li>
+    <li>Prefer a gap left honest over a plausible guess. A wrong field name in a training deck teaches the whole
+      team the wrong field name.</li>
+   </ul>
+   <p style="margin-top:12px"><span class="pill">Deck is done when the counter on slide 1 reads zero</span></p></div>
+ </div>
+ <div class="card"><h3><span class="dot" style="background:var(--brand)"></span>Sources</h3>
+  <p class="note">VictoriaLogs LogsQL reference, key concepts, querying API and performance guidance
+  (docs.victoriametrics.com/victorialogs), the vmui playground at play-vmlogs.victoriametrics.com, and the tool
+  definitions in github.com/VictoriaMetrics/mcp-victorialogs. Verified September 2026 &mdash; re-check the pipe
+  list against the docs before reusing this in a year.</p></div>
+</div>
+`, notes:`Close by naming who owns filling this in and by when. A deck with placeholders in it a month from now is a
+deck nobody trusts.`});
+
+/* SLIDES-END */
+
+/* ---------- build ---------- */
+var stage=document.getElementById('stage'), cur=0;
+SLIDES.forEach(function(s,i){
+  var el=document.createElement('section');
+  el.className='slide'+(s.cls?' '+s.cls:'');
+  var rail = s.hero?'':'<div class="rail"><span><b>'+(s.act||'')+'</b>'+(s.act&&s.railr?' &nbsp;/&nbsp; ':'')+(s.railr||'')+'</span><span>'+(i+1)+' / '+SLIDES.length+'</span></div>';
+  el.innerHTML = rail + s.html;
+  stage.appendChild(el);
+});
+var els=[].slice.call(stage.children);
+
+/* grid */
+var gridEl=document.getElementById('grid');
+SLIDES.forEach(function(s,i){
+  var d=document.createElement('div');
+  d.className='th'; d.innerHTML='<i>'+(i+1)+'</i>'+esc(s.title||'');
+  d.onclick=function(){go(i);toggleGrid(false);};
+  gridEl.appendChild(d);
+});
+
+var notesEl=document.getElementById('notes'), notesOn=false;
+function go(n){
+  cur=Math.max(0,Math.min(SLIDES.length-1,n));
+  els.forEach(function(e,i){e.classList.toggle('on',i===cur);});
+  document.getElementById('count').textContent=(cur+1)+' / '+SLIDES.length;
+  document.getElementById('prog').style.width=((cur+1)/SLIDES.length*100)+'%';
+  [].slice.call(gridEl.children).forEach(function(e,i){e.classList.toggle('cur',i===cur);});
+  notesEl.innerHTML='<div class="h">Speaker notes &mdash; slide '+(cur+1)+'</div>'+(SLIDES[cur].notes||'<i>No notes.</i>');
+  if(location.hash!=='#'+(cur+1)) history.replaceState(null,'','#'+(cur+1));
+}
+function toggleGrid(on){gridEl.classList.toggle('on', on===undefined?!gridEl.classList.contains('on'):on);}
+function toggleNotes(){notesOn=!notesOn;notesEl.style.display=notesOn?'block':'none';fit();}
+
+document.addEventListener('keydown',function(e){
+  if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){go(cur+1);e.preventDefault();}
+  else if(e.key==='ArrowLeft'||e.key==='PageUp'){go(cur-1);e.preventDefault();}
+  else if(e.key==='Home'){go(0);}
+  else if(e.key==='End'){go(SLIDES.length-1);}
+  else if(e.key==='g'){toggleGrid();}
+  else if(e.key==='n'){toggleNotes();}
+  else if(e.key==='f'){if(document.fullscreenElement){document.exitFullscreen();}else{document.documentElement.requestFullscreen();}}
+  else if(e.key==='Escape'){toggleGrid(false);}
+});
+stage.addEventListener('click',function(e){
+  if(e.target.closest('a'))return;
+  go(cur + (e.clientX > window.innerWidth*0.5 ? 1 : -1));
+});
+
+function fit(){
+  var pad=26, h=window.innerHeight-(notesOn?window.innerHeight*0.4:0);
+  var s=Math.min((window.innerWidth-pad*2)/1280,(h-pad*2)/720);
+  stage.style.transform='scale('+s+')';
+  document.body.style.alignItems = notesOn?'flex-start':'center';
+  stage.style.marginTop = notesOn? (Math.max(0,(h-720*s)/2))+'px' : '0';
+}
+window.addEventListener('resize',fit);
+fit();
+go(parseInt((location.hash||'#1').slice(1),10)-1||0);
+
+/* how many placeholders are left? */
+(function(){
+  var n=document.querySelectorAll('.fill').length;
+  var t=document.getElementById('fillcount');
+  if(t){
+    t.textContent = n ? (n+' placeholder'+(n===1?'':'s')+' still to fill') : 'All placeholders filled';
+    t.style.background = n ? 'rgba(251,191,36,.14)' : 'rgba(52,211,153,.14)';
+    t.style.borderColor = n ? 'rgba(251,191,36,.45)' : 'rgba(52,211,153,.45)';
+    t.style.color = n ? '#fbbf24' : '#34d399';
+  }
+})();
+</script>
+</body>
+</html>
