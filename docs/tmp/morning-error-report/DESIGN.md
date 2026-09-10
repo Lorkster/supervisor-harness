@@ -159,9 +159,15 @@ This is the part that makes it a real experiment rather than a preference:
 
 1. Every run stores both rankings in the bundle output, and the HTML shows **two rank columns side by side** with
    disagreements highlighted.
-2. Whoever triages marks each surfaced finding `actionable` / `informational` / `already-known`. One click in the
-   HTML, appended to `verdicts.jsonl` keyed by fingerprint + date. **This is the only human input the system
-   needs, and without it the comparison is vibes.**
+2. Whoever triages marks each surfaced finding `actionable` / `informational` / `already-known` /
+   `bad-fingerprint`. One click in the HTML, appended to `verdicts.jsonl` keyed by fingerprint + run date.
+   **This is the only human input the system needs, and without it the comparison is vibes.**
+
+   The fourth value is a verdict on the *tool*, not the error: it means `collapse_nums prettify` grouped badly,
+   lumping unrelated failures together or splitting one across several findings. It is the only signal that will
+   catch mis-fingerprinting, and a rising rate is a defect report rather than data. Verdicts are observational
+   only — they must never feed back into scoring or suppression, or the labels stop being independent of the
+   ranker and the comparison measures nothing.
 3. After ~15 runs, compute per ranker: precision@5 against the verdicts, how often an `actionable` finding was
    ranked below an `informational` one, and Spearman correlation between the two rankers.
 4. Decide. Likely outcome, stated in advance so it can be falsified: R1 wins on stability and debuggability, R2
