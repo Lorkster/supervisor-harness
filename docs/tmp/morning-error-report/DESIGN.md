@@ -149,9 +149,14 @@ noise (§7).
 
 ### R2 — LLM ranks
 
-One call. Input: the bundle, minus scores. Output: a ranked list with a one-sentence rationale per finding, and
-an explicit `informational: true|false` judgement. Its prompt states the derivative principle and the fact that
-a flat high-volume error is not news, so both rankers are aiming at the same target.
+One call. Input: the bundle **blinded** — `score`, `rank` and every R1-derived field stripped, candidate order
+randomised per run. Without blinding, R2 anchors on R1's ordering and the experiment measures agreement rather
+than judgement. Output: a ranked list with a one-sentence rationale per finding, and an explicit
+`informational: true|false` judgement. Its prompt states the derivative principle and the fact that a flat
+high-volume error is not news, so both rankers are aiming at the same target.
+
+R2's **self-consistency** is a measurement, not an assumption: rank the same bundle twice on a sample of runs and
+record the correlation. A ranker that disagrees with itself is one you cannot debug on the morning it is wrong.
 
 ### The comparison protocol
 
@@ -224,8 +229,11 @@ at — and plain HTTP for the nightly run.
 
 Three rules keep it there:
 
-- **Cap candidates at 25** by R1 pre-score before anything sees a model. Discovery may return 200; the bundle
-  carries the top 25 plus aggregate counts for the tail.
+- **Cap candidates at ~25 with a ranker-neutral prefilter.** Discovery may return 200; the bundle carries the
+  union of *everything novel*, *top-N by distinct traces* and *top-N by hits*, plus aggregate counts for the
+  tail. It must **not** be capped by R1 pre-score: R1 choosing what R2 is allowed to rank confounds the
+  comparison in §6. Both rankers see the same neutral set; a finding neither ever sees stays invisible to the
+  experiment, which is a limitation to state rather than to hide.
 - **Anchor after ranking, never before.** `semantic_code_search` and `list_merge_requests` run only for findings
   that will be emitted — roughly 3–5 calls, not 25.
 - **One exemplar line per candidate, truncated.** Never a sample of N log lines.
