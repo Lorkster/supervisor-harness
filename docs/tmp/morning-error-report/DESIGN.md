@@ -286,8 +286,8 @@ or Jira** — the fingerprint is already redacted by construction, which is a us
 ## 12. Open questions
 
 - Is `min(_time)` usable directly, or is `row_min` required? (Design uses `row_min`, which is documented.)
-- What is the real name and value set of the level field in this deployment? The training deck's `CONFIG` should
-  answer this once filled — reuse it rather than rediscovering.
+- What is the real name and value set of the level field in this deployment? The filled-in VictoriaLogs training
+  deck records this — reuse it rather than rediscovering. Field names stay configurable either way.
 - Is `trace_id` present and well-populated across `cav` services? The whole blast-radius signal depends on it.
   Check coverage % in the vmui Overview tab before committing to the weights.
 - Which Atlassian MCP, and what does its tool surface actually support for search-by-label? Idempotency depends
