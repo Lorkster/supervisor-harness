@@ -30,7 +30,7 @@ is lying.
 |---|---|
 | Must be verifiable on a dev computer first | Plain CLI, no host dependencies. Freeze/replay of inputs. Dry-run by default. |
 | Token usage must be minimal | The model only ever sees a small JSON bundle, never log lines. §8. |
-| **The VictoriaLogs HTTP API is closed** — access is via SSO-approved channels, with scoped tokens on the VL MCP server | The MCP server is the only data path. Prefer a **programmatic MCP client** so collection still costs nothing; otherwise aggregate-only agent collection. This changes the cost model, not the architecture. §8. |
+| **The VictoriaLogs HTTP API is closed** — access is via SSO-approved channels, with a scoped token in the VL MCP client config | The MCP server is the only sanctioned data path, and the collector speaks MCP as a plain program. Collection stays free; nothing about the architecture changes. Never bypass the wrapper. §8. |
 | Jira via a non-official Atlassian MCP (regulatory) | The issue sink is an interface with four methods, not a dependency. The regulated boundary is one file. |
 | Compare deterministic vs LLM ranking | Two rankers over one frozen bundle, plus a ground-truth capture loop. §6. |
 | Host not yet chosen | Everything above the scheduler is host-agnostic; the host is a `cron` line wrapping one command. §10. |
@@ -219,19 +219,28 @@ from a script" is not available, so the original cost strategy does not survive 
 
 ### MCP is a protocol, not a language model
 
-This is the point the whole budget now turns on. **An MCP client does not have to be an LLM.** If the server runs
-HTTP transport and a non-interactive scoped token can be issued, a small program can speak MCP JSON-RPC, call
-`tools/call` for `query` / `hits` / `facets`, and receive JSON back — at zero model cost. Everything else in this
-design then survives unchanged: code writes the bundle, and stages C and D stay deterministic and free.
+**An MCP client does not have to be an LLM**, and this is what saves the budget. The token is set in the MCP
+client configuration, so it is a static credential any process can present — the collector is a small program
+that speaks MCP JSON-RPC, calls `tools/call` for `query` / `hits` / `facets`, and gets JSON back at **zero model
+cost**. The rest of the design is untouched: code writes the bundle, and stages C and D stay deterministic and
+free.
 
-**Settle this before building anything.** Ask whoever owns the tokens:
+**Transport does not constrain this.** Either mode works for a script:
 
-- Can a non-interactive token be issued for a scheduled job, or are tokens user-bound and short-lived?
-- Does its scope cover `{environment="si1.mt1", team="cav"}` across the full retention window? A scope narrower
-  than the query silently truncates results rather than erroring, which would look like a quiet Tuesday.
-- What is its lifetime and renewal path? A token that expires makes the job fail at 06:00; failure must be loud.
+- **stdio** (the server's default) — the collector spawns the server as a subprocess with the configured env and
+  talks over stdin/stdout. For a scheduled job this is the *simpler* option: no listening socket, no network
+  exposure, credential handling identical to any other subprocess.
+- **http / sse** — the collector posts JSON-RPC with the bearer header.
 
-### Lane A — programmatic MCP client (preferred)
+Start from whichever the existing MCP config already uses; there is no reason to add a transport.
+
+> **Do not extract the token and call VictoriaLogs directly**, even though the credential would probably work
+> against `/select/logsql/*`. The HTTP API is closed to force access through an approved channel; routing around
+> the wrapper is precisely what that control exists to prevent. The MCP server *is* the sanctioned path, and a
+> script using it properly is inside the policy, not skirting it. If anyone proposes the shortcut on performance
+> grounds, the answer is no.
+
+### Token budget
 
 | Stage | Model calls | Notes |
 |---|---|---|
@@ -241,13 +250,14 @@ design then survives unchanged: code writes the bundle, and stages C and D stay 
 | Anchoring write-up | 1 batched | emitted findings only |
 | **Total per run** | **2** | **under 15k tokens** |
 
-### Lane B — agent-driven collection (fallback)
+### If collection ever has to be agent-driven
 
-Only if the token cannot leave an interactive session. An agent runs the queries and **writes** `bundle.json`; it
-does not reason about the contents. Stages C and D remain code, so R1 and the report are still free — but steps
-1–2 are no longer zero-token at *collection* time, only at render time.
+Kept as a contingency, not a plan — it applies only if the credential later becomes user-bound and cannot leave
+an interactive session. An agent would run the queries and **write** `bundle.json` without reasoning about the
+contents; C and D stay code, so R1 and the report remain free, but collection stops being free.
 
-Under Lane B the discipline changes, and these five rules are what keep it affordable:
+The five rules below are mandatory in that mode. **Rules 2 and 3 are worth adopting regardless** — they make the
+collector faster and the payload smaller whoever is driving it:
 
 1. **Aggregate-only.** Never call the `query` tool without a terminating `stats` / `top` pipe. A tool result is
    text in a context window; a thousand log lines is the end of the run.
@@ -261,10 +271,10 @@ Under Lane B the discipline changes, and these five rules are what keep it affor
    5 it is 120.
 5. **Cap discovery at ~40 rows**, not 200. The tail is carried as aggregate counts, not as rows.
 
-Budget under Lane B: roughly 6–10k tokens for collection, plus the same two calls as Lane A. Still within
-bounds, but the margin is thinner and the rules above are what create it.
+Collection in that mode costs roughly 6–10k tokens on top of the two calls above — within bounds, but with a much
+thinner margin.
 
-Three further rules apply to both lanes:
+Three further rules apply either way:
 
 - **Cap candidates at ~25 with a ranker-neutral prefilter.** Discovery may return 200; the bundle carries the
   union of *everything novel*, *top-N by distinct traces* and *top-N by hits*, plus aggregate counts for the
@@ -304,7 +314,7 @@ a scheduler that runs one command. Then the choice is reversible.
 | | GitLab CI schedule | Kubernetes CronJob | Dev machine / local cron |
 |---|---|---|---|
 | Reaching VictoriaLogs | Via the VL MCP endpoint | Via the VL MCP endpoint | Via the VL MCP endpoint |
-| **Can it hold a scoped VL token?** | Needs a non-interactive token | Needs a non-interactive token | Works with a developer's own token today — **the only option that is certainly viable before §8 is answered** |
+| **Holding the VL token** | CI variable + generated MCP config | k8s secret + generated MCP config | The MCP config already on the machine — **works today, nothing to arrange** |
 | Secret handling | Native CI variables | Native k8s secrets | Weakest — a real concern for the Jira token |
 | Reproducibility | Good, pinned image | Good, pinned image | Poor |
 | Fits the pilot | Yes | Overkill on day one | **Yes — start here** |
@@ -337,13 +347,13 @@ or Jira** — the fingerprint is already redacted by construction, which is a us
 
 ## 12. Open questions
 
-- **Can a non-interactive scoped VL token be issued for a scheduled job?** This decides Lane A vs Lane B in §8,
-  and it constrains the host choice in §10. It is the first question to answer, before any code is written.
-- **What exactly does the token scope cover?** A scope narrower than the query returns fewer results rather than
-  an error — the failure mode is a report that looks fine and is quietly incomplete. Verify by comparing an MCP
-  result against the same query run in vmui as a human.
-- Does the VL MCP server run HTTP transport, or stdio only? Lane A needs a transport a scheduled process can
-  reach.
+- ~~Can a non-interactive scoped VL token be issued?~~ **Answered:** the token lives in the MCP client config, so
+  a plain program can present it. §8 assumes this.
+- **What exactly does the token scope cover?** Still open, and the one that matters most. A scope narrower than
+  the query returns fewer results rather than an error — a report that looks fine and is quietly incomplete.
+  Verify by comparing an MCP result against the same query run in vmui as a human.
+- **What is the token's lifetime and renewal path?** A static credential still expires eventually, and expiry at
+  06:00 must fail loudly rather than produce an empty report.
 - Is `min(_time)` usable directly, or is `row_min` required? (Design uses `row_min`, which is documented.)
 - What is the real name and value set of the level field in this deployment? The filled-in VictoriaLogs training
   deck records this — reuse it rather than rediscovering. Field names stay configurable either way.

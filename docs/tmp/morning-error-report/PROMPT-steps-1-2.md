@@ -18,9 +18,8 @@ the verification bar, and the traps.
 report from §9.
 
 At the end of step 2 the tool must be genuinely useful to a developer every morning, on its own, with **no model
-involved in ranking or rendering**. Under Lane A (see constraints) the whole run costs nothing; under Lane B only
-collection costs tokens. Either way, `render` from a saved bundle is free and offline — that property is the
-point of stopping here, and it is what makes the tool testable. Do not compromise it.
+involved at any point** — collection, ranking and rendering are all plain code. That property is the point of
+stopping here, and it is what makes the tool testable. Do not compromise it.
 
 ## Explicitly out of scope — do not build these
 
@@ -36,14 +35,16 @@ capture without touching the renderer.
 
 ## Constraints that are not negotiable
 
-- **The VictoriaLogs HTTP API is closed.** Access goes through the VictoriaLogs MCP server with a scoped token,
-  because it must go through SSO-approved channels. Read §8 of the design — it sets out two lanes, and
-  **answering which lane applies is your first task, before writing code**:
-  - **Lane A**: a non-interactive scoped token exists and the server runs HTTP transport, so your collector is a
-    small MCP client speaking JSON-RPC. No model in the loop, collection costs nothing. Prefer this.
-  - **Lane B**: the token cannot leave an interactive session, so an agent runs the queries and writes the
-    bundle. Then the five aggregate-only rules in §8 are mandatory, not advisory.
-  Whichever lane, `render` must stay pure code over the bundle: the report is free either way.
+- **The VictoriaLogs HTTP API is closed — go through the MCP server, and do not route around it.** Access must
+  use SSO-approved channels. The scoped token is already set in the MCP client config, so **your collector is a
+  small MCP client in code, not an agent**: JSON-RPC `initialize`, then `tools/call` for `query` / `hits` /
+  `facets`. No model is involved in collection, ranking or rendering — the whole run costs nothing.
+  - Use whichever transport the existing MCP config uses. If that is **stdio**, spawn the server as a subprocess
+    with the configured environment and speak over stdin/stdout — for a scheduled job that is simpler than HTTP,
+    not harder. Do not add a transport the config does not already have.
+  - **Do not extract the bearer token and call `/select/logsql/*` directly**, even if you find that it works. The
+    API is closed deliberately; the MCP server is the sanctioned path. If it looks like a tempting shortcut, that
+    is the control doing its job. Raise it rather than taking it.
 - **Read-only.** The tool calls only the VL MCP server's read tools (`query`, `hits`, `facets`, `field_values`,
   `streams`). Every one of them is read-only by construction, so exploration cannot damage anything.
 - **Runs on a dev machine, one command, no host dependencies.** No Docker required to run it, no CI, no cluster.
@@ -51,9 +52,9 @@ capture without touching the renderer.
 - **Nothing hardcoded that varies by deployment.** Field names (level field, trace id field), the stream
   selector, the instance URL and the window all come from a config file. Pilot values are
   `{environment="si1.mt1", team="cav"}`, but the code must not assume them.
-- Python unless the repo you are working in clearly says otherwise. Standard library plus an HTTP client, and
-  under Lane A a minimal MCP client — JSON-RPC `initialize` then `tools/call` is a short file; reach for an SDK
-  only if the handshake needs it. Keep dependencies near zero.
+- Python unless the repo you are working in clearly says otherwise. A minimal MCP client is a short file —
+  `initialize`, then `tools/call` — so reach for an SDK only if the handshake genuinely needs one. Keep
+  dependencies near zero.
 
 ## Shape of the CLI
 
@@ -119,11 +120,9 @@ result reported honestly is worth more than a claim.
 
 ## Report back with
 
-1. Which lane you are on and why — the token answer you got, and from whom. If Lane B, the measured token cost
-   of one collection run.
-2. The commands to run it, and a real example of the HTML output.
-3. The fingerprints you got, and your own judgement on whether `collapse_nums prettify` grouped this deployment's
+1. The commands to run it, and a real example of the HTML output.
+2. The fingerprints you got, and your own judgement on whether `collapse_nums prettify` grouped this deployment's
    errors sensibly — it is the assumption the whole design rests on, and this is the first time anyone will see
    it against real data. If it grouped badly, that is the single most important thing to tell us.
-4. Actual `trace_id` coverage, and whether the §6 weights are defensible given it.
-5. Anything in `DESIGN.md` that turned out to be wrong, unbuildable, or more expensive than it looked.
+3. Actual `trace_id` coverage, and whether the §6 weights are defensible given it.
+4. Anything in `DESIGN.md` that turned out to be wrong, unbuildable, or more expensive than it looked.
