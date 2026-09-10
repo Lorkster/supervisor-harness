@@ -29,7 +29,8 @@ is lying.
 | Constraint | Consequence for the design |
 |---|---|
 | Must be verifiable on a dev computer first | Plain CLI, no host dependencies. Freeze/replay of inputs. Dry-run by default. |
-| Token usage must be minimal | **Code calls VictoriaLogs, not the model.** The model only ever sees a small JSON bundle. See §8. |
+| Token usage must be minimal | The model only ever sees a small JSON bundle, never log lines. §8. |
+| **The VictoriaLogs HTTP API is closed** — access is via SSO-approved channels, with scoped tokens on the VL MCP server | The MCP server is the only data path. Prefer a **programmatic MCP client** so collection still costs nothing; otherwise aggregate-only agent collection. This changes the cost model, not the architecture. §8. |
 | Jira via a non-official Atlassian MCP (regulatory) | The issue sink is an interface with four methods, not a dependency. The regulated boundary is one file. |
 | Compare deterministic vs LLM ranking | Two rankers over one frozen bundle, plus a ground-truth capture loop. §6. |
 | Host not yet chosen | Everything above the scheduler is host-agnostic; the host is a `cron` line wrapping one command. §10. |
@@ -41,7 +42,8 @@ is lying.
 Four stages with a **frozen evidence bundle** as the seam in the middle.
 
 ```
-  VictoriaLogs                         GitLab MCP        Jira MCP
+  VictoriaLogs MCP                     GitLab            Jira MCP
+  (scoped token)                                         (non-official)
        │                                    │                │
        ▼                                    ▼                ▼
   ┌─────────┐   ┌──────────┐   ┌────────┐   ┌────────┐   ┌────────┐
@@ -209,25 +211,60 @@ eventually breaks. Expired entries reappear in the report with a "suppression la
 
 ---
 
-## 8. Token budget
+## 8. Access path and token budget
 
-The single most important decision for cost: **the scheduled job calls the VictoriaLogs HTTP API directly from
-code, not through MCP.** An MCP tool result is by definition text in a model context; routing aggregate queries
-through a conversational agent pays tokens for data the model does not need to reason about line by line.
+**Corrects an earlier assumption in this design.** The VictoriaLogs HTTP API is closed — access is forced
+through SSO-approved channels, and the VictoriaLogs MCP server holds scoped tokens. "Call `/select/logsql/query`
+from a script" is not available, so the original cost strategy does not survive contact.
 
-Use the VictoriaLogs MCP server for **development and ad-hoc investigation** — that is exactly what it is good
-at — and plain HTTP for the nightly run.
+### MCP is a protocol, not a language model
 
-| Stage | Model calls | Approx. input |
+This is the point the whole budget now turns on. **An MCP client does not have to be an LLM.** If the server runs
+HTTP transport and a non-interactive scoped token can be issued, a small program can speak MCP JSON-RPC, call
+`tools/call` for `query` / `hits` / `facets`, and receive JSON back — at zero model cost. Everything else in this
+design then survives unchanged: code writes the bundle, and stages C and D stay deterministic and free.
+
+**Settle this before building anything.** Ask whoever owns the tokens:
+
+- Can a non-interactive token be issued for a scheduled job, or are tokens user-bound and short-lived?
+- Does its scope cover `{environment="si1.mt1", team="cav"}` across the full retention window? A scope narrower
+  than the query silently truncates results rather than erroring, which would look like a quiet Tuesday.
+- What is its lifetime and renewal path? A token that expires makes the job fail at 06:00; failure must be loud.
+
+### Lane A — programmatic MCP client (preferred)
+
+| Stage | Model calls | Notes |
 |---|---|---|
-| A discover | 0 | — |
-| B evidence | 0 | — |
-| C rank (R1) | 0 | — |
-| C rank (R2) | 1 | bundle ≈ 4–6k tokens at 25 candidates |
-| Anchoring + write-up | 1 batched | only the findings that survived ranking |
-| **Total per run** | **2** | **well under 15k tokens** |
+| A discover, B evidence | 0 | MCP client in code |
+| C rank (R1), D render | 0 | pure functions over the bundle |
+| C rank (R2) | 1 | blinded bundle ≈ 4–6k tokens |
+| Anchoring write-up | 1 batched | emitted findings only |
+| **Total per run** | **2** | **under 15k tokens** |
 
-Three rules keep it there:
+### Lane B — agent-driven collection (fallback)
+
+Only if the token cannot leave an interactive session. An agent runs the queries and **writes** `bundle.json`; it
+does not reason about the contents. Stages C and D remain code, so R1 and the report are still free — but steps
+1–2 are no longer zero-token at *collection* time, only at render time.
+
+Under Lane B the discipline changes, and these five rules are what keep it affordable:
+
+1. **Aggregate-only.** Never call the `query` tool without a terminating `stats` / `top` pipe. A tool result is
+   text in a context window; a thousand log lines is the end of the run.
+2. **One query for the whole baseline.** `| stats by (service_name, _msg, _time:1d) count()` over the 8-day
+   window returns the entire per-day series sparsely, in one round trip, instead of seven. It is also exactly
+   the shape the report's sparkline needs.
+3. **Exemplars after ranking, not during discovery.** Discovery returns fingerprints and counts only. Fetch the
+   one raw exemplar per finding once you know which 3–5 will be emitted. This removes the largest single
+   contributor to payload size.
+4. **Hourly spread only for emitted findings.** `stats by (_time:1h)` across 25 candidates is 600 rows; across
+   5 it is 120.
+5. **Cap discovery at ~40 rows**, not 200. The tail is carried as aggregate counts, not as rows.
+
+Budget under Lane B: roughly 6–10k tokens for collection, plus the same two calls as Lane A. Still within
+bounds, but the margin is thinner and the rules above are what create it.
+
+Three further rules apply to both lanes:
 
 - **Cap candidates at ~25 with a ranker-neutral prefilter.** Discovery may return 200; the bundle carries the
   union of *everything novel*, *top-N by distinct traces* and *top-N by hits*, plus aggregate counts for the
@@ -266,7 +303,8 @@ a scheduler that runs one command. Then the choice is reversible.
 
 | | GitLab CI schedule | Kubernetes CronJob | Dev machine / local cron |
 |---|---|---|---|
-| Network to VictoriaLogs | Depends on runner placement | Best — in-cluster | Needs a tunnel or public endpoint |
+| Reaching VictoriaLogs | Via the VL MCP endpoint | Via the VL MCP endpoint | Via the VL MCP endpoint |
+| **Can it hold a scoped VL token?** | Needs a non-interactive token | Needs a non-interactive token | Works with a developer's own token today — **the only option that is certainly viable before §8 is answered** |
 | Secret handling | Native CI variables | Native k8s secrets | Weakest — a real concern for the Jira token |
 | Reproducibility | Good, pinned image | Good, pinned image | Poor |
 | Fits the pilot | Yes | Overkill on day one | **Yes — start here** |
@@ -299,6 +337,13 @@ or Jira** — the fingerprint is already redacted by construction, which is a us
 
 ## 12. Open questions
 
+- **Can a non-interactive scoped VL token be issued for a scheduled job?** This decides Lane A vs Lane B in §8,
+  and it constrains the host choice in §10. It is the first question to answer, before any code is written.
+- **What exactly does the token scope cover?** A scope narrower than the query returns fewer results rather than
+  an error — the failure mode is a report that looks fine and is quietly incomplete. Verify by comparing an MCP
+  result against the same query run in vmui as a human.
+- Does the VL MCP server run HTTP transport, or stdio only? Lane A needs a transport a scheduled process can
+  reach.
 - Is `min(_time)` usable directly, or is `row_min` required? (Design uses `row_min`, which is documented.)
 - What is the real name and value set of the level field in this deployment? The filled-in VictoriaLogs training
   deck records this — reuse it rather than rediscovering. Field names stay configurable either way.
