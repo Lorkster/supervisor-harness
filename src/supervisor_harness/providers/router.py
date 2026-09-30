@@ -20,6 +20,7 @@ from .base import (
     DelegationRequired,
     Provider,
     ProviderError,
+    ProviderRefusal,
 )
 
 # Safe to import unconditionally: `bedrock.py` imports the Anthropic SDK lazily,
@@ -135,7 +136,10 @@ class ModelRouter:
             for attempt in range(retries + 1):
                 try:
                     return await provider.complete(attempt_request)
-                except DelegationRequired:
+                except (DelegationRequired, ProviderRefusal):
+                    # Control flow and policy, not failure: neither is retried,
+                    # and a refusal is not routed to another model. See
+                    # `ProviderRefusal` for why.
                     raise
                 except ProviderError as exc:
                     errors.append(str(exc))
@@ -188,7 +192,8 @@ def _with_model(
     (top level for OpenAI-compatible APIs, under ``options`` for Ollama).
     """
     params = dict(params)
-    temperature = float(params.pop("temperature", request.temperature))
+    raw_temperature = params.pop("temperature", request.temperature)
+    temperature = None if raw_temperature is None else float(raw_temperature)
     max_tokens = int(params.pop("max_tokens", request.max_tokens))
     timeout = float(params.pop("timeout", request.timeout))
 
@@ -204,6 +209,7 @@ def _with_model(
         json_schema=request.json_schema,
         timeout=timeout,
         extra=extra,
+        cache=request.cache,
     )
 
 

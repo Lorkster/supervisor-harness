@@ -27,6 +27,30 @@ class ProviderError(RuntimeError):
         self.retryable = retryable
 
 
+class ProviderRefusal(ProviderError):
+    """The model declined the request: a policy decision, not a failure.
+
+    Never retried, and never passed down a fallback chain. Retrying a refusal
+    until it goes away is circumventing a safeguard, and routing it to another
+    model silently changes which model did the work -- a fallback route is for
+    outages. It is raised so the caller records a refusal *as* a refusal,
+    rather than reading an empty answer as an agent that did nothing and
+    sending it back for another paid attempt.
+    """
+
+    def __init__(self, provider: str, *, model: str = "", category: str = "",
+                 explanation: str = "") -> None:
+        detail = f"refused by {model or 'the model'}"
+        if category:
+            detail += f" ({category})"
+        if explanation:
+            detail += f": {explanation}"
+        super().__init__(provider, detail, retryable=False)
+        self.model = model
+        self.category = category
+        self.explanation = explanation
+
+
 class DelegationRequired(Exception):
     """Raised by the host provider: the calling host must run this turn itself.
 
@@ -45,17 +69,36 @@ class ChatMessage:
     content: str
 
 
+#: The sampling temperature the OpenAI-compatible and Ollama providers use when
+#: a route sets none -- what every request carried before temperature became
+#: optional, kept so those routes behave exactly as they did.
+DEFAULT_TEMPERATURE = 0.2
+
+#: Room for an answer *and* the reasoning before it. Current Claude models think
+#: on every request and bill the thinking as output, so the old 4096 could be
+#: spent before the answer began; a truncated answer is a failed turn that was
+#: paid for, and then usually paid for again.
+DEFAULT_MAX_TOKENS = 16_000
+
+
 @dataclass
 class CompletionRequest:
     messages: list[ChatMessage] = field(default_factory=list)
     system: str = ""
     model: str = ""
-    temperature: float = 0.2
-    max_tokens: int = 4096
+    # ``None`` means "the provider's own default". The Anthropic Messages API
+    # rejects sampling parameters on current models (HTTP 400), so it must be
+    # possible not to send one at all; a route that wants one sets it in params.
+    temperature: float | None = None
+    max_tokens: int = DEFAULT_MAX_TOKENS
     stop: list[str] = field(default_factory=list)
     json_schema: dict[str, Any] | None = None   # ask for structured output
     timeout: float = 180.0
     extra: dict[str, Any] = field(default_factory=dict)
+    #: The caller will resend this conversation with more appended -- an agent's
+    #: tool rounds and turns -- so caching its prefix pays. One-shot calls leave
+    #: it off: a cache write costs more than plain input and would never be read.
+    cache: bool = False
 
 
 @dataclass

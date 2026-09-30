@@ -728,6 +728,57 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 1 if report else 0
 
 
+def cmd_findings(args: argparse.Namespace) -> int:
+    """Every finding a run recorded, as structured records, with what became of it.
+
+    The published way to read a run's findings. A tool consuming them -- an
+    evaluation scoring them, a SARIF export -- previously had to fold the
+    harness's internal state to get at them, which ties it to whatever that
+    state looks like this release.
+    """
+    sup = _supervisor(args)
+    run_id = args.run_id or sup.store.latest_run_id()
+    if not run_id:
+        print("No runs recorded yet.", file=sys.stderr)
+        return 1
+    if run_id not in sup.store.list_run_ids():
+        print(f"error: no such run: {run_id}", file=sys.stderr)
+        return 2
+
+    from .core.phases import reconcile_findings
+
+    state = sup.store.load_state(run_id)
+    reconciled = reconcile_findings(state)
+    if args.json:
+        _emit({"run_id": run_id, "findings": [
+            {
+                "id": r.finding.id, "agent_id": r.finding.agent_id, "lens": r.finding.lens,
+                "severity": str(r.finding.severity), "title": r.finding.title,
+                "detail": r.finding.detail, "path": r.finding.path,
+                "line_start": r.finding.line_start, "line_end": r.finding.line_end,
+                "cwe": r.finding.cwe, "confidence": r.finding.confidence,
+                "evidence": r.finding.evidence, "recommendation": r.finding.recommendation,
+                "tags": r.finding.tags, "status": r.state, "status_reason": r.reason,
+                "task_ids": r.task_ids,
+            }
+            for r in reconciled
+        ]}, True)
+        return 0
+    if not reconciled:
+        print(f"{run_id}: no findings.")
+        return 0
+    for r in reconciled:
+        f = r.finding
+        where = f.path
+        if f.path and f.line_start:
+            where += f":{f.line_start}" + (f"-{f.line_end}" if f.line_end > f.line_start else "")
+        tail = "  ".join(x for x in (where, f.cwe) if x)
+        print(f"[{f.severity!s:<8}] {f.title}  ({f.lens}, {r.state})")
+        if tail:
+            print(f"           {tail}")
+    return 0
+
+
 def cmd_trajectory(args: argparse.Namespace) -> int:
     """Export a run as a portable trajectory document."""
     sup = _supervisor(args)
@@ -1136,6 +1187,13 @@ def _add_read_commands(sub: Any, common: argparse.ArgumentParser) -> None:
                    help="filename for the evidence written under the run (default: audit.md)")
     p.set_defaults(func=cmd_audit)
 
+    p = sub.add_parser("findings", parents=[common],
+                       help="every finding a run recorded, with its location, CWE and "
+                            "what became of it")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
+    p.set_defaults(func=cmd_findings)
+
     p = sub.add_parser("trajectory", parents=[common],
                        help="export a run as a portable trajectory document")
     p.add_argument("run_id", nargs="?", default="",
@@ -1244,7 +1302,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _utf8_streams() -> None:
+    """Write UTF-8 whatever the stream's own encoding, before anything is printed.
+
+    A Windows pipe defaults to cp1252, which cannot encode characters the
+    harness prints -- `→` among them. A run driven by another program finished,
+    wrote every event, and then died printing its result, so the caller saw
+    exit 1 and no JSON for a run that had succeeded. Everything that reads this
+    output -- a host, a script, an evaluation -- expects UTF-8 anyway.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(ValueError, OSError):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_streams()
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args) or 0)
