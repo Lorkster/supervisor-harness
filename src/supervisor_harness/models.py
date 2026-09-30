@@ -318,6 +318,12 @@ class Usage:
     output_tokens: int = 0
     seconds: float = 0.0
     tool_calls: int = 0
+    # Prompt-cache traffic, which providers that cache report *separately* from
+    # ``input_tokens``: a cached read is billed at a fraction of input, a write
+    # at a premium. Kept apart so a cost computed from this is not wrong in
+    # either direction.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
     def add(self, other: Usage) -> Usage:
         return Usage(
@@ -325,6 +331,8 @@ class Usage:
             output_tokens=self.output_tokens + other.output_tokens,
             seconds=self.seconds + other.seconds,
             tool_calls=self.tool_calls + other.tool_calls,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
         )
 
     @property

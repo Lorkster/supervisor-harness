@@ -76,8 +76,9 @@ from ..models import (
     ScopeEnvelope,
     TaskDecision,
     TaskStatus,
+    Usage,
 )
-from ..providers.base import ChatMessage, CompletionRequest
+from ..providers.base import ChatMessage, CompletionRequest, ProviderRefusal
 from ..providers.router import ModelRouter
 from ..serde import to_jsonable
 from ..store.events import EventType
@@ -116,6 +117,10 @@ MAX_TOOL_ROUNDS = 6
 #: MAX_TOOL_ROUNDS, so the total is too.
 TOOL_ECHO_CHARS = 4000
 TOOL_RESULT_CHARS = 8000
+
+#: What providers call an answer cut off by the token limit: Anthropic and
+#: Bedrock say ``max_tokens``, OpenAI-compatible APIs and Ollama say ``length``.
+TRUNCATED_FINISH_REASONS = frozenset({"max_tokens", "length"})
 
 
 
@@ -371,7 +376,7 @@ class Supervisor:
                 packets=[packet],
             )
 
-        plan = await self.supervision._call(stage, system, user, PLANNING_SCHEMA)
+        plan = await self.supervision._call(stage, system, user, PLANNING_SCHEMA, session)
         self._apply_plan(session, plan, fallback, registry)
         return None
 
@@ -511,7 +516,7 @@ class Supervisor:
                 packets=[packet],
             )
 
-        data = await self.supervision._call(stage, system, user, SYNTHESIS_SCHEMA)
+        data = await self.supervision._call(stage, system, user, SYNTHESIS_SCHEMA, session)
         self._apply_synthesis(session, data)
         return None
 
@@ -803,7 +808,7 @@ class Supervisor:
             )
 
         system, user = phases.checkpoint_prompt(state, deterministic)
-        data = await self.supervision._call(stage, system, user, CHECKPOINT_SCHEMA)
+        data = await self.supervision._call(stage, system, user, CHECKPOINT_SCHEMA, session)
         judged = parse_checkpoint(data, state.id, iteration)
         await self._apply_checkpoint(session, deterministic, judged)
         return None
@@ -903,7 +908,7 @@ class Supervisor:
 
         system, user = phases.lessons_prompt(state, checkpoint)
         try:
-            data = await self.supervision._call(stage, system, user, LESSONS_SCHEMA)
+            data = await self.supervision._call(stage, system, user, LESSONS_SCHEMA, session)
         except Exception as exc:  # noqa: BLE001 - never fail a run over the learning pass
             await session.anote(f"improvement stage skipped: {exc}")
             return self._finish(session)
@@ -1373,6 +1378,10 @@ class Supervisor:
             # a question that needed both meant reading the first one again --
             # from a tool budget the re-reading was spending.
             turn_history = list(history)
+            # Every round of the turn is paid for, not only the answering one.
+            # Only the last round's usage used to reach the record, so a turn
+            # that read four files before answering was billed as one call.
+            turn_usage = Usage()
 
             for tool_round in range(MAX_TOOL_ROUNDS + 1):
                 # The last pass through is the answering round, not another
@@ -1398,18 +1407,38 @@ class Supervisor:
                             system="You are a supervised agent. Answer only with the JSON "
                                    "object your brief specifies.",
                             json_schema=packet.schema,
-                            max_tokens=4096,
+                            cache=True,
                         ),
                         binding=agent.binding,
                     )
+                except ProviderRefusal as exc:
+                    # A refusal is a result, not a failure to retry: recorded
+                    # with its own fields so a reader -- or an evaluation
+                    # scoring this run -- can tell it from an agent that broke.
+                    await session.anote(
+                        "agent refused by the model", actor=agent.id, refusal=True,
+                        provider=exc.provider, model=exc.model, category=exc.category,
+                        explanation=exc.explanation,
+                    )
+                    await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
+                    return
                 except Exception as exc:  # noqa: BLE001 - one agent must not kill the run
                     await session.anote(f"agent failed: {exc}", actor=agent.id)
                     await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
                     return
 
+                turn_usage = turn_usage.add(response.usage)
+                if response.finish_reason in TRUNCATED_FINISH_REASONS:
+                    await session.anote(
+                        "answer truncated at the token limit", actor=agent.id,
+                        finish_reason=response.finish_reason,
+                    )
                 payload = response.json(required=False)
                 raw_text = response.text
-                payload.setdefault("usage", to_jsonable(response.usage))
+                # Measured, so it replaces anything the model wrote under
+                # "usage" in its own answer: the subject of the count does not
+                # get to report it.
+                payload["usage"] = to_jsonable(turn_usage)
                 if response.reasoning and not payload.get("reasoning"):
                     payload["reasoning"] = response.reasoning
 

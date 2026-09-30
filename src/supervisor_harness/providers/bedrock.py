@@ -39,10 +39,12 @@ from typing import Any
 
 from ..models import Usage
 from .base import (
+    DEFAULT_MAX_TOKENS,
     CompletionRequest,
     CompletionResponse,
     Provider,
     ProviderError,
+    ProviderRefusal,
     schema_instruction,
 )
 
@@ -171,11 +173,14 @@ class BedrockProvider(Provider):
 
         kwargs: dict[str, Any] = {
             "model": request.model or self.default_model,
-            "max_tokens": request.max_tokens or 4096,
-            "temperature": request.temperature,
+            "max_tokens": request.max_tokens or DEFAULT_MAX_TOKENS,
             "messages": messages,
             "timeout": request.timeout,
         }
+        # Current Claude models reject sampling parameters: send one only when
+        # a route asks for it. See `CompletionRequest.temperature`.
+        if request.temperature is not None:
+            kwargs["temperature"] = request.temperature
         if system:
             kwargs["system"] = system
         if request.stop:
@@ -195,6 +200,14 @@ class BedrockProvider(Provider):
         except Exception as exc:
             raise self._as_provider_error(exc) from exc
 
+        if getattr(message, "stop_reason", "") == "refusal":
+            details = getattr(message, "stop_details", None)
+            raise ProviderRefusal(
+                self.name,
+                model=getattr(message, "model", "") or kwargs["model"],
+                category=str(getattr(details, "category", "") or ""),
+                explanation=str(getattr(details, "explanation", "") or ""),
+            )
         return self._to_response(message, kwargs["model"])
 
     # -- mapping -----------------------------------------------------------
@@ -239,6 +252,8 @@ class BedrockProvider(Provider):
             usage=Usage(
                 input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
                 output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                cache_read_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+                cache_write_tokens=int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
             ),
             finish_reason=getattr(message, "stop_reason", "") or "",
         )

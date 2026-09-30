@@ -8,6 +8,7 @@ from .base import (
     DelegationRequired,
     Provider,
     ProviderError,
+    ProviderRefusal,
     extract_json,
 )
 from .host import HostProvider
@@ -27,6 +28,7 @@ __all__ = [
     "OpenRouterProvider",
     "Provider",
     "ProviderError",
+    "ProviderRefusal",
     "build_provider",
     "extract_json",
 ]
