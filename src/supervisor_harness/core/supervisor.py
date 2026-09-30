@@ -31,7 +31,6 @@ in-memory change second, which is what makes a run resumable from any point.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import traceback
 from dataclasses import replace
 from pathlib import Path
@@ -69,7 +68,6 @@ from ..models import (
     Decision,
     DirectiveKind,
     DoDCriterion,
-    DriftAssessment,
     ExecutionTask,
     Phase,
     RunMode,
@@ -88,9 +86,6 @@ from . import phases
 from .baseline import git_baseline
 from .consolidate import consolidate
 from .dod import verify_criterion
-from .drift import (
-    should_escalate,
-)
 from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
 from .journal import RunJournal
 from .lifecycle import Lifecycle
@@ -1035,18 +1030,8 @@ class Supervisor:
         turn = await self.supervision._record_turn(session, agent, payload)
         directive = await self.supervision._supervise(session, agent, turn)
 
-        # The same second opinion the autonomous loop takes. Skipped only when
-        # the drift stage is itself host-routed, since the harness cannot then
-        # run it without asking the host for another round trip.
-        if not self.lifecycle._delegated("drift") and should_escalate(
-            session.state.drift.get(agent.id, DriftAssessment()),
-            self.config.policy,
-            max(0, turn.seq - 1),
-        ):
-            # A failed second opinion is not fatal: the heuristic assessment
-            # already stands, and the escalation is an extra rather than a step.
-            with contextlib.suppress(Exception):
-                await self.supervision.supervise_with_model(session.state.id, agent.id)
+        # The drift model's second opinion, when warranted, was taken inside
+        # `_supervise`, before the directive -- see there.
 
         if agent.kind is AgentKind.EXECUTION and directive.kind in (
             DirectiveKind.ACCEPT, DirectiveKind.STOP, DirectiveKind.ESCALATE
@@ -1372,6 +1357,7 @@ class Supervisor:
         for _ in range(agent.budget.max_turns):
             payload: dict[str, Any] | None = None
             raw_text = ""
+            tools_called = 0
             # Tool results accumulate across the rounds of one turn and are
             # dropped at the end of it, where the directive replaces them. This
             # used to be reassigned to three messages on every round, so the
@@ -1461,6 +1447,7 @@ class Supervisor:
                     break
 
                 results = [self.toolbox.call(name, args, agent) for name, args in calls]
+                tools_called += len(calls)
                 await session.anote(
                     "tools called",
                     actor=agent.id,
@@ -1475,6 +1462,12 @@ class Supervisor:
             if payload is None:
                 await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
                 return
+            # Measured, like the tokens: what the drift check reads to tell a turn
+            # spent reading from an idle one, and what `Budget.max_tool_calls`
+            # is enforced against -- a ceiling nothing counted until now.
+            usage_record = payload.get("usage")
+            if isinstance(usage_record, dict):
+                usage_record["tool_calls"] = tools_called
 
             if agent.kind is AgentKind.VERIFICATION:
                 # Same as the host path: the turn is recorded and assessed
@@ -1489,15 +1482,6 @@ class Supervisor:
             turn = await self.supervision._record_turn(session, agent, payload)
             await self._flush_assists(session, agent)
             directive = await self.supervision._supervise(session, agent, turn)
-
-            if should_escalate(
-                session.state.drift.get(agent.id, DriftAssessment()),
-                self.config.policy,
-                turn.seq - 1,
-            ):
-                # As above: the escalation is an extra, not a step.
-                with contextlib.suppress(Exception):
-                    await self.supervision.supervise_with_model(session.state.id, agent.id)
 
             if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP, DirectiveKind.ESCALATE):
                 if agent.kind is AgentKind.EXECUTION:
