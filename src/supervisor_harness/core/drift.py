@@ -217,8 +217,23 @@ def _check_brief_echo(ctx: TurnContext) -> DriftSignal | None:
     )
 
 
+#: The signals that are about *where* an agent worked rather than how well.
+#: A second opinion may lower a drift score, but never below what these alone
+#: say: the heuristics cannot be talked out of a scope violation.
+SCOPE_SIGNALS = frozenset({"scope_paths", "forbidden_paths", "out_of_scope_topic"})
+
+
 def _check_no_progress(ctx: TurnContext) -> DriftSignal | None:
-    """A turn that produced nothing: no findings, no files, no verdict."""
+    """A turn that produced nothing: no findings, no files, no verdict.
+
+    A turn spent reading the workspace is not nothing. It used to score the
+    same as an idle one, so a lens working through a repository before
+    reporting was refocused on every turn -- told to "read a specific file",
+    which is what it had just done -- and in one observed run stopped with
+    most of its budget unspent. That case is its own, weaker signal: enough to
+    corroborate real drift and to ask for a report as the budget runs out, not
+    enough on its own to correct an agent that is working.
+    """
     produced = (
         len(ctx.turn.findings)
         + len(ctx.turn.files_touched)
@@ -229,6 +244,14 @@ def _check_no_progress(ctx: TurnContext) -> DriftSignal | None:
         return None
     if ctx.turn.claimed_status is AgentStatus.BLOCKED and ctx.turn.blocked_on:
         return None  # Blocked with a stated reason is a legitimate outcome.
+    if ctx.turn.usage.tool_calls:
+        return DriftSignal(
+            kind="unreported_exploration",
+            severity=Severity.LOW,
+            detail=(f"read the workspace ({ctx.turn.usage.tool_calls} tool call(s)) "
+                    "but reported nothing from it"),
+            score=0.3,
+        )
     return DriftSignal(
         kind="no_progress",
         severity=Severity.MEDIUM,
@@ -308,6 +331,11 @@ def merge_assessments(heuristic: DriftAssessment, model: DriftAssessment) -> Dri
     neither is allowed to fully override the other.
     """
     score = round(0.4 * heuristic.score + 0.6 * model.score, 3)
+    if any(s.kind in SCOPE_SIGNALS for s in heuristic.signals):
+        # What the docstring above always claimed and the arithmetic did not
+        # enforce: a scope violation at 0.85 and a model saying 0.0 averaged
+        # to 0.34, below the threshold -- accepted.
+        score = max(score, heuristic.score)
     return DriftAssessment(
         on_task=score < 0.45 and model.on_task,
         score=score,
@@ -367,6 +395,12 @@ def _corrections_from(signals: list[DriftSignal], agent: AgentSpec) -> list[str]
         out.append(
             "That turn produced nothing. Take one concrete action -- read a specific "
             "file, run a specific command -- and report its result."
+        )
+    if "unreported_exploration" in kinds:
+        out.append(
+            "You have read the workspace but reported nothing from it. Report what you "
+            "found as findings with file:line evidence. If you found nothing, say so and "
+            "report `status: done`."
         )
     if "topic_divergence" in kinds:
         out.append("You are answering a different question. Re-read the task and your objectives.")
@@ -431,10 +465,9 @@ def decide_directive(
         )
 
     if assessment.score >= policy.drift_threshold:
-        scope_signals = {"scope_paths", "forbidden_paths", "out_of_scope_topic"}
         kind = (
             DirectiveKind.NARROW
-            if any(s.kind in scope_signals for s in assessment.signals)
+            if any(s.kind in SCOPE_SIGNALS for s in assessment.signals)
             else DirectiveKind.REFOCUS
         )
         return Directive(
@@ -477,10 +510,17 @@ def decide_directive(
             turns_remaining=remaining,
         )
 
+    # Still exploring and nothing reported, with the budget nearly gone: say
+    # so while there is a turn left to answer in. Budget exhaustion stops an
+    # agent *after* its last turn, so an agent that only ever read would
+    # otherwise end with nothing to show for it.
+    exploring = any(s.kind == "unreported_exploration" for s in assessment.signals)
     return Directive(
         agent_id=agent.id,
         kind=DirectiveKind.CONTINUE,
         rationale=assessment.summary or "on brief",
+        corrections=(_corrections_from(assessment.signals, agent)
+                     if exploring and remaining <= 2 else []),
         focus=agent.objectives if remaining <= 1 else [],
         inbox=inbox,
         turns_remaining=remaining,
@@ -498,6 +538,7 @@ def status_after(directive: Directive) -> AgentStatus:
 
 __all__ = [
     "ACTIVE_AGENT_STATUSES",
+    "SCOPE_SIGNALS",
     "TurnContext",
     "assess_heuristically",
     "decide_directive",

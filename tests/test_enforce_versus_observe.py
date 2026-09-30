@@ -76,8 +76,13 @@ BROAD_SUPPRESSION_ALLOWED = {
     "cli.py": "rendering a progress line must not fail a command",
     "config.py": "an unrecognised env override is ignored, not fatal",
     "core/consolidate.py": "a reasoner that raises leaves the library untidied, not broken",
-    "core/supervisor.py": "the learning pass, the tidy-up, the drift second opinion, "
-                          "and one agent's crash -- none may end a run",
+    # Not an observing surface: the second opinion decides a directive. It is
+    # listed because the broad catch fails *closed* -- a failed opinion leaves
+    # the stricter heuristic assessment standing, noted on the log.
+    "core/supervision.py": "a failed drift second opinion leaves the stricter heuristic "
+                           "assessment standing, noted on the log",
+    "core/supervisor.py": "the learning pass, the tidy-up, and one agent's crash -- "
+                          "none may end a run",
     "mcp_server.py": "the ledger is a progress line over the response, not part of it",
     "providers/bedrock.py": "a provider's own failure is reported, not raised",
     "providers/router.py": "provider bugs must not kill a run; health must never raise",

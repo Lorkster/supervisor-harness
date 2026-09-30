@@ -50,6 +50,7 @@ from .drift import (
     assess_heuristically,
     decide_directive,
     merge_assessments,
+    should_escalate,
     status_after,
 )
 from .facts import anchor_fact
@@ -269,6 +270,22 @@ class Supervision:
         state = session.state
         turns_used = state.turn_counts.get(agent.id, 0)
         assessment = await self._assess_drift(session, agent, turn)
+        # The second opinion is taken *before* the directive, and the directive
+        # follows it. It used to be requested afterwards, as "an extra, not a
+        # step": paid for, put on the log, and never able to change what the
+        # agent was told. In one observed run the model called a lens's turns
+        # on-brief (0.26) four times while the heuristics' 0.50 refocused it
+        # four times and then stopped it.
+        if not self.router.is_host("drift") and should_escalate(
+            assessment, self.config.policy, turn.seq - 1
+        ):
+            try:
+                assessment = await self._second_opinion(session, agent, assessment) or assessment
+            except Exception as exc:  # noqa: BLE001 - a failed second opinion leaves the first
+                await session.anote(
+                    f"drift second opinion failed; the heuristic assessment stands: {exc}",
+                    actor=agent.id,
+                )
 
         inbox = Blackboard.inbox_for(agent.id, state)
         prior_corrections = sum(
@@ -311,8 +328,9 @@ class Supervision:
     ) -> dict[str, Any]:
         """Escalate the last turn's drift assessment to the drift-stage model.
 
-        Exposed separately so the host can decide to pay for a second opinion,
-        and so autonomous runs can escalate inline.
+        Exposed separately so the host can ask for a second opinion when it
+        chooses. Inside a run, `_supervise` asks for one itself, before the
+        directive, whenever `should_escalate` says the heuristics warrant it.
         """
         session = self.store.open(run_id)
         state = session.state
@@ -320,10 +338,20 @@ class Supervision:
         heuristic = state.drift.get(agent_id)
         if agent is None or heuristic is None:
             return {"error": "no assessment to escalate"}
-
-        turns = self.packets._previous_turns(session, agent_id)
-        if not turns:
+        merged = await self._second_opinion(session, agent, heuristic)
+        if merged is None:
             return {"error": "no turns recorded"}
+        session.sync_index()
+        return to_dict(merged)
+
+    async def _second_opinion(
+        self, session: RunSession, agent: AgentSpec, heuristic: DriftAssessment
+    ) -> DriftAssessment | None:
+        """The drift model's view of the agent's last turn, merged with the heuristics'."""
+        state = session.state
+        turns = self.packets._previous_turns(session, agent.id)
+        if not turns:
+            return None
         last = turns[-1]
 
         system = (
@@ -348,10 +376,9 @@ class Supervision:
         merged.turn_id = heuristic.turn_id or last.id
         await session.aemit(
             EventType.DRIFT_ASSESSED,
-            {"agent_id": agent_id, "assessment": to_jsonable(merged)},
+            {"agent_id": agent.id, "assessment": to_jsonable(merged)},
         )
-        session.sync_index()
-        return to_dict(merged)
+        return merged
     def _after_directive(
         self, session: RunSession, agent: AgentSpec, directive: Directive
     ) -> SupervisorResponse:

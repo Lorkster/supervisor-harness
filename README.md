@@ -47,9 +47,12 @@ heuristics check for files touched outside scope, work on explicitly excluded
 topics, the brief being restated instead of answered, repetition, empty turns,
 and objectives left uncovered as the budget burns. Only when those fire does the
 harness spend a model call on a second opinion — which is why it can watch
-continuously. Correction comes before termination: an agent is refocused or
-narrowed first, and stopped only if it drifts again or writes somewhere it was
-forbidden.
+continuously — and the directive then follows the combined view, taken before
+the agent is told anything. A second opinion can lower a score the heuristics
+are unsure of; it cannot talk them out of a scope violation. A turn spent reading
+the workspace is not an empty one. Correction comes before termination: an agent
+is refocused or narrowed first, and stopped only if it drifts again or writes
+somewhere it was forbidden.
 
 **4. You decide what gets built.** Analysis produces execution tasks, each with
 a concrete action, a motivation tied to a finding, and a definition of done. You

@@ -257,6 +257,12 @@ async def test_drift_correction_happens_inside_a_live_run(
         "findings": [],
         "status": "running",
     }
+    # The drift model agrees. Its second opinion is taken before the directive
+    # now, so a fake that always said "on brief" would -- correctly -- talk the
+    # harness out of correcting anything.
+    fake.overrides["drift"] = {"on_task": False, "drift_score": 0.9, "signals": [],
+                               "summary": "answering a marketing question, not the task",
+                               "directive": "refocus"}
 
     store = RunStore(workspace / ".supervisor")
     host = HostInfo(name="test-host", workspace=str(workspace), confidence=1.0)

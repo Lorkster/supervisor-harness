@@ -21,6 +21,7 @@ from typing import Any
 from ..config import HarnessConfig
 from ..models import (
     ACTIVE_AGENT_STATUSES,
+    AgentStatus,
     CriterionStatus,
     ExecutionTask,
     Phase,
@@ -205,7 +206,18 @@ class Reporting:
 
         parts = [str(state.phase)]
         if state.agents:
-            parts.append(f"{len(settled)}/{len(state.agents)} agents done")
+            # Done means done. A stopped or failed agent is settled too, and
+            # used to be counted here as "done" -- so a run whose security lens
+            # the supervisor stopped read "4/4 agents done".
+            done = sum(1 for a in settled if a.status is AgentStatus.DONE)
+            others: dict[str, int] = {}
+            for a in settled:
+                if a.status is not AgentStatus.DONE:
+                    others[str(a.status)] = others.get(str(a.status), 0) + 1
+            parts.append(
+                f"{done}/{len(state.agents)} agents done"
+                + "".join(f", {n} {status}" for status, n in sorted(others.items()))
+            )
         if budget:
             parts.append(f"turn {spent}/{budget}")
         if state.findings:
