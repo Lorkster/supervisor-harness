@@ -318,6 +318,12 @@ class Usage:
     output_tokens: int = 0
     seconds: float = 0.0
     tool_calls: int = 0
+    # Prompt-cache traffic, which providers that cache report *separately* from
+    # ``input_tokens``: a cached read is billed at a fraction of input, a write
+    # at a premium. Kept apart so a cost computed from this is not wrong in
+    # either direction.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
     def add(self, other: Usage) -> Usage:
         return Usage(
@@ -325,6 +331,8 @@ class Usage:
             output_tokens=self.output_tokens + other.output_tokens,
             seconds=self.seconds + other.seconds,
             tool_calls=self.tool_calls + other.tool_calls,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
         )
 
     @property
@@ -393,6 +401,15 @@ class Finding:
     recommendation: str = ""
     confidence: float = 0.6
     tags: list[str] = field(default_factory=list)
+    # Where the finding is anchored, and what kind of weakness it is -- as the
+    # agent stated them, never inferred from the prose. Empty when the agent
+    # gave none. A tool consuming findings (an evaluation scoring them against
+    # known vulnerabilities, a SARIF export) needs these as fields: recovered
+    # from free-text evidence they are a guess, and a guess is not a record.
+    path: str = ""          # workspace-relative, forward slashes
+    line_start: int = 0     # 1-based; 0 means no line was given
+    line_end: int = 0
+    cwe: str = ""           # "CWE-89"
 
 
 @dataclass

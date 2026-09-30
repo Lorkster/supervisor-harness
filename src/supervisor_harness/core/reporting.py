@@ -346,5 +346,7 @@ class Reporting:
                 output_tokens=int(raw.get("output_tokens", 0) or 0),
                 seconds=float(raw.get("seconds", 0) or 0),
                 tool_calls=int(raw.get("tool_calls", 0) or 0),
+                cache_read_tokens=int(raw.get("cache_read_tokens", 0) or 0),
+                cache_write_tokens=int(raw.get("cache_write_tokens", 0) or 0),
             )
         return Usage()

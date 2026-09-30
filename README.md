@@ -73,6 +73,11 @@ report shows the checklist.
 and the run ends with a reconciliation — finding by finding, fixed here,
 attempted, still pending, or still open — written as its own artifact.
 
+A finding carries its place (`path`, `line_start`, `line_end`) and, for a
+security weakness, its `cwe`, as fields the agent was asked to fill in. They are
+recorded as stated or left empty, never guessed from the prose.
+`supervisor findings --json` is the published way for another tool to read them.
+
 **5c. Agents build a shared record.** An analysis lens that establishes
 something the others need — which store the counters live in, which entrypoint
 is actually reachable — records it as a keyed fact with its evidence, and later
@@ -314,6 +319,7 @@ shorthand for something the CLI will not tell you itself.
 | `explain [RUN]` | how the run got here: every turn, its drift signals, and the directive each one drew | `-a/--agent` one agent, `--width COLS` |
 | `drift AGENT [RUN]` | ask the drift model for a second opinion on one agent's last turn | — |
 | `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
+| `findings [RUN]` | every finding the run recorded, with its location and CWE as fields and what became of it (fixed, attempted, pending, open); `--json` for tools consuming them | — |
 | `trajectory [RUN]` | export the run as a portable trajectory document | `-o FILE` |
 | `audit [RUN]` | what a finished run's agents actually did, as against what they were allowed to do | `-o NAME` for the evidence filename |
 | `runs` | list recent runs in this store | `-n/--limit` (default 20) |
@@ -375,6 +381,30 @@ fallbacks, tried in order when a provider fails.
 | `openrouter` | `OPENROUTER_API_KEY` |
 | `anthropic` | `ANTHROPIC_API_KEY` |
 | `bedrock` | `pip install 'supervisor-harness[bedrock]'` and an AWS region — see below |
+
+### Current Claude models
+
+Opus 5.5, Sonnet 5.5 and their generation differ from earlier models in three
+ways the `anthropic` and `bedrock` providers account for:
+
+- **No sampling parameters.** They reject `temperature` with HTTP 400, so it is
+  sent only when a route sets one (`"params": {"temperature": 0.3}`). Routes to
+  Ollama and OpenRouter still default to 0.2.
+- **Refusals are their own outcome.** A request the model declines raises
+  `ProviderRefusal`. It is never retried and never sent down a `|` fallback
+  chain: a fallback route is for outages, and using it to get past a refusal
+  would silently change which model did the work. The agent is marked failed,
+  with a `refusal` note on the log giving the category.
+- **They always think, and bill it as output.** Requests default to 16,000
+  output tokens so the answer is not cut off behind the reasoning; a truncated
+  answer is noted on the log. Depth is set with `effort` rather than a thinking
+  budget: `"params": {"output_config": {"effort": "high"}}`. `params` is a
+  setting only your trusted home config may set.
+
+An agent's conversation is prompt-cached across its tool rounds and turns, and
+cache reads and writes are counted apart from input in every usage figure. The
+usage a run reports covers every call: each round of a turn, and the planning,
+synthesis, checkpoint, improvement and drift calls the supervisor makes itself.
 
 A model id may contain a colon — `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
 is one identifier, not a provider and a model. A route splits on its **first**

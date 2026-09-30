@@ -9,6 +9,7 @@ import httpx
 
 from ..models import Usage
 from .base import (
+    DEFAULT_TEMPERATURE,
     ChatMessage,
     CompletionRequest,
     CompletionResponse,
@@ -69,7 +70,8 @@ class OpenRouterProvider(Provider):
         body: dict[str, Any] = {
             "model": request.model or self.default_model,
             "messages": messages,
-            "temperature": request.temperature,
+            "temperature": (DEFAULT_TEMPERATURE if request.temperature is None
+                            else request.temperature),
             "max_tokens": request.max_tokens,
         }
         if request.stop:

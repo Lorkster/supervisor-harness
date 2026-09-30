@@ -18,6 +18,7 @@ The bodies are the ones that were on ``Supervisor``, moved verbatim.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..config import HarnessConfig
@@ -56,6 +57,7 @@ from .drift import (
 from .facts import anchor_fact
 from .lifecycle import Lifecycle
 from .packets import Packets
+from .paths import normalise_path
 from .reporting import Reporting
 from .responses import SupervisorResponse
 
@@ -97,7 +99,11 @@ class Supervision:
             seq=seq,
             reasoning=str(payload.get("reasoning", "")),
             output=str(payload.get("output", "")),
-            findings=parse_findings(payload, agent.id, lens),
+            findings=[
+                replace(f, path=normalise_path(f.path, str(self.packets.workspace)))
+                if f.path else f
+                for f in parse_findings(payload, agent.id, lens)
+            ],
             artifacts=[str(a) for a in (payload.get("artifacts") or [])],
             files_touched=[
                 str(f)
@@ -369,7 +375,7 @@ class Supervision:
             + "\n\n# Mechanical signals already detected\n"
             + ("\n".join(f"- {s.kind}: {s.detail}" for s in heuristic.signals) or "(none)")
         )
-        data = await self._call("drift", system, user, DRIFT_SCHEMA)
+        data = await self._call("drift", system, user, DRIFT_SCHEMA, session)
         model_view = parse_drift(data, checked_by=self.router.binding("drift").ref())
         merged = merge_assessments(heuristic, model_view)
         # A second opinion on the same turn, not on a new one.
@@ -412,15 +418,26 @@ class Supervision:
         )
         return response
     async def _call(
-        self, stage: str, system: str, user: str, schema: dict[str, Any]
+        self, stage: str, system: str, user: str, schema: dict[str, Any],
+        session: RunSession | None = None,
     ) -> dict[str, Any]:
+        """One supervisor-side completion, with what it spent put on the record.
+
+        ``session`` is optional only so a caller with no run can still ask; every
+        call inside a run passes it, or its tokens would be missing from the
+        run's total -- which is how every stage but the agents' went uncounted.
+        """
         response = await self.router.complete(
             stage,
             CompletionRequest(
                 system=system,
                 messages=[ChatMessage("user", user)],
                 json_schema=schema,
-                max_tokens=8192,
             ),
         )
+        if session is not None:
+            await session.aemit(EventType.USAGE_RECORDED, {
+                "stage": stage, "usage": to_jsonable(response.usage),
+                "model": response.model, "provider": response.provider,
+            })
         return response.json()

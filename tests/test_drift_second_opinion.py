@@ -164,6 +164,8 @@ async def test_the_second_opinion_is_taken_before_the_directive_and_the_directiv
     merged = [e for e in events if e.type is EventType.DRIFT_ASSESSED
               and e.payload["assessment"].get("checked_by") == "heuristics+model"]
     assert merged, "the quiet turn should have been escalated"
+    assert any(e.type is EventType.USAGE_RECORDED and e.payload["stage"] == "drift"
+               for e in events), "a second opinion is a paid call; its tokens are on the record"
     for opinion in merged:
         agent_id = opinion.payload["agent_id"]
         turn_id = opinion.payload["assessment"].get("turn_id")
