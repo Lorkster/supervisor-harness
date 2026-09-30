@@ -18,6 +18,7 @@ The bodies are the ones that were on ``Supervisor``, moved verbatim.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..config import HarnessConfig
@@ -55,6 +56,7 @@ from .drift import (
 from .facts import anchor_fact
 from .lifecycle import Lifecycle
 from .packets import Packets
+from .paths import normalise_path
 from .reporting import Reporting
 from .responses import SupervisorResponse
 
@@ -96,7 +98,11 @@ class Supervision:
             seq=seq,
             reasoning=str(payload.get("reasoning", "")),
             output=str(payload.get("output", "")),
-            findings=parse_findings(payload, agent.id, lens),
+            findings=[
+                replace(f, path=normalise_path(f.path, str(self.packets.workspace)))
+                if f.path else f
+                for f in parse_findings(payload, agent.id, lens)
+            ],
             artifacts=[str(a) for a in (payload.get("artifacts") or [])],
             files_touched=[
                 str(f)

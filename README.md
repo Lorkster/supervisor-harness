@@ -70,6 +70,11 @@ report shows the checklist.
 and the run ends with a reconciliation — finding by finding, fixed here,
 attempted, still pending, or still open — written as its own artifact.
 
+A finding carries its place (`path`, `line_start`, `line_end`) and, for a
+security weakness, its `cwe`, as fields the agent was asked to fill in. They are
+recorded as stated or left empty, never guessed from the prose.
+`supervisor findings --json` is the published way for another tool to read them.
+
 **5c. Agents build a shared record.** An analysis lens that establishes
 something the others need — which store the counters live in, which entrypoint
 is actually reachable — records it as a keyed fact with its evidence, and later
@@ -311,6 +316,7 @@ shorthand for something the CLI will not tell you itself.
 | `explain [RUN]` | how the run got here: every turn, its drift signals, and the directive each one drew | `-a/--agent` one agent, `--width COLS` |
 | `drift AGENT [RUN]` | ask the drift model for a second opinion on one agent's last turn | — |
 | `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
+| `findings [RUN]` | every finding the run recorded, with its location and CWE as fields and what became of it (fixed, attempted, pending, open); `--json` for tools consuming them | — |
 | `trajectory [RUN]` | export the run as a portable trajectory document | `-o FILE` |
 | `audit [RUN]` | what a finished run's agents actually did, as against what they were allowed to do | `-o NAME` for the evidence filename |
 | `runs` | list recent runs in this store | `-n/--limit` (default 20) |
