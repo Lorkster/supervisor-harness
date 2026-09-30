@@ -13,6 +13,7 @@ as a string.
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any, TypeVar
 
@@ -59,9 +60,21 @@ _FINDING = {
         "recommendation": {"type": "string", "description": "The concrete next action"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "tags": {"type": "array", "items": {"type": "string"}},
+        "location": {
+            "type": "string",
+            "description": "Where it is: path/to/file.ext:start-end, relative to the "
+                           "workspace root. Omit if it has no single place",
+        },
+        "cwe": {"type": "string", "description": "The CWE id, for a security weakness"},
     },
     "required": ["title", "detail", "severity"],
 }
+
+# `path/to/file.ext:12` or `...:12-18`. The whole string, not a search: this is
+# a field the agent was asked to fill in that shape, and anything else is left
+# empty rather than guessed at.
+_LOCATION = re.compile(r"\s*`?(?P<path>[^`:\s][^`]*?):(?P<start>\d+)(?:-(?P<end>\d+))?`?\s*")
+_CWE = re.compile(r"\s*CWE[-_ ]?(?P<n>\d{1,5})\s*", re.IGNORECASE)
 
 _MESSAGE = {
     "type": "object",
@@ -506,9 +519,33 @@ def parse_findings(data: dict[str, Any], agent_id: str, lens: str) -> list[Findi
                 recommendation=str(raw.get("recommendation", "")).strip(),
                 confidence=min(1.0, max(0.0, _num(raw.get("confidence"), 0.6))),
                 tags=_strs(raw.get("tags")),
+                **_location(raw.get("location")),
+                cwe=_cwe(raw.get("cwe")),
             )
         )
     return out
+
+
+def _location(value: Any) -> dict[str, Any]:
+    """``path``, ``line_start`` and ``line_end`` from ``path:start-end``, or nothing."""
+    match = _LOCATION.fullmatch(str(value or ""))
+    if not match:
+        return {}
+    start = int(match.group("start"))
+    end = int(match.group("end") or start)
+    if start < 1 or end < start:
+        return {}
+    return {"path": match.group("path").strip().replace("\\", "/"),
+            "line_start": start, "line_end": end}
+
+
+def _cwe(value: Any) -> str:
+    """``CWE-89`` from ``CWE-89``, ``cwe_89`` or ``89``; anything else is empty."""
+    text = str(value or "").strip()
+    if text.isdigit():
+        return f"CWE-{int(text)}"
+    match = _CWE.fullmatch(text)
+    return f"CWE-{int(match.group('n'))}" if match else ""
 
 
 def parse_messages(data: dict[str, Any], run_id: str, sender: str) -> list[Message]:

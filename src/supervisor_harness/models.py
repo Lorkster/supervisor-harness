@@ -401,6 +401,15 @@ class Finding:
     recommendation: str = ""
     confidence: float = 0.6
     tags: list[str] = field(default_factory=list)
+    # Where the finding is anchored, and what kind of weakness it is -- as the
+    # agent stated them, never inferred from the prose. Empty when the agent
+    # gave none. A tool consuming findings (an evaluation scoring them against
+    # known vulnerabilities, a SARIF export) needs these as fields: recovered
+    # from free-text evidence they are a guess, and a guess is not a record.
+    path: str = ""          # workspace-relative, forward slashes
+    line_start: int = 0     # 1-based; 0 means no line was given
+    line_end: int = 0
+    cwe: str = ""           # "CWE-89"
 
 
 @dataclass
