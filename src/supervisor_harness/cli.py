@@ -1244,7 +1244,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _utf8_streams() -> None:
+    """Write UTF-8 whatever the stream's own encoding, before anything is printed.
+
+    A Windows pipe defaults to cp1252, which cannot encode characters the
+    harness prints -- `→` among them. A run driven by another program finished,
+    wrote every event, and then died printing its result, so the caller saw
+    exit 1 and no JSON for a run that had succeeded. Everything that reads this
+    output -- a host, a script, an evaluation -- expects UTF-8 anyway.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(ValueError, OSError):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_streams()
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args) or 0)
