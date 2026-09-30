@@ -153,6 +153,32 @@ Two things are never refreshed:
   That copy then stops tracking the package, so no later release will correct
   it for you.
 
+### Uninstalling
+
+Run `uninstall` in each project **before** `pip uninstall`. Once the package is
+gone, so is the command that knows what it put in your projects.
+
+```bash
+supervisor uninstall --dry-run      # what would go, and what would stay
+supervisor uninstall
+pip uninstall supervisor-harness
+```
+
+It reads the same table `init` writes from, so the two cannot disagree about
+what an install consists of. What it takes and what it leaves:
+
+| | By default | Why |
+| --- | --- | --- |
+| the skill, the rule, the slash commands | removed if identical to the shipped copy | they are the package's |
+| a copy that differs from the shipped one | **kept**, and named | it is either an older release's or one you edited, and nothing can tell which. `supervisor init` then `uninstall` removes an old copy; `--force` removes either |
+| the `supervisor` entry in `.mcp.json` and `.cursor/mcp.json` | removed; every other server kept | the entry is the package's, the file is yours. The file goes only if nothing else was in it |
+| `supervisor.config.json`, and the project's `.supervisor/` runs and lessons | **kept** | yours. `--purge` deletes them |
+| a shared store (`SUPERVISOR_HOME`, or `~/.supervisor`) | **never touched**, even with `--purge` | other projects use it. `supervisor delete` removes runs from it one at a time |
+
+Directories `init` created are removed only when they end up empty. Restart the
+host afterwards so it drops the MCP server; on Windows, a host still running the
+server can hold files open, and those are reported rather than skipped silently.
+
 ### Several projects
 
 `init` is per project because everything it writes is per project — your host
@@ -273,6 +299,7 @@ shorthand for something the CLI will not tell you itself.
 | Command | What it does | Its own arguments |
 | --- | --- | --- |
 | `init` | install host integrations and an example config, or refresh them after an upgrade | `--host claude\|cursor\|both` (default: whichever host is detected), `--force` to also replace `supervisor.config.json`, `--keep-integrations` to leave edited files alone |
+| `uninstall` | remove what `init` installed: the skill, rules, commands and the `supervisor` MCP entry, keeping every other server | `--force` to also remove copies that differ from the shipped ones, `--purge` to also delete `supervisor.config.json` and the project's own `.supervisor/`, `--dry-run` to only say what would go |
 | `run PROMPT` | drive a whole run to completion without a host | `--mode`, `--backend host\|autonomous`, `-y/--yes` |
 | `start PROMPT` | begin a host-delegated run and print its first work packets | `--mode`, `--host-agents` — the subagent types you can spawn, as a JSON array: `'["general-purpose"]'`, or `'[{"name": "general-purpose", "description": "..."}]'` when you want the description to inform role matching |
 | `report RUN AGENT` | hand back one agent's result | `-i/--input` a JSON file, or `-` for stdin (the default) |
@@ -841,6 +868,7 @@ src/supervisor_harness/
     timing.py      where a run's wall clock went, folded from the log
     trajectory.py  a run exported as a portable, validated document
   assists.py       what the harness had to repair before an answer could be used
+  install.py       what `init` puts in a project, and what `uninstall` takes out
   mcp_server.py    MCP surface
   cli.py           command line
 ```
