@@ -145,11 +145,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:557](../src/supervisor_harness/core/supervisor.py:557)), when an
+[supervisor.py:552](../src/supervisor_harness/core/supervisor.py:552)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:1722](../src/supervisor_harness/core/supervisor.py:1722)). It
+[supervisor.py:1706](../src/supervisor_harness/core/supervisor.py:1706)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -276,8 +276,10 @@ One task, end to end, touching all four:
    **fact** with its evidence; a second lens keying the same claim differently
    does not overwrite it *(4)*.
 4. After each turn, deterministic drift heuristics run. If they fire, and only
-   then, a model gives a second opinion. Whatever directive results, its inputs
-   are on the log and `explain` can reassemble them *(3)*.
+   then, a model gives a second opinion, *before* the directive, and the
+   directive follows the combined view. It can lower a score the heuristics are
+   unsure of, never below what a scope violation alone says. Whatever directive
+   results, its inputs are on the log and `explain` can reassemble them *(3)*.
 5. Synthesis proposes tasks with definitions of done. Criteria that cannot fail
    are rejected here, before any work happens *(1)*.
 6. **You approve.** An edited scope is clamped to the envelope, and the clamp is
@@ -299,7 +301,7 @@ have opposite failure rules.
 | --- | --- | --- |
 | may refuse or change the outcome | yes — that is what it is for | never |
 | what an error inside it means | refuse: fail closed | isolate: the run continues |
-| examples | `core/tools.py`, `core/dod.py`, `core/envelope.py`, `core/facts.py`, the config trust boundary, the store's containment | `store/progress.py`, the SQLite index, `core/timing.py`, `core/journal.py`, `core/trajectory.py`, `core/audit.py`, `assists`, lesson consolidation, the drift model's second opinion |
+| examples | `core/tools.py`, `core/dod.py`, `core/envelope.py`, `core/facts.py`, the config trust boundary, the store's containment, the drift model's second opinion (it decides a directive; if it fails, the stricter heuristic assessment stands) | `store/progress.py`, the SQLite index, `core/timing.py`, `core/journal.py`, `core/trajectory.py`, `core/audit.py`, `assists`, lesson consolidation |
 
 The rule is borrowed from NOOA's middleware documentation, which draws the same
 line for the same reason: interception is control flow, so its exceptions
