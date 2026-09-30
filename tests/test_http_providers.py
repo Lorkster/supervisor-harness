@@ -120,7 +120,7 @@ async def test_anthropic_sends_the_schema_instruction_and_the_sampling_knobs() -
     response = await provider.complete(_request(stop=["STOP"], json_schema=SCHEMA))
 
     body = wire.body
-    assert body["model"] == "claude-sonnet-4-5"
+    assert body["model"] == "claude-opus-5-5"
     assert body["max_tokens"] == 1234
     assert body["temperature"] == 0.3
     assert body["stop_sequences"] == ["STOP"]

@@ -13,7 +13,13 @@ from typing import Any
 import httpx
 
 from ..models import Usage
-from .base import CompletionRequest, CompletionResponse, Provider, ProviderError
+from .base import (
+    DEFAULT_TEMPERATURE,
+    CompletionRequest,
+    CompletionResponse,
+    Provider,
+    ProviderError,
+)
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 
@@ -60,7 +66,10 @@ class OllamaProvider(Provider):
             messages.append({"role": "system", "content": request.system})
         messages.extend({"role": m.role, "content": m.content} for m in request.messages)
 
-        options: dict[str, Any] = {"temperature": request.temperature}
+        temperature = request.temperature
+        options: dict[str, Any] = {
+            "temperature": DEFAULT_TEMPERATURE if temperature is None else temperature,
+        }
         if request.max_tokens:
             options["num_predict"] = request.max_tokens
         if request.stop:

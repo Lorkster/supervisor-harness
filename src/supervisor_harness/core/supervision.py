@@ -341,7 +341,7 @@ class Supervision:
             + "\n\n# Mechanical signals already detected\n"
             + ("\n".join(f"- {s.kind}: {s.detail}" for s in heuristic.signals) or "(none)")
         )
-        data = await self._call("drift", system, user, DRIFT_SCHEMA)
+        data = await self._call("drift", system, user, DRIFT_SCHEMA, session)
         model_view = parse_drift(data, checked_by=self.router.binding("drift").ref())
         merged = merge_assessments(heuristic, model_view)
         # A second opinion on the same turn, not on a new one.
@@ -385,15 +385,26 @@ class Supervision:
         )
         return response
     async def _call(
-        self, stage: str, system: str, user: str, schema: dict[str, Any]
+        self, stage: str, system: str, user: str, schema: dict[str, Any],
+        session: RunSession | None = None,
     ) -> dict[str, Any]:
+        """One supervisor-side completion, with what it spent put on the record.
+
+        ``session`` is optional only so a caller with no run can still ask; every
+        call inside a run passes it, or its tokens would be missing from the
+        run's total -- which is how every stage but the agents' went uncounted.
+        """
         response = await self.router.complete(
             stage,
             CompletionRequest(
                 system=system,
                 messages=[ChatMessage("user", user)],
                 json_schema=schema,
-                max_tokens=8192,
             ),
         )
+        if session is not None:
+            await session.aemit(EventType.USAGE_RECORDED, {
+                "stage": stage, "usage": to_jsonable(response.usage),
+                "model": response.model, "provider": response.provider,
+            })
         return response.json()

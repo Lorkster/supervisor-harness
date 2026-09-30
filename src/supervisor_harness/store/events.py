@@ -67,6 +67,11 @@ class EventType(StrEnum):
     LESSONS_CONSOLIDATED = "lessons_consolidated"
     ARTIFACT_WRITTEN = "artifact_written"
     NOTE = "note"
+    #: Tokens a supervisor-side stage spent -- planning, synthesis, checkpoint,
+    #: improvement, a drift second opinion. Agent turns carry their own usage;
+    #: without this, an autonomous run's total left out every call the
+    #: supervisor made on its own behalf.
+    USAGE_RECORDED = "usage_recorded"
     RUN_ENDED = "run_ended"
     #: Never emitted: what a type this build does not define is read back as,
     #: so the log line survives the read. See :func:`event_from_dict`.
@@ -260,6 +265,17 @@ def _on_lessons_consolidated(state: RunState, event: Event) -> None:
     state.consolidation = {k: v for k, v in event.payload.items() if k != "ops"}
 
 
+def _on_usage_recorded(state: RunState, event: Event) -> None:
+    """Supervisor-side spend, kept under ``stage:<name>`` beside the agents'.
+
+    Every event is a separate call, so each one adds; ``total_usage`` then
+    covers the whole run rather than only its agents' turns.
+    """
+    key = f"stage:{event.payload.get('stage', 'unknown')}"
+    usage = from_jsonable(event.payload.get("usage") or {}, Usage)
+    state.usage[key] = state.usage.get(key, Usage()).add(usage)
+
+
 def _on_message_sent(state: RunState, event: Event) -> None:
     p = event.payload
     _upsert(state.messages, from_jsonable(p["message"], Message))
@@ -403,6 +419,7 @@ _HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
     EventType.LESSON_LEARNED: _on_lesson_learned,
     EventType.ARTIFACT_WRITTEN: _on_artifact_written,
     EventType.NOTE: _on_note,
+    EventType.USAGE_RECORDED: _on_usage_recorded,
     EventType.RUN_ENDED: _on_run_ended,
 }
 
