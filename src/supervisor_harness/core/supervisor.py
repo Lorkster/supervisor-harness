@@ -40,6 +40,7 @@ from ..agents.brief import (
     render_directive,
 )
 from ..agents.registry import AgentRegistry
+from ..agents.roles import role_catalog
 from ..assists import assisting, current_assists
 from ..config import HarnessConfig, Policy, load_config
 from ..contracts import (
@@ -336,7 +337,8 @@ class Supervisor:
         lenses = phases.plan_lenses(state, self.config)
         fallback = phases.build_analysis_agents(state, self.config, registry, lenses)
 
-        system, user = phases.planning_prompt(state, registry, lenses)
+        system, user = phases.planning_prompt(state, registry, lenses,
+                                              role_catalog(self.config.roles))
         stage = "planning"
 
         if self.lifecycle._delegated(stage):

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agents.registry import AgentRegistry
-from ..agents.roles import ROLES_BY_ID, Role, role_for_task, select_lenses
+from ..agents.roles import ROLES_BY_ID, Role, role_catalog, role_for_task, select_lenses
 from ..assists import record_assist
 from ..config import HarnessConfig, Policy
 from ..ids import now_iso
@@ -54,7 +54,8 @@ from .dod import apply_quality_bars, summarise, validate_criteria
 
 def required_lenses(config: HarnessConfig) -> list[str]:
     """Lenses policy insists on, whatever the prompt or the planner says."""
-    return ["security"] if config.policy.require_security_review else []
+    required = ["security"] if config.policy.require_security_review else []
+    return required + [r for r in config.policy.required_lenses if r not in required]
 
 
 def plan_lenses(state: RunState, config: HarnessConfig) -> list[Role]:
@@ -66,6 +67,7 @@ def plan_lenses(state: RunState, config: HarnessConfig) -> list[Role]:
         minimum=policy.min_analysis_lenses,
         maximum=policy.max_analysis_lenses,
         require=require,
+        catalog=role_catalog(config.roles),
     )
 
 
@@ -99,7 +101,8 @@ def build_analysis_agents(
 
 
 def planning_prompt(
-    state: RunState, registry: AgentRegistry, lenses: list[Role]
+    state: RunState, registry: AgentRegistry, lenses: list[Role],
+    catalog: dict[str, Role] | None = None,
 ) -> tuple[str, str]:
     """Ask a model to sharpen the deterministic plan for this specific task."""
     system = (
@@ -120,7 +123,9 @@ def planning_prompt(
         "Nothing later in the run can widen it, and the harness narrows it further "
         "to the workspace's own configured envelope if you exceed that."
     )
-    available = ", ".join(sorted(ROLES_BY_ID))
+    available = ", ".join(sorted(
+        r.id for r in (catalog or ROLES_BY_ID).values() if r.kind is AgentKind.ANALYSIS
+    ))
     preselected = "\n".join(
         f"- {r.id} ({r.title}): {r.summary}\n  default objectives: "
         + "; ".join(r.objectives)
@@ -154,12 +159,13 @@ def apply_plan(
         record_assist("plan_unusable", "the planning answer named no lenses")
         return fallback, str(plan.get("shared_context", "")), RunMode.AUTO
 
+    catalog = role_catalog(config.roles)
     specs: list[AgentSpec] = []
     for entry in entries[: config.policy.max_analysis_lenses]:
         if not isinstance(entry, dict):
             continue
         role_id = str(entry.get("role", "")).strip().lower()
-        role = ROLES_BY_ID.get(role_id)
+        role = catalog.get(role_id)
         if role is None or role.kind is not AgentKind.ANALYSIS:
             continue
         objectives = [str(o).strip() for o in (entry.get("objectives") or []) if str(o).strip()]
@@ -196,7 +202,7 @@ def apply_plan(
     # policy exists to prevent, and it would be invisible in the final report.
     chosen = {spec.role for spec in specs}
     for role_id in required_lenses(config):
-        role = ROLES_BY_ID.get(role_id)
+        role = catalog.get(role_id)
         if role_id in chosen or role is None:
             continue
         agent_binding = registry.bind(role)

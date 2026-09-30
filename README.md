@@ -353,6 +353,44 @@ proposed task you do not name is **rejected**.
 
 ---
 
+## Adding analysis lenses
+
+The built-in lenses cover architecture, security, feasibility, quality, data,
+performance, operations, UX, risk and prior art. A narrower one is a few lines
+of configuration:
+
+```jsonc
+// supervisor.config.json
+{
+  "roles": {
+    "injection": {
+      "title": "Injection",
+      "charter": "Trace every untrusted input to every query, command and template it reaches.",
+      "objectives": ["List each source-to-sink path", "Say which are unsanitised"],
+      "keywords": ["injection", "sql", "query", "shell", "template"]
+    }
+  },
+  "policy": { "required_lenses": ["injection"] }
+}
+```
+
+A configured lens is chosen the way the built-ins are, by its keywords against
+the task, or on every run if `required_lenses` names it. It gets its own stage,
+`analysis.<id>`, so it can be routed to a model of its own. `title` and
+`charter` are required; `summary`, `focus_questions`, `out_of_scope`,
+`base_weight` (at most 1.0) and `host_agent_hints` are optional. Only analysis
+lenses can be configured. A lens adds a question the run asks; changing who
+does the work or who judges it is a different decision.
+
+**A workspace file may add a lens, but never redefine an existing one**: not a
+built-in, and not one your own config defined. The workspace is usually the
+code under review, and a repository that could rewrite the security lens's
+charter would be setting the terms of its own review. Your trusted home config
+may replace a built-in lens. Anything rejected is listed with the reason, like
+any other setting a workspace file is not allowed to set. `required_lenses`
+only adds lenses. The security lens is forced separately by
+`require_security_review`, which a workspace cannot turn off.
+
 ## Choosing models per stage
 
 Routing is per **stage**, with fallbacks. A cheap local model can watch for

@@ -53,7 +53,7 @@ from ..agents.brief import (
     render_directive,
 )
 from ..agents.registry import AgentRegistry
-from ..agents.roles import ROLES_BY_ID
+from ..agents.roles import role_catalog
 from ..config import HarnessConfig
 from ..contracts import (
     ANALYSIS_TURN_SCHEMA,
@@ -170,7 +170,7 @@ class Packets:
         if agent.kind is AgentKind.ANALYSIS:
             schema = ANALYSIS_TURN_SCHEMA
             brief = build_analysis_brief(
-                state, agent, ROLES_BY_ID.get(agent.role), peers, schema,
+                state, agent, role_catalog(self.config.roles).get(agent.role), peers, schema,
                 shared_context=render_context(
                     state.shared_context, state.facts, state.established,
                     workspace=self.workspace,
@@ -189,7 +189,7 @@ class Packets:
             ]
             brief = build_execution_brief(
                 state, agent, task or ExecutionTask(run_id=state.id, title=agent.title),
-                ROLES_BY_ID.get(agent.role), peers, schema,
+                role_catalog(self.config.roles).get(agent.role), peers, schema,
                 shared_context=render_context(
                     state.shared_context, state.facts, state.established,
                     workspace=self.workspace,

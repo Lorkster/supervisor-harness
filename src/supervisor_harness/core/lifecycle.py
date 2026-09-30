@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from ..agents.roles import ROLES_BY_ID
+from ..agents.roles import role_catalog
 from ..config import KNOWN_STAGES, HarnessConfig
 from ..contracts import (
     CHECKPOINT_SCHEMA,
@@ -214,7 +214,7 @@ class Lifecycle:
         self._spawn(session, [spec])
         return session.state.agents[spec.id]
     def _stage_for(self, agent: AgentSpec) -> str:
-        role = ROLES_BY_ID.get(agent.role)
+        role = role_catalog(self.config.roles).get(agent.role)
         return role.stage if role else STAGE_ROLES.get(agent.role, ("default", None))[0]
     def _delegated(self, stage: str) -> bool:
         return self.router.is_host(stage)
