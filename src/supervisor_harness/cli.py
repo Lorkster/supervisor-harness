@@ -31,6 +31,7 @@ from . import __version__
 from .config import KNOWN_STAGES, PROJECT_CONFIG, load_config, write_example
 from .core.supervisor import Supervisor, SupervisorResponse
 from .host.detect import detect_host
+from .install import COMPONENTS, INTEGRATIONS, MCP_FILES, uninstall
 from .models import Backend, RunMode
 from .serde import to_jsonable
 from .store.events import (
@@ -40,9 +41,6 @@ from .store.events import (
     event_to_dict,
 )
 from .store.runstore import RunStore
-
-INTEGRATIONS = Path(__file__).parent / "integrations"
-
 
 # --------------------------------------------------------------------------
 # Output
@@ -175,35 +173,24 @@ def cmd_init(args: argparse.Namespace) -> int:
         else {args.host or host.name.split("-")[0]}
     )
 
-    if "claude" in targets or host.name == "claude-code":
-        skill_dir = workspace / ".claude" / "skills" / "supervise"
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        _copy(INTEGRATIONS / "claude_code" / "SKILL.md", skill_dir / "SKILL.md",
-              args.keep_integrations, written, workspace)
-        cmd_dir = workspace / ".claude" / "commands"
-        cmd_dir.mkdir(parents=True, exist_ok=True)
-        _copy(INTEGRATIONS / "claude_code" / "supervise.md", cmd_dir / "supervise.md",
-              args.keep_integrations, written, workspace)
-
-    if "cursor" in targets or host.name == "cursor":
-        rules_dir = workspace / ".cursor" / "rules"
-        rules_dir.mkdir(parents=True, exist_ok=True)
-        _copy(INTEGRATIONS / "cursor" / "supervisor.mdc", rules_dir / "supervisor.mdc",
-              args.keep_integrations, written, workspace)
-        cmd_dir = workspace / ".cursor" / "commands"
-        cmd_dir.mkdir(parents=True, exist_ok=True)
-        _copy(INTEGRATIONS / "cursor" / "supervise.md", cmd_dir / "supervise.md",
-              args.keep_integrations, written, workspace)
+    hosts = {
+        name for name, detected in (("claude", "claude-code"), ("cursor", "cursor"))
+        if name in targets or host.name == detected
+    }
+    for component_host, shipped, rel in COMPONENTS:
+        if component_host in hosts:
+            dst = workspace / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _copy(INTEGRATIONS / shipped, dst, args.keep_integrations, written, workspace)
 
     # Each host reads its own file. Claude Code takes `.mcp.json` at the
     # repository root; Cursor's documented project location is
     # `.cursor/mcp.json`, and its CLI picks up the same servers as its editor.
     # Writing only the first left a Cursor install carrying the rule that tells
     # it to drive this MCP server, with no server registered to drive.
-    _register_mcp(workspace / ".mcp.json", args.keep_integrations, written, workspace)
-    if "cursor" in targets or host.name == "cursor":
-        _register_mcp(workspace / ".cursor" / "mcp.json", args.keep_integrations,
-                      written, workspace)
+    for mcp_host, rel in MCP_FILES:
+        if not mcp_host or mcp_host in hosts:
+            _register_mcp(workspace / rel, args.keep_integrations, written, workspace)
 
     if args.json:
         _emit({"workspace": str(workspace), "host": host.name, "written": written}, True)
@@ -222,6 +209,50 @@ def cmd_init(args: argparse.Namespace) -> int:
         "'supervise' a task, or run `supervisor run \"...\"` for an autonomous run."
     )
     return 0
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    """Remove what `init` installed, and with ``--purge`` the project's own data.
+
+    The inverse of `init`, read from the same table -- see `install.py` for
+    what counts as the package's, what counts as the user's, and why a
+    component that differs from the shipped copy is kept unless forced.
+    """
+    workspace = Path(args.workspace).resolve()
+    report = uninstall(workspace, force=args.force, purge=args.purge, dry_run=args.dry_run)
+
+    if args.json:
+        _emit(report.as_dict(), True)
+        return 1 if report.failed else 0
+
+    print(f"Workspace: {workspace}")
+    verb = "Would remove" if report.dry_run else "Removed"
+    if report.removed:
+        print(f"{verb}:")
+        for path in report.removed:
+            print(f"  {path}")
+    else:
+        print("Nothing of the harness's was found to remove.")
+    if report.kept:
+        print("Kept:")
+        for path, why in report.kept:
+            print(f"  {path} -- {why}")
+    if report.failed:
+        print("Could not remove (is a host or MCP server still running here?):")
+        for path, error in report.failed:
+            print(f"  {path} -- {error}")
+    for note in report.notes:
+        print(f"\nNote: {note}")
+    if not args.purge and not report.dry_run:
+        print(
+            f"\n{PROJECT_CONFIG} and .supervisor/ (your settings and run history) were "
+            "left in place; `--purge` removes them."
+        )
+    print(
+        "\nRestart your host so it drops the MCP server. When every project is done, "
+        "remove the package itself with:\n  pip uninstall supervisor-harness"
+    )
+    return 1 if report.failed else 0
 
 
 def _register_mcp(path: Path, keep: bool, written: list[str], root: Path) -> None:
@@ -998,6 +1029,19 @@ def _add_run_commands(sub: Any, common: argparse.ArgumentParser) -> None:
                    help="leave an existing skill, rule, command or MCP entry as it is, "
                         "even when the package ships a newer one")
     p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("uninstall", parents=[common],
+                       help="remove what init installed; --purge also removes settings "
+                            "and this project's run history")
+    p.add_argument("--force", action="store_true",
+                   help="also remove components and MCP entries that differ from the "
+                        "shipped copy -- edited, or left by an older release")
+    p.add_argument("--purge", action="store_true",
+                   help="also delete supervisor.config.json and this project's own "
+                        ".supervisor/ store; a shared SUPERVISOR_HOME is never touched")
+    p.add_argument("--dry-run", action="store_true",
+                   help="say what would be removed, and remove nothing")
+    p.set_defaults(func=cmd_uninstall)
 
     p = sub.add_parser("run", parents=[common], help="run a task to completion without a host")
     p.add_argument("prompt", help="what you want done, in your own words")
