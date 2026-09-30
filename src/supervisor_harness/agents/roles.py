@@ -11,7 +11,9 @@ copy-editing request does not get a database-migration review.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..models import AgentKind
 
@@ -454,6 +456,69 @@ VERIFICATION_ROLES: list[Role] = [
 ALL_ROLES: list[Role] = ANALYSIS_ROLES + EXECUTION_ROLES + VERIFICATION_ROLES
 ROLES_BY_ID: dict[str, Role] = {r.id: r for r in ALL_ROLES}
 
+#: What a configured role's id may look like: the same shape as the built-ins,
+#: because it becomes a stage name (``analysis.<id>``) that routing keys on.
+_ROLE_ID = re.compile(r"[a-z][a-z0-9-]{1,39}")
+
+
+def role_from_config(role_id: str, raw: Any) -> Role:
+    """An analysis lens defined in configuration; ``ValueError``/``TypeError`` say why not.
+
+    Only analysis lenses. A configured lens adds a question the run asks; an
+    execution or verification role would change who does the work and who
+    judges it, which is a different decision from "look at this as well".
+    """
+    if not _ROLE_ID.fullmatch(role_id):
+        raise ValueError(f"role id {role_id!r} must be lowercase letters, digits and hyphens")
+    if not isinstance(raw, dict):
+        raise TypeError(f"role {role_id!r} must be an object")
+    kind = str(raw.get("kind", "analysis")).lower()
+    if kind != "analysis":
+        raise ValueError(f"role {role_id!r}: only analysis lenses can be configured, not {kind!r}")
+    title = str(raw.get("title", "")).strip()
+    charter = str(raw.get("charter", "")).strip()
+    if not title or not charter:
+        raise ValueError(f"role {role_id!r} needs a title and a charter")
+
+    def strings(key: str) -> list[str]:
+        value = raw.get(key) or []
+        if not isinstance(value, list):
+            raise TypeError(f"role {role_id!r}: {key} must be a list of strings")
+        return [str(v).strip() for v in value if str(v).strip()]
+
+    try:
+        base_weight = float(raw.get("base_weight", 0.0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"role {role_id!r}: base_weight must be a number") from exc
+    return Role(
+        id=role_id, title=title, kind=AgentKind.ANALYSIS,
+        summary=str(raw.get("summary", "")).strip() or title,
+        charter=charter,
+        objectives=strings("objectives"),
+        focus_questions=strings("focus_questions"),
+        out_of_scope=strings("out_of_scope"),
+        keywords=[k.lower() for k in strings("keywords")],
+        # Bounded: a configured lens earns its place by keyword evidence, like
+        # the built-in specialists, rather than claiming the architecture lens's
+        # near-universal floor.
+        base_weight=min(1.0, max(0.0, base_weight)),
+        host_agent_hints=strings("host_agent_hints"),
+    )
+
+
+def role_catalog(configured: Mapping[str, Any] | None = None) -> dict[str, Role]:
+    """Every role a run can use: the built-ins, plus the lenses its config defines.
+
+    ``configured`` is ``HarnessConfig.roles``, already validated and
+    trust-checked when the config was loaded -- see ``config._check_roles``. A
+    configured lens with a built-in's id replaces it; only a trusted config
+    file can do that.
+    """
+    catalog = dict(ROLES_BY_ID)
+    for role_id, raw in (configured or {}).items():
+        catalog[role_id] = role_from_config(role_id, raw)
+    return catalog
+
 
 def get_role(role_id: str) -> Role | None:
     return ROLES_BY_ID.get(role_id)
@@ -490,7 +555,11 @@ def task_complexity(prompt: str) -> float:
     return min(1.0, size + 0.12 * min(clauses, 3))
 
 
-def score_lenses(prompt: str, context_hints: list[str] | None = None) -> list[tuple[Role, float]]:
+def score_lenses(
+    prompt: str,
+    context_hints: list[str] | None = None,
+    catalog: Mapping[str, Role] | None = None,
+) -> list[tuple[Role, float]]:
     """Score each analysis lens for relevance to this task.
 
     Deliberately transparent and deterministic, so a run never depends on a
@@ -505,8 +574,10 @@ def score_lenses(prompt: str, context_hints: list[str] | None = None) -> list[tu
     words = _normalise(set(_WORD.findall(haystack)))
     factor = 0.4 + 0.6 * task_complexity(prompt)
 
+    lenses = ([r for r in catalog.values() if r.kind is AgentKind.ANALYSIS]
+              if catalog is not None else ANALYSIS_ROLES)
     scored: list[tuple[Role, float]] = []
-    for role in ANALYSIS_ROLES:
+    for role in lenses:
         hits = sum(
             1 for kw in role.keywords
             if ((kw in haystack) if " " in kw else (kw in words))
@@ -526,14 +597,16 @@ def select_lenses(
     require: list[str] | None = None,
     context_hints: list[str] | None = None,
     threshold: float = 0.55,
+    catalog: Mapping[str, Role] | None = None,
 ) -> list[Role]:
     """Choose the analysis lenses that fit this task.
 
     ``require`` always wins -- policy uses it to force a security lens onto
     anything that touches code, regardless of how the prompt is worded.
     """
-    scored = score_lenses(prompt, context_hints)
-    chosen: list[Role] = [ROLES_BY_ID[r] for r in (require or []) if r in ROLES_BY_ID]
+    roles = catalog if catalog is not None else ROLES_BY_ID
+    scored = score_lenses(prompt, context_hints, roles)
+    chosen: list[Role] = [roles[r] for r in (require or []) if r in roles]
 
     # Bigger tasks earn a wider net.
     floor = max(minimum, 3 if task_complexity(prompt) >= 0.35 else minimum)

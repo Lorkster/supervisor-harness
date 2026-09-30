@@ -124,6 +124,11 @@ class Policy:
     # Analysis
     min_analysis_lenses: int = 2
     max_analysis_lenses: int = 6
+    # Lenses every run includes, whatever the prompt says -- built-in or defined
+    # under `roles`. Not protected: a workspace can only *add* scrutiny with it.
+    # The security lens is forced separately by `require_security_review`,
+    # which is protected, so this list cannot be used to drop it.
+    required_lenses: list[str] = field(default_factory=list)
 
     # Improvement loop
     learn_from_failures: bool = True
@@ -169,7 +174,11 @@ class HarnessConfig:
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     routing: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_ROUTING))
     policy: Policy = field(default_factory=Policy)
-    roles: dict[str, dict[str, Any]] = field(default_factory=dict)   # extra/overridden roles
+    # Analysis lenses defined here, beside the built-in ones: id -> {title,
+    # charter, summary, objectives, focus_questions, out_of_scope, keywords,
+    # base_weight, host_agent_hints}. Validated at load, and a workspace file
+    # may only add new ids -- see `_check_roles`.
+    roles: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Put the whole brief and schema in the packet instead of writing them out
     # and pointing at them. Off by default: the by-reference form exists because
     # a host-delegated run pushes every brief, result and directive through the
@@ -362,6 +371,47 @@ def _strip_untrusted(overlay: dict[str, Any]) -> tuple[dict[str, Any], list[str]
     return clean, rejected
 
 
+def _check_roles(
+    overlay: dict[str, Any], trusted: bool, defined: set[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """Validate the lenses a config file defines, and apply the trust rule to them.
+
+    A workspace file may add a lens with a new id. It may not redefine one that
+    already exists -- a built-in, or one a trusted file defined. The workspace
+    is usually the code under review, and a repository able to rewrite the
+    security lens's charter would be setting the terms of its own review. The
+    same reason `require_security_review` is protected. A trusted file may
+    replace a built-in lens; that is the user's own decision.
+
+    An invalid definition is dropped and reported rather than failing the load.
+    """
+    roles = overlay.get("roles")
+    if roles is None:
+        return overlay, []
+    # Lazy: `agents` sits above `config`, and only this check needs the built-ins.
+    from .agents.roles import ROLES_BY_ID, role_from_config
+
+    clean = dict(overlay)
+    kept: dict[str, Any] = {}
+    rejected: list[str] = []
+    if not isinstance(roles, dict):
+        clean.pop("roles")
+        return clean, ["roles (must be an object of id -> definition)"]
+    for role_id, raw in roles.items():
+        if not trusted and (role_id in ROLES_BY_ID or role_id in defined):
+            rejected.append(f"roles.{role_id} (a workspace file may add lenses, not "
+                            "redefine an existing one)")
+            continue
+        try:
+            role_from_config(str(role_id), raw)
+        except (ValueError, TypeError) as exc:
+            rejected.append(f"roles.{role_id} ({exc})")
+            continue
+        kept[str(role_id)] = raw
+    clean["roles"] = kept
+    return clean, rejected
+
+
 def candidate_paths(workspace: Path) -> list[tuple[Path, bool]]:
     """Config files to merge, in order, each flagged as trusted or not."""
     home_env = os.environ.get("SUPERVISOR_HOME")
@@ -396,6 +446,8 @@ def load_config(workspace: Path | str | None = None) -> HarnessConfig:
         if not trusted:
             overlay, dropped = _strip_untrusted(overlay)
             rejected.extend(f"{setting} (from {path})" for setting in dropped)
+        overlay, dropped = _check_roles(overlay, trusted, set(merged.get("roles") or {}))
+        rejected.extend(f"{setting} (from {path})" for setting in dropped)
         merged = _deep_merge(merged, overlay)
         sources.append(str(path))
 
