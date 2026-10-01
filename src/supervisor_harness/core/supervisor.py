@@ -90,6 +90,7 @@ from .envelope import Ceiling, attenuate, effective, establish, render, stale_re
 from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
+from .paths import relative_patterns
 from .reporting import Reporting
 from .responses import SupervisorResponse
 
@@ -522,7 +523,7 @@ class Supervisor:
         report = phases.build_report(state, data)
         session.emit(EventType.REPORT_WRITTEN, {"report": to_jsonable(report)})
 
-        tasks = parse_tasks(data, state.id)
+        tasks = parse_tasks(data, state.id, state.workspace)
         wants_execution = (
             state.mode is RunMode.EXECUTE
             or (state.mode is RunMode.AUTO and report.recommended_mode is RunMode.EXECUTE)
@@ -1749,7 +1750,8 @@ def _apply_modifications(
                 notes.extend(bars.get(task.id, []))
         elif key == "scope_paths" and isinstance(value, list):
             task.scope, clamped = attenuate(
-                replace(task.scope, paths=[str(v) for v in value]),
+                replace(task.scope, paths=relative_patterns(
+                    [str(v) for v in value], str(workspace or ""))),
                 [Ceiling.of("run envelope", envelope)],
             )
             notes.extend(clamped)

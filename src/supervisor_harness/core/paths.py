@@ -108,6 +108,44 @@ def scope_relative(raw: str, workspace: str = "") -> str | None:
     return normalise_path(path) or None
 
 
+def relative_patterns(patterns: list[str], workspace: str) -> list[str]:
+    """Scope patterns as a model wrote them, in the workspace-relative form they are compared in.
+
+    A planning model is shown the workspace's absolute path, and sometimes hands
+    it back as a lens's or a task's scope. Every comparison downstream -- drift,
+    audit, the toolbox's write fence, the envelope -- is against
+    workspace-relative paths, so an absolute pattern matched nothing: every file
+    an agent read was "outside the declared scope", and every agent scoped that
+    way scored as drifting on its first turn.
+
+    So, once, where the patterns come in:
+
+    * the workspace itself becomes ``**``, the whole workspace -- not ``[]``,
+      which also means the whole workspace but reads as "unscoped" to the
+      toolbox;
+    * a path beneath it becomes the relative path, globs and all;
+    * a rooted path anywhere else becomes :data:`NOTHING`. It names no file in
+      this workspace, and dropping it could empty the list and widen the scope.
+
+    Relative patterns pass through unchanged.
+    """
+    root = str(workspace).replace("\\", "/").rstrip("/")
+    out: list[str] = []
+    for raw in patterns:
+        pat = normalise_pattern(raw)
+        if not pat or not _ROOTED.match(pat):
+            if pat:
+                out.append(pat)
+            continue
+        bare = pat.rstrip("/")
+        if root and bare.lower() == root.lower():
+            out.append("**")
+            continue
+        stripped = _strip_workspace(pat, root) if root else None
+        out.append(stripped if stripped else NOTHING)
+    return out
+
+
 def normalise_pattern(raw: str) -> str:
     """A scope pattern in the one form the comparisons here expect.
 
