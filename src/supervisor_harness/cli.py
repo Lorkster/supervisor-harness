@@ -1041,7 +1041,13 @@ def cmd_delete(args: argparse.Namespace) -> int:
         if not args.run:
             print("Name a run, or pass --older-than DAYS.", file=sys.stderr)
             return 2
-        if not store.delete_run(args.run):
+        try:
+            deleted = store.delete_run(args.run)
+        except ValueError as exc:
+            print(f"{exc}: a run id is one name, like the ones `supervisor runs` lists",
+                  file=sys.stderr)
+            return 2
+        if not deleted:
             print(f"No such run: {args.run}", file=sys.stderr)
             return 1
         print(f"Deleted {args.run} and its rows in the index.")

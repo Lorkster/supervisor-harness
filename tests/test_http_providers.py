@@ -164,6 +164,31 @@ async def test_ollama_constrains_generation_and_turns_thinking_off() -> None:
     assert body["messages"][0] == {"role": "system", "content": "you are a supervised agent"}
 
 
+async def test_ollama_describes_the_schema_instead_of_enforcing_it_on_a_long_prompt() -> None:
+    """Constrained decoding collapses on long prompts: measured, a 288,000-character
+    review came back as ``{"findings": []}`` in 11 tokens with the schema as a
+    grammar, and with three findings in JSON mode with the schema described."""
+    from supervisor_harness.providers.ollama import GRAMMAR_MAX_PROMPT_CHARS
+
+    wire = Wire(_ollama_ok(), _ollama_ok())
+    provider = wire.attach(OllamaProvider())
+    long_brief = "x" * (GRAMMAR_MAX_PROMPT_CHARS + 1)
+
+    await provider.complete(_request(messages=[ChatMessage("user", long_brief)],
+                                     json_schema=SCHEMA))
+    body = wire.body
+    assert body["format"] == "json"
+    assert body["think"] is False
+    system = body["messages"][0]
+    assert system["role"] == "system" and system["content"].startswith("you are a supervised")
+    assert "JSON Schema" in system["content"] and '"type"' in system["content"]
+    assert body["messages"][1]["content"] == long_brief
+
+    await provider.complete(_request(system="", messages=[ChatMessage("user", long_brief)],
+                                     json_schema=SCHEMA))
+    assert "JSON Schema" in wire.body["messages"][0]["content"], "a system message is added"
+
+
 @pytest.mark.parametrize(
     ("provider", "responder"),
     [

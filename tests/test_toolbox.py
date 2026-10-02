@@ -325,17 +325,21 @@ def test_run_command_does_not_go_through_a_shell(tree: Path) -> None:
     the process-tree problem above. `dod.verify_command` has always run its
     commands this way; this brings the toolbox into line with it.
     """
-    code = [
-        line for line in inspect.getsource(Toolbox.run_command).splitlines()
-        if not line.lstrip().startswith("#")
-    ]
+    from supervisor_harness.core.dod import run_bounded
 
-    assert any("shell=False" in line for line in code)
+    def code(func: object) -> list[str]:
+        return [line for line in inspect.getsource(func).splitlines()  # type: ignore[arg-type]
+                if not line.lstrip().startswith("#")]
+
+    # Both commands the harness runs go through the one runner, which uses
+    # Popen with no shell argument (the default is no shell).
+    assert any("run_bounded(" in line for line in code(Toolbox.run_command))
     # Comment lines are excluded on purpose: the method's own comment explains
     # what `shell=True` did wrong, and a naive substring search over the whole
     # source therefore fails against correct code. Prose that quotes the thing
     # it forbids has now caught this project out twice.
-    assert not any("shell=True" in line for line in code)
+    assert not any("shell=True" in line for line in code(Toolbox.run_command))
+    assert not any("shell=" in line for line in code(run_bounded))
 
 
 # -- dispatch ---------------------------------------------------------------

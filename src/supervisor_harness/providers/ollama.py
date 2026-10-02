@@ -19,9 +19,20 @@ from .base import (
     CompletionResponse,
     Provider,
     ProviderError,
+    schema_instruction,
 )
 
 DEFAULT_BASE_URL = "http://localhost:11434"
+
+#: Above this many characters of prompt, the schema is described in the system
+#: text and Ollama is asked only for JSON, instead of being handed the schema
+#: as a grammar. Constrained decoding collapses on long prompts: measured with
+#: qwen3.8-code at 131k context, a 288,000-character review came back as
+#: ``{"findings": []}`` in 11 tokens -- an empty answer that reads exactly like
+#: "found nothing" -- while the same prompt in JSON mode with the schema
+#: described returned three findings, and at half the length the grammar
+#: worked. Short prompts keep the grammar, which is stricter where it holds.
+GRAMMAR_MAX_PROMPT_CHARS = 100_000
 
 
 class OllamaProvider(Provider):
@@ -83,8 +94,20 @@ class OllamaProvider(Provider):
             "keep_alive": self.keep_alive,
         }
         if request.json_schema:
-            # Ollama constrains generation to the schema when given one directly.
-            body["format"] = request.json_schema
+            if sum(len(m["content"]) for m in messages) <= GRAMMAR_MAX_PROMPT_CHARS:
+                # Ollama constrains generation to the schema when given one directly.
+                body["format"] = request.json_schema
+            else:
+                # Too long for the grammar to hold (see GRAMMAR_MAX_PROMPT_CHARS):
+                # JSON mode, with the schema described the way every other
+                # provider here describes it.
+                body["format"] = "json"
+                instruction = schema_instruction(request.json_schema)
+                if messages and messages[0]["role"] == "system":
+                    messages[0] = {"role": "system",
+                                   "content": f"{messages[0]['content']}\n\n{instruction}"}
+                else:
+                    messages.insert(0, {"role": "system", "content": instruction})
             # Reasoning models otherwise spend the whole token budget in the
             # thinking channel and return empty content. Callers that want the
             # reasoning back can pass think=True explicitly.

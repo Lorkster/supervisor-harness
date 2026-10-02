@@ -36,10 +36,13 @@ while an agent's account of proving one is marked as a model's claim.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -668,6 +671,142 @@ def unquoted_metacharacter(command: str, characters: str = _METACHARACTERS) -> s
     return None
 
 
+# Interpreters on the check-runner list that will also run a program handed to
+# them in the command line itself, and the flags by which they do it. They earn
+# their place on that list by running the project's tests -- ``python -m pytest``
+# -- but ``python -c "open('../../x','w').write('')"`` is the same binary
+# carrying source no check has seen, naming its paths at runtime where no
+# argument check can reach them. Both an agent's shell and a criterion's command
+# refuse these flags; ``-m`` and a script path stay open. Each entry is (short
+# source flags, long source flags, short flags whose value is the next token,
+# short flags after which the arguments stop being the interpreter's own).
+_Interpreter = tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]
+_INLINE_SOURCE: dict[str, _Interpreter] = {
+    "python": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
+    "python3": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
+    "py": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
+    "node": (frozenset("ep"), frozenset({"--eval", "--print"}), frozenset("r"),
+             frozenset()),
+}
+
+
+def inline_source_flag(tokens: list[str]) -> str | None:
+    """The flag by which this command carries its own source, or ``None``.
+
+    Only the interpreter's own leading options are read. After ``-m module`` or
+    a script path the arguments belong to the program being run, where ``-c`` is
+    pytest's config file rather than Python's source, and refusing it there would
+    fence a legitimate check.
+    """
+    if not tokens:
+        return None
+    entry = _INLINE_SOURCE.get(executable_name(tokens[0]))
+    if entry is None:
+        return None
+    source, long_source, takes_value, terminal = entry
+
+    skip = False
+    for token in tokens[1:]:
+        if skip:  # the value of the flag before it, not a flag itself.
+            skip = False
+            continue
+        # S105 reads `token` as a credential. It is a command-line token: this
+        # function walks the argv of a command being inspected.
+        if token == "-":  # noqa: S105 - a shell token, not a secret
+            return "-"  # the program is read from standard input.
+        if token == "--" or not token.startswith("-"):  # noqa: S105 - as above
+            return None  # the interpreter's own options have ended.
+        if token.startswith("--"):
+            name = token.partition("=")[0]
+            if name in long_source:
+                return name
+            continue
+        for index, char in enumerate(token[1:]):
+            if char in source:
+                return f"-{char}"
+            if char in terminal:
+                return None
+            if char in takes_value:
+                # ``-W ignore`` and ``-Wignore`` are the same flag.
+                skip = index == len(token) - 2
+                break
+    return None
+
+
+#: Environment variables a command the harness runs does not inherit: the
+#: user's credentials. The command is a check runner, and a check runner runs
+#: whatever the project tells it to -- a test, a ``package.json`` script, a
+#: Makefile target. Handing it ``ANTHROPIC_API_KEY`` gives the key to code the
+#: user has not read. Matched by name, so a project whose own tests need a
+#: secret has to be given it deliberately, outside the harness.
+_CREDENTIAL_NAME = re.compile(
+    r"(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)$"
+    r"|^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)$"
+    r"|^(ANTHROPIC|OPENROUTER|OPENAI)_",
+    re.IGNORECASE,
+)
+
+
+def child_environment() -> dict[str, str]:
+    """This process's environment without the credentials in it."""
+    return {k: v for k, v in os.environ.items() if not _CREDENTIAL_NAME.search(k)}
+
+
+def run_bounded(argv: list[str], cwd: Path | str, timeout: float
+                ) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` without a shell, and stop it -- all of it -- at ``timeout``.
+
+    ``subprocess.run(timeout=...)`` kills the process it started and nothing
+    that process started. On Windows ``npm``, ``npx`` and ``yarn`` are ``.cmd``
+    shims, which run inside ``cmd.exe``: the timeout killed ``cmd`` and the
+    program kept running and holding the pipes, so the call returned only when
+    the program finished. Measured: a 1-second timeout on a shim returned after
+    7.1 seconds. The whole tree is killed instead -- ``taskkill /T`` on Windows,
+    the process group elsewhere -- and ``TimeoutExpired`` is raised as before.
+    The command also runs without the user's credentials (`child_environment`).
+    """
+    if sys.platform == "win32":
+        proc = subprocess.Popen(  # noqa: S603 - tokenised, no shell, allow-listed
+            argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            errors="replace", env=child_environment(),
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    else:
+        proc = subprocess.Popen(  # noqa: S603 - tokenised, no shell, allow-listed
+            argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            errors="replace", env=child_environment(), start_new_session=True,
+        )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            out, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err) from None
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+def _kill_tree(proc: subprocess.Popen[str]) -> None:
+    if sys.platform == "win32":
+        subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],  # noqa: S607
+            capture_output=True, check=False,
+        )
+    # Plain try/except rather than contextlib.suppress: the project's guard
+    # counts every `suppress` as a broad one (test_enforce_versus_observe).
+    else:
+        try:  # noqa: SIM105
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass  # already gone, or not ours to signal; `kill` below still runs
+    try:  # noqa: SIM105
+        proc.kill()
+    except OSError:
+        pass  # the tree is already dead
+
+
 def executable_name(token: str) -> str:
     """The bare program name a command's first token invokes.
 
@@ -702,6 +841,15 @@ def unsafe_command(command: str) -> str | None:
             f"{executable!r} is not one of the check runners a criterion may invoke "
             f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Verify this by review, or by "
             "a command the user chooses to run themselves"
+        )
+    # The rule an agent's shell already had. Without it here, a criterion --
+    # model output -- could carry any program at all as `python -c "..."`.
+    inline = inline_source_flag(tokens)
+    if inline is not None:
+        return (
+            f"it passes {inline!r} to {executable!r}, which runs a program written into "
+            "the command line itself. Check by a test file or a module instead "
+            "(python -m pytest ...)"
         )
     return None
 
@@ -748,14 +896,7 @@ def verify_command(
     argv[0] = executable
 
     try:
-        completed = subprocess.run(  # noqa: S603 - tokenised, no shell, allow-listed
-            argv,
-            shell=False,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        completed = run_bounded(argv, workspace, timeout)
     except subprocess.TimeoutExpired:
         return VerificationOutcome(
             CriterionStatus.FAIL, f"command timed out after {timeout}s: {command}"
