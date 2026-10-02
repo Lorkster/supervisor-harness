@@ -860,6 +860,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `drift_threshold` | 0.45 | Score at which a correction is issued |
 | `drift_hard_threshold` | 0.8 | Score at which a repeat offender is stopped |
 | `model_drift_check` | true | Escalate suspected drift to the drift model |
+| `min_scope_coverage` | 0.5 | Share of its scope an analysis agent must read before "done" is accepted; below it, sent back once; 0 disables |
 | `checkpoint_threshold` | 0.75 | Score needed to pass the quality gate |
 | `max_checkpoint_iterations` | 3 | Remediation rounds before giving up |
 | `require_tests` | true | Insert a mandatory test criterion |

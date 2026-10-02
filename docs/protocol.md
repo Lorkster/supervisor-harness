@@ -168,10 +168,16 @@ The response contains a directive:
 | `continue` | On brief | Run the returned continuation packet |
 | `refocus` | Drifted off the objectives | Run the continuation packet with its corrections |
 | `narrow` | Went outside scope | Same, scope corrections attached |
-| `deepen` | Claimed done, too shallow | Same |
+| `deepen` | Claimed done, too shallow, or having read too little of its scope | Same |
 | `escalate` | Agent blocked | Agent stops; supervisor handles it |
 | `accept` | Objectives met | Agent is finished |
 | `stop` | Budget spent, or repeat drift | Agent is finished |
+
+An analysis agent that claims done with turns left, having read less than
+`policy.min_scope_coverage` (half, by default) of the files in its scope, gets
+`deepen` once, naming the files it has not read. Its next `done` is accepted
+whatever it read. A host-run agent is counted by the files it lists in
+`files_examined`, so have it list every file it read.
 
 `continue`, `refocus`, `narrow` and `deepen` all return a continuation packet.
 Its brief is the agent's **original brief followed by the directive**, including

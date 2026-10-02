@@ -78,13 +78,17 @@ Fixes:
 | a workspace config may choose routing among configured providers | manual | accepted and documented: don't configure a provider a codebase must not reach, or pin routes in the environment |
 | on Windows a program name is also looked up in the current directory | manual | within "check runners run project code": a repository able to plant `pytest.bat` can already run code through `conftest.py` |
 
-## Open
+## Left open by the review, closed since
 
-- **An agent can finish without covering its scope.** In the 18-file run, the security
-  lens read 4 files, said in its own self-assessment that it had not read the
-  providers, `mcp_server.py` or `install.py`, and was accepted after one turn of six.
-  Nothing checks coverage before accepting "done". This is a quality gap rather than
-  a security issue, and it needs a design decision before it is fixed.
-- **Dependencies were not audited with `pip-audit`.** The runtime dependency is
-  `httpx`; the extras are `mcp` and `anthropic`. Adding `pip-audit` to CI would
-  keep it that way.
+- **An agent could finish without covering its scope.** In the 18-file run, the
+  security lens read 4 files, said in its own self-assessment that it had not
+  read the providers, `mcp_server.py` or `install.py`, and was accepted after
+  one turn of six. An analysis agent that says "done" with turns left, having
+  read under `policy.min_scope_coverage` (half) of its scope, is now sent back
+  once with the unread files named. Every analysis agent's coverage is noted
+  on the run's log. The setting is protected: a workspace config cannot lower it.
+- **Dependencies were not audited.** `.github/workflows/audit.yml` runs
+  `pip-audit` over everything a user installs, with every extra (43 packages
+  when added, none with a known vulnerability). It runs on every change to
+  `pyproject.toml` and weekly, because a new advisory turns a green run red
+  without a push.

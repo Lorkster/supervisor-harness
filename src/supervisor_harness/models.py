@@ -447,6 +447,11 @@ class AgentTurn:
     findings: list[Finding] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     files_touched: list[str] = field(default_factory=list)
+    # The files this turn opened with ``read_file``, workspace-relative. Measured
+    # by the harness on the autonomous backend, so it replaces anything the
+    # model wrote here; a host-run agent's is its own report. What the coverage
+    # check counts before an analysis agent's "done" is accepted.
+    files_read: list[str] = field(default_factory=list)
     messages: list[Message] = field(default_factory=list)
     claimed_status: AgentStatus = AgentStatus.RUNNING
     self_assessment: str = ""

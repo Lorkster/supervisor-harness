@@ -19,6 +19,7 @@ The bodies are the ones that were on ``Supervisor``, moved verbatim.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
@@ -36,11 +37,13 @@ from ..models import (
     SUPERVISOR,
     AgentKind,
     AgentSpec,
+    AgentStatus,
     AgentTurn,
     Directive,
     DirectiveKind,
     DriftAssessment,
     Finding,
+    Scope,
 )
 from ..providers.base import ChatMessage, CompletionRequest
 from ..providers.router import ModelRouter
@@ -49,17 +52,20 @@ from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from .blackboard import Blackboard, answer_from_record
 from .drift import (
+    COVERAGE_RATIONALE,
+    ScopeCoverage,
     TurnContext,
     assess_heuristically,
     decide_directive,
     merge_assessments,
+    scope_coverage,
     should_escalate,
     status_after,
 )
 from .facts import anchor_fact
 from .lifecycle import Lifecycle
 from .packets import Packets
-from .paths import normalise_path
+from .paths import normalise_path, scope_relative
 from .reporting import Reporting
 from .responses import SupervisorResponse
 
@@ -109,6 +115,7 @@ class Supervision:
         packets: Packets,
         reporting: Reporting,
         lifecycle: Lifecycle,
+        scope_files: Callable[[Scope], list[str]] | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -116,6 +123,9 @@ class Supervision:
         self.packets = packets
         self.reporting = reporting
         self.lifecycle = lifecycle
+        # The files an agent's scope covers, for the coverage check. None turns
+        # the check off, which is what a caller with no workspace to list wants.
+        self.scope_files = scope_files
 
     async def _record_turn(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
@@ -140,6 +150,7 @@ class Supervision:
                 str(f)
                 for f in (payload.get("files_touched") or payload.get("files_examined") or [])
             ],
+            files_read=[str(f) for f in (payload.get("files_read") or [])],
             messages=parse_messages(payload, state.id, agent.id),
             claimed_status=parse_status(payload.get("status")),
             self_assessment=str(payload.get("self_assessment", "")),
@@ -331,12 +342,17 @@ class Supervision:
             if d.agent_id == agent.id
             and d.kind in (DirectiveKind.REFOCUS, DirectiveKind.NARROW, DirectiveKind.REJECT)
         )
+        # Walking the workspace is not free, so only for a turn that claims to
+        # be finished, which is the only one coverage can send back.
+        coverage = (self._coverage(session, agent, turn)
+                    if turn.claimed_status is AgentStatus.DONE else None)
         directive = decide_directive(
             assessment, agent, turn, self.config.policy, turns_used,
             inbox=inbox, prior_corrections=prior_corrections,
             # What the agent has spent so far, including the turn just recorded.
             # Without it only the turn ceiling was ever checked.
             usage=state.usage.get(agent.id),
+            coverage=coverage if self._coverage_judged(session, agent) else None,
         )
         directive = await self._answer_questions(session, agent, directive)
         # The turn this answers, so "why was this directive issued" is a lookup
@@ -359,8 +375,64 @@ class Supervision:
                 f"{directive.rationale or 'no rationale given'}",
                 actor=agent.id,
             )
+            if coverage is None:
+                coverage = self._coverage(session, agent, turn)
+            if coverage is not None:
+                # On the record for every analysis agent that ends, so a reader
+                # -- or an evaluation scoring the run -- can tell a miss in a
+                # file the agent never opened from one in a file it read.
+                await session.anote(
+                    f"scope coverage of `{agent.id}`: {coverage.describe()}",
+                    actor=agent.id,
+                    read=len(coverage.read),
+                    in_scope=len(coverage.in_scope),
+                    files_read=coverage.read,
+                    unread=coverage.unread,
+                )
         await self.lifecycle._set_status(session, agent, status)
         return directive
+    def _coverage(
+        self, session: RunSession, agent: AgentSpec, turn: AgentTurn
+    ) -> ScopeCoverage | None:
+        """How much of its scope an analysis agent has read, over all its turns.
+
+        Autonomous agents are counted by what their tools opened. A host-run
+        agent's tools are the host's, so its own ``files_examined`` is all there
+        is to count; the check is weaker there, and still catches an agent that
+        says it looked at four files of eighteen.
+        """
+        if self.scope_files is None or agent.kind is not AgentKind.ANALYSIS:
+            return None
+        in_scope = self.scope_files(agent.scope)
+        if not in_scope:
+            return None
+        hosted = self.router.is_host(self.lifecycle._stage_for(agent))
+        workspace = str(session.state.workspace)
+        read: set[str] = set()
+        turns = [*self.packets._previous_turns(session, agent.id, before=turn.id), turn]
+        for t in turns:
+            for raw in (*t.files_read, *(t.files_touched if hosted else ())):
+                rel = scope_relative(raw, workspace)
+                if rel:
+                    read.add(rel)
+        return scope_coverage(in_scope, read)
+
+    def _coverage_judged(self, session: RunSession, agent: AgentSpec) -> bool:
+        """Whether coverage may still send this agent back: once per agent, if on.
+
+        Once, because the point is to stop an agent finishing *without having
+        looked*, not to make it read every file: an agent sent back that still
+        says "done" has seen the list and chosen, and its choice is recorded.
+        """
+        if self.config.policy.min_scope_coverage <= 0:
+            return False
+        return not any(
+            d.agent_id == agent.id
+            and d.kind is DirectiveKind.DEEPEN
+            and d.rationale.startswith(COVERAGE_RATIONALE)
+            for d in session.state.directives
+        )
+
     async def supervise_with_model(
         self, run_id: str, agent_id: str
     ) -> dict[str, Any]:

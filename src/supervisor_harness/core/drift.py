@@ -66,6 +66,39 @@ def jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
+#: How a coverage directive's rationale begins. The supervisor sends an agent
+#: back for coverage once; this is how it recognises that it already has.
+COVERAGE_RATIONALE = "claimed done having read"
+
+#: How many unread files a coverage directive names before it summarises.
+COVERAGE_LIST_LIMIT = 15
+
+
+@dataclass
+class ScopeCoverage:
+    """Which of the files in an agent's scope it has read so far."""
+
+    in_scope: list[str]
+    read: list[str]          # the in-scope files read, a subset of ``in_scope``
+
+    @property
+    def fraction(self) -> float:
+        return len(self.read) / len(self.in_scope) if self.in_scope else 1.0
+
+    @property
+    def unread(self) -> list[str]:
+        seen = set(self.read)
+        return [f for f in self.in_scope if f not in seen]
+
+    def describe(self) -> str:
+        return f"{len(self.read)} of {len(self.in_scope)} files in its scope"
+
+
+def scope_coverage(in_scope: list[str], read: set[str]) -> ScopeCoverage:
+    """Count ``read`` (workspace-relative paths) against the files in scope."""
+    return ScopeCoverage(in_scope=list(in_scope), read=[f for f in in_scope if f in read])
+
+
 @dataclass
 class TurnContext:
     """Everything the heuristics need about an agent's history."""
@@ -179,8 +212,16 @@ def _check_objective_coverage(ctx: TurnContext) -> DriftSignal | None:
 
 
 def _check_repetition(ctx: TurnContext) -> DriftSignal | None:
-    """The agent is circling: this turn says what the last one said."""
-    if not ctx.previous_turns:
+    """The agent is circling: this turn says what the last one said.
+
+    Not when it says so as "done". Saying the same thing again and calling it
+    finished is standing by an answer, and it is what this signal's own
+    correction asks for ("or report `status: done`"). Counted as circling, an
+    agent sent back once -- to deepen, or to read more of its scope -- that
+    stood by its answer was refocused for it on every turn and could never be
+    accepted.
+    """
+    if not ctx.previous_turns or ctx.turn.claimed_status is AgentStatus.DONE:
         return None
     current = tokens(ctx.turn.output)
     if len(current) < 15:
@@ -416,11 +457,17 @@ def decide_directive(
     inbox: list[Message] | None = None,
     prior_corrections: int = 0,
     usage: Usage | None = None,
+    coverage: ScopeCoverage | None = None,
 ) -> Directive:
     """Choose what to tell the agent next.
 
     Precedence: hard stops beat corrections, corrections beat acceptance, and an
     agent claiming completion is accepted only if it is not simultaneously adrift.
+
+    ``coverage`` is passed only when the caller wants it judged: an analysis
+    agent, with the check on, not already sent back for it. A "done" with turns
+    left and less than ``policy.min_scope_coverage`` of the scope read is sent
+    back to read the rest.
 
     Stopping is reserved for cases where correction has already been tried and
     failed, or where the violation is not correctable after the fact (a
@@ -493,6 +540,20 @@ def decide_directive(
                 inbox=inbox,
                 turns_remaining=remaining,
             )
+        if (
+            coverage is not None
+            and remaining > 0
+            and coverage.fraction < policy.min_scope_coverage
+        ):
+            return Directive(
+                agent_id=agent.id,
+                kind=DirectiveKind.DEEPEN,
+                rationale=f"{COVERAGE_RATIONALE} {coverage.describe()}",
+                corrections=[_coverage_correction(coverage)],
+                focus=agent.objectives,
+                inbox=inbox,
+                turns_remaining=remaining,
+            )
         return Directive(
             agent_id=agent.id,
             kind=DirectiveKind.ACCEPT,
@@ -527,6 +588,20 @@ def decide_directive(
     )
 
 
+def _coverage_correction(coverage: ScopeCoverage) -> str:
+    """What an agent sent back for coverage is told, naming what it has not read."""
+    unread = coverage.unread
+    named = ", ".join(f"`{f}`" for f in unread[:COVERAGE_LIST_LIMIT])
+    more = (f", and {len(unread) - COVERAGE_LIST_LIMIT} more"
+            if len(unread) > COVERAGE_LIST_LIMIT else "")
+    return (
+        f"You have read {coverage.describe()}. Not yet read: {named}{more}. "
+        "Read the ones that bear on your objectives and report what they change. "
+        "For any you leave unread, say in self_assessment why it does not need "
+        "reading. List every file you read in files_examined."
+    )
+
+
 def status_after(directive: Directive) -> AgentStatus:
     """The agent status implied by a directive."""
     return {
@@ -538,11 +613,14 @@ def status_after(directive: Directive) -> AgentStatus:
 
 __all__ = [
     "ACTIVE_AGENT_STATUSES",
+    "COVERAGE_RATIONALE",
     "SCOPE_SIGNALS",
+    "ScopeCoverage",
     "TurnContext",
     "assess_heuristically",
     "decide_directive",
     "merge_assessments",
+    "scope_coverage",
     "should_escalate",
     "status_after",
     "tokens",
