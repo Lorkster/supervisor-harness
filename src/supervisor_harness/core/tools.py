@@ -184,6 +184,10 @@ _GIT_VALUE_OPTIONS = frozenset({
 })
 
 MAX_READ_LINES = 400
+#: A read also stops at this many characters, and says where to continue. Lines
+#: alone did not bound it: 400 lines of dense code is 16,000 characters, more
+#: than a round's results could carry, and the excess was lost without a word.
+MAX_READ_CHARS = 10_000
 MAX_MATCHES = 60
 MAX_LIST = 200
 
@@ -435,14 +439,23 @@ class Toolbox:
 
         start = max(1, int(start or 1))
         limit = max(1, min(int(limit or MAX_READ_LINES), MAX_READ_LINES))
-        window = lines[start - 1 : start - 1 + limit]
-        numbered = "\n".join(f"{start + i:>5}  {line}" for i, line in enumerate(window))
+        numbered: list[str] = []
+        size = 0
+        for n, line in enumerate(lines[start - 1 : start - 1 + limit], start):
+            text = f"{n:>5}  {line}"
+            if numbered and size + len(text) + 1 > MAX_READ_CHARS:
+                break
+            numbered.append(text)
+            size += len(text) + 1
+        shown = len(numbered)
+        remaining = len(lines) - (start - 1 + shown)
         suffix = (
-            f"\n... ({len(lines) - start + 1 - len(window)} more lines)"
-            if start - 1 + len(window) < len(lines)
+            f"\n... ({remaining} more lines; continue with read_file start={start + shown})"
+            if remaining > 0
             else ""
         )
-        return ToolResult("read_file", True, f"{self._rel(target)}\n{numbered}{suffix}")
+        body = "\n".join(numbered)
+        return ToolResult("read_file", True, f"{self._rel(target)}\n{body}{suffix}")
 
     def search(self, pattern: str, glob: str = "**/*") -> ToolResult:
         try:
@@ -814,9 +827,33 @@ def render_tools_section(agent: AgentSpec, policy: Policy) -> str:
     return "\n".join(lines)
 
 
-def render_results(results: list[ToolResult]) -> str:
-    return (
-        "## Tool results\n\n"
-        + "\n\n".join(r.render() for r in results)
-        + "\n\nContinue. Call more tools if you need them, or give your answer now."
-    )
+def render_results(results: list[ToolResult], limit: int = 0) -> str:
+    """One round's results, within ``limit`` characters if one is given.
+
+    Never cut silently. The whole round used to be sliced to a fixed length, so
+    an agent that asked for four files saw part of the first and nothing else --
+    not the others, not the "more lines" notice, not the instruction to
+    continue -- and could not know what it had not seen. Now results are kept
+    whole in the order asked for; one that does not fit is clipped (if it is the
+    first) or replaced by a line saying it was left out and to ask again.
+    """
+    head = "## Tool results\n\n"
+    tail = "\n\nContinue. Call more tools if you need them, or give your answer now."
+    blocks: list[str] = []
+    used = len(head) + len(tail)
+    for result in results:
+        block = result.render()
+        room = limit - used - 2 if limit else len(block)
+        if len(block) <= room:
+            blocks.append(block)
+            used += len(block) + 2
+        elif not blocks and room > 200:
+            note = (f"\n[cut here: a round's results are limited to {limit} characters; "
+                    "ask for a smaller part]")
+            blocks.append(block[: room - len(note)] + note)
+            used = limit
+        else:
+            blocks.append(f"### {result.tool}\n(left out: this round's results are limited "
+                          f"to {limit} characters. Call it again in your next round.)")
+            used += len(blocks[-1]) + 2
+    return head + "\n\n".join(blocks) + tail

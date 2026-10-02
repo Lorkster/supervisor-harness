@@ -111,9 +111,12 @@ MAX_TOOL_ROUNDS = 6
 #: Bounds on what one turn's tool history carries back into the next round.
 #: Results accumulate across a turn now, so each block is capped rather than the
 #: whole history being thrown away -- the rounds are already bounded by
-#: MAX_TOOL_ROUNDS, so the total is too.
+#: MAX_TOOL_ROUNDS, so the total is too. The result bound is per round and is
+#: applied by `render_results`, which keeps results whole and says what it left
+#: out: at 8,000 characters, sliced, a review of four files saw under half of
+#: them and was never told. 24,000 holds two full reads (`MAX_READ_CHARS`).
 TOOL_ECHO_CHARS = 4000
-TOOL_RESULT_CHARS = 8000
+TOOL_RESULT_CHARS = 24_000
 
 #: What providers call an answer cut off by the token limit: Anthropic and
 #: Bedrock say ``max_tokens``, OpenAI-compatible APIs and Ollama say ``length``.
@@ -405,10 +408,15 @@ class Supervisor:
         # The plan may narrow what the run may touch, and only narrow it. This
         # sits beside the mode because it is the same kind of fact: the shape of
         # the run, fixed once, before any task exists to argue about.
+        # Placed in the workspace first, like every model-written path: an
+        # absolute envelope matched nothing, and a lens that declared no scope
+        # inherited it, so every file it read was "outside" (relative_patterns).
         envelope, refusals = establish(
             self._configured_envelope(),
-            [str(x) for x in (plan.get("envelope_paths") or [])],
-            [str(x) for x in (plan.get("envelope_forbidden_paths") or [])],
+            relative_patterns(
+                [str(x) for x in (plan.get("envelope_paths") or [])], state.workspace),
+            relative_patterns(
+                [str(x) for x in (plan.get("envelope_forbidden_paths") or [])], state.workspace),
         )
         for text in refusals:
             session.note(text)
@@ -1457,7 +1465,7 @@ class Supervisor:
                 )
                 turn_history.append(ChatMessage("assistant", raw_text[:TOOL_ECHO_CHARS]))
                 turn_history.append(
-                    ChatMessage("user", render_results(results)[:TOOL_RESULT_CHARS])
+                    ChatMessage("user", render_results(results, limit=TOOL_RESULT_CHARS))
                 )
 
             if payload is None:
@@ -1601,9 +1609,11 @@ class Supervisor:
 
     def _configured_envelope(self) -> ScopeEnvelope:
         """The envelope the user's configuration grants, before any model speaks."""
+        workspace = str(self.workspace)
         return ScopeEnvelope(
-            paths=list(self.config.policy.scope_envelope),
-            forbidden_paths=list(self.config.policy.scope_envelope_forbidden),
+            paths=relative_patterns(list(self.config.policy.scope_envelope), workspace),
+            forbidden_paths=relative_patterns(
+                list(self.config.policy.scope_envelope_forbidden), workspace),
             source="configuration",
         )
 
