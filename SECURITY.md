@@ -91,3 +91,6 @@ It used Bandit over the whole package, local-model runs through
 [security-eval](https://github.com/Lorkster/security-eval), and manual review.
 Everything it found is fixed above or listed here as a stated limit; the full
 triage is in [`docs/security-review.md`](docs/security-review.md).
+
+The dependencies, with every extra, are checked with `pip-audit` on every change
+to them and weekly ([`audit.yml`](.github/workflows/audit.yml)).

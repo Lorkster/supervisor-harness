@@ -402,6 +402,9 @@ def config() -> HarnessConfig:
         max_checkpoint_iterations=2,
         min_analysis_lenses=2,
         max_analysis_lenses=3,
+        # The fake agents read no real files, so every "done" would be sent
+        # back for coverage. That check has its own tests (test_scope_coverage.py).
+        min_scope_coverage=0.0,
     )
     return cfg
 

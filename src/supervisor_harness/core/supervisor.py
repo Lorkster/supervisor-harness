@@ -155,6 +155,7 @@ class Supervisor:
         self.supervision = Supervision(
             self.config, self.store, self.router,
             self.packets, self.reporting, self.lifecycle,
+            scope_files=self.toolbox.scope_files,
         )
 
     # ------------------------------------------------------------------
@@ -1375,6 +1376,8 @@ class Supervisor:
             # a question that needed both meant reading the first one again --
             # from a tool budget the re-reading was spending.
             turn_history = list(history)
+            # What this turn actually opened, whatever it later says it examined.
+            files_read: set[str] = set()
             # Every round of the turn is paid for, not only the answering one.
             # Only the last round's usage used to reach the record, so a turn
             # that read four files before answering was billed as one call.
@@ -1457,6 +1460,7 @@ class Supervisor:
 
                 results = [self.toolbox.call(name, args, agent) for name, args in calls]
                 tools_called += len(calls)
+                files_read.update(r.path for r in results if r.ok and r.path)
                 await session.anote(
                     "tools called",
                     actor=agent.id,
@@ -1477,6 +1481,8 @@ class Supervisor:
             usage_record = payload.get("usage")
             if isinstance(usage_record, dict):
                 usage_record["tool_calls"] = tools_called
+            # Measured too, and for the same reason: the coverage check reads it.
+            payload["files_read"] = sorted(files_read)
 
             if agent.kind is AgentKind.VERIFICATION:
                 # Same as the host path: the turn is recorded and assessed

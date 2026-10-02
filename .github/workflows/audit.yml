@@ -1,0 +1,56 @@
+name: Dependency audit
+
+# What a student installs, checked against the known-vulnerability databases.
+# The security review of 2026-10-02 (docs/security-review.md) left this open:
+# the code was reviewed, its dependencies were not.
+#
+# Its own workflow rather than a job in ci.yml, because the answer changes
+# without a push: an advisory published on Tuesday makes Monday's green run
+# wrong. So it runs weekly as well as on every change to what is installed.
+
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml, .github/workflows/audit.yml]
+  pull_request:
+    paths: [pyproject.toml, .github/workflows/audit.yml]
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: pip-audit, every extra installed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      # Every extra a user can choose, resolved the way pip resolves them for a
+      # user today, in an environment of its own. Not `.[dev]`: the test tools
+      # are not installed by anyone using the harness, and auditing them would
+      # turn a pytest advisory into a red run about something nobody ships.
+      - name: Resolve what a user installs
+        run: |
+          python -m venv /tmp/runtime
+          /tmp/runtime/bin/python -m pip install --quiet --upgrade pip
+          /tmp/runtime/bin/python -m pip install --quiet ".[mcp,bedrock]"
+          /tmp/runtime/bin/python -m pip freeze --exclude-editable \
+            | grep -vi '^supervisor-harness' > runtime-requirements.txt
+          cat runtime-requirements.txt
+
+      # pip-audit in a second environment, so its own dependencies are not
+      # audited as if they were the harness's. The list above is fully pinned,
+      # so it is checked as it stands, without resolving anything again.
+      - name: Audit
+        run: |
+          python -m venv /tmp/tool
+          /tmp/tool/bin/python -m pip install --quiet pip-audit
+          /tmp/tool/bin/pip-audit -r runtime-requirements.txt \
+            --no-deps --disable-pip --progress-spinner off --desc on

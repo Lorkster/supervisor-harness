@@ -124,6 +124,14 @@ class Policy:
     # Analysis
     min_analysis_lenses: int = 2
     max_analysis_lenses: int = 6
+    # The share of the files in its scope an analysis agent must have read
+    # before its "done" is accepted while it still has turns left. Below it, the
+    # agent is sent back once, with the files it has not read named; its next
+    # "done" is accepted whatever it read, and the coverage goes on the record.
+    # Measured on a security lens that read 4 of 18 files, said in its own
+    # self-assessment which ones it had skipped, and was accepted after one turn
+    # of six. 0 turns the check off.
+    min_scope_coverage: float = 0.5
     # Lenses every run includes, whatever the prompt says -- built-in or defined
     # under `roles`. Not protected: a workspace can only *add* scrutiny with it.
     # The security lens is forced separately by `require_security_review`,
@@ -313,6 +321,9 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     ("policy", "drift_threshold"),
     ("policy", "drift_hard_threshold"),
     ("policy", "model_drift_check"),
+    # How much of its scope an analysis agent must read before "done" is
+    # accepted: a repository lowering it would choose how closely it is read.
+    ("policy", "min_scope_coverage"),
 )
 
 # Per-provider keys an untrusted file may not touch, for the same reason.

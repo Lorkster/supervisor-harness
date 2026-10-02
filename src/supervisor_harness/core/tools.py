@@ -199,6 +199,10 @@ class ToolResult:
     tool: str
     ok: bool
     output: str
+    # The workspace-relative file a successful ``read_file`` opened. The
+    # supervisor counts these against the agent's scope before it accepts "done":
+    # measured here, not taken from the agent's own list of what it examined.
+    path: str = ""
 
     def render(self) -> str:
         status = "" if self.ok else " (failed)"
@@ -382,6 +386,23 @@ class Toolbox:
     def _rel(self, path: Path) -> str:
         return path.relative_to(self.workspace).as_posix()
 
+    def scope_files(self, scope: Scope) -> list[str]:
+        """The files an agent with ``scope`` could read, workspace-relative and sorted.
+
+        What its coverage is counted against: everything ``list_files`` would
+        show it, narrowed to its scope paths (an empty scope is the whole
+        workspace) and without its forbidden paths.
+        """
+        out = []
+        for path in self._walk():
+            rel = self._rel(path)
+            if matches_any(rel, scope.forbidden_paths):
+                continue
+            if scope.paths and not matches_any(rel, scope.paths):
+                continue
+            out.append(rel)
+        return sorted(out)
+
     # -- tools -------------------------------------------------------------
 
     def list_files(self, pattern: str = "**/*") -> ToolResult:
@@ -428,7 +449,8 @@ class Toolbox:
             else ""
         )
         body = "\n".join(numbered)
-        return ToolResult("read_file", True, f"{self._rel(target)}\n{body}{suffix}")
+        rel = self._rel(target)
+        return ToolResult("read_file", True, f"{rel}\n{body}{suffix}", path=rel)
 
     def search(self, pattern: str, glob: str = "**/*") -> ToolResult:
         if len(pattern) > MAX_PATTERN_CHARS:

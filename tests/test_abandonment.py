@@ -49,6 +49,9 @@ def host_config() -> HarnessConfig:
         execution_max_turns=3,
         max_analysis_lenses=3,
         max_unreported_dispatches=2,
+        # The fake agents read no real files, so every "done" would be sent
+        # back for coverage. That check has its own tests (test_scope_coverage.py).
+        min_scope_coverage=0.0,
     )
     return cfg
 
