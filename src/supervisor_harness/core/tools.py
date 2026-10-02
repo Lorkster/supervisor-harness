@@ -43,6 +43,9 @@ and worth stating exactly:
   machine. Until this was made universal, an agent whose task arrived with no
   scope skipped the three rules above as well and reached any program on the
   machine; the least specified agent in a run held the widest shell in it;
+* the command runs without the user's credentials in its environment, and its
+  timeout stops the whole process tree (:func:`.dod.run_bounded`), so a check
+  runner is handed neither an API key nor an unbounded run;
 * two refusals apply for reasons that are not about scope at all: no command may
   change the shared working tree's git state (:func:`tree_wide_git`), and none
   may name a path under the floor (:data:`VCS_DIRS`, :data:`STORE_DIRS`). Both
@@ -69,6 +72,7 @@ import fnmatch
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -79,6 +83,8 @@ from ..store.runstore import DEFAULT_DIRNAME
 from .dod import (
     VERIFY_EXECUTABLES,
     executable_name,
+    inline_source_flag,
+    run_bounded,
     shell_split,
     unquoted_metacharacter,
 )
@@ -142,24 +148,6 @@ _FILE_SUFFIX = re.compile(r"^[\w+.-]+\.[A-Za-z]\w*$")
 # shell, where a glob is an ordinary literal argument.
 _GLOB_CHARACTERS = "*?["
 
-# Interpreters on the check-runner list that will also run a program handed to
-# them in the command line itself, and the flags by which they do it. They earn
-# their place on that list by running the project's tests -- ``python -m pytest``
-# -- but ``python -c "open('../../x','w').write('')"`` is the same binary
-# carrying source the fence has never seen, naming its paths at runtime where no
-# argument check can reach them. A scoped agent is refused these flags; ``-m``
-# and a script path stay open. Each entry is (short source flags, long source
-# flags, short flags whose value is the next token, short flags after which the
-# arguments stop being the interpreter's own).
-_Interpreter = tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]
-_INLINE_SOURCE: dict[str, _Interpreter] = {
-    "python": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
-    "python3": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
-    "py": (frozenset("c"), frozenset(), frozenset("WX"), frozenset("m")),
-    "node": (frozenset("ep"), frozenset({"--eval", "--print"}), frozenset("r"),
-             frozenset()),
-}
-
 # git subcommands that change tracked files in the working tree or move HEAD.
 # This is the one refusal here that is not about a path, because a path scope
 # cannot express it: the agents in a run share a single tree, separated only by
@@ -190,6 +178,20 @@ MAX_READ_LINES = 400
 MAX_READ_CHARS = 10_000
 MAX_MATCHES = 60
 MAX_LIST = 200
+#: Files larger than this are not read whole: a read refuses them, a search
+#: skips them. A model chooses what to open, and one multi-gigabyte log in a
+#: repository is enough to exhaust the harness's memory.
+MAX_FILE_BYTES = 5_000_000
+#: Bounds on ``search``, whose pattern a model writes. Python's ``re`` has no
+#: timeout, so a pattern with nested repetition -- ``(a+)+$`` -- can run for
+#: hours on one line: the pattern is refused, lines are searched only so far,
+#: and the whole search stops after a time budget, saying so.
+MAX_PATTERN_CHARS = 300
+MAX_SEARCH_LINE_CHARS = 2_000
+SEARCH_SECONDS = 15.0
+# A group containing a quantifier, itself quantified: the shape of
+# catastrophic backtracking. A heuristic, so it errs towards refusing.
+_NESTED_REPETITION = re.compile(r"\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)\s*[+*{]")
 
 
 @dataclass
@@ -201,47 +203,6 @@ class ToolResult:
     def render(self) -> str:
         status = "" if self.ok else " (failed)"
         return f"### {self.tool}{status}\n{self.output}"
-
-
-def _inline_source_flag(tokens: list[str]) -> str | None:
-    """The flag by which this command carries its own source, or ``None``.
-
-    Only the interpreter's own leading options are read. After ``-m module`` or
-    a script path the arguments belong to the program being run, where ``-c`` is
-    pytest's config file rather than Python's source, and refusing it there would
-    fence a legitimate check.
-    """
-    entry = _INLINE_SOURCE.get(executable_name(tokens[0]))
-    if entry is None:
-        return None
-    source, long_source, takes_value, terminal = entry
-
-    skip = False
-    for token in tokens[1:]:
-        if skip:  # the value of the flag before it, not a flag itself.
-            skip = False
-            continue
-        # S105 reads `token` as a credential. It is a command-line token: this
-        # function walks the argv of a command the fence is inspecting.
-        if token == "-":  # noqa: S105 - a shell token, not a secret
-            return "-"  # the program is read from standard input.
-        if token == "--" or not token.startswith("-"):  # noqa: S105 - as above
-            return None  # the interpreter's own options have ended.
-        if token.startswith("--"):
-            name = token.partition("=")[0]
-            if name in long_source:
-                return name
-            continue
-        for index, char in enumerate(token[1:]):
-            if char in source:
-                return f"-{char}"
-            if char in terminal:
-                return None
-            if char in takes_value:
-                # ``-W ignore`` and ``-Wignore`` are the same flag.
-                skip = index == len(token) - 2
-                break
-    return None
 
 
 def _git_subcommand(rest: list[str]) -> str:
@@ -273,10 +234,12 @@ def tree_wide_git(command: str) -> str | None:
     What it reads is the command's tokens, so it sees ``git stash``,
     ``git -C . stash`` and ``make && git reset --hard`` alike. What it cannot see
     is a name that is not spelled: ``sh -c 'git stash'`` passes git inside a
-    quoted argument, and an alias can call anything at all. For a scoped agent
-    those are closed elsewhere -- neither ``sh`` nor ``git`` is a runner it may
-    invoke. For an unscoped agent, which by design reaches the whole machine,
-    this is a guardrail against the plausible mistake and not a fence.
+    quoted argument, and an alias can call anything at all. Those are closed
+    elsewhere, for every agent, scoped or not: neither ``sh`` nor ``git`` is a
+    runner the allow-list in :meth:`Toolbox._scope_refusal` lets any agent
+    invoke. (This said unscoped agents reached the whole machine; that stopped
+    being true when the allow-list became universal, and a reviewer reading the
+    old sentence reported a bypass that no longer exists.)
     """
     tokens = shell_split(command)
     for index, token in enumerate(tokens):
@@ -398,7 +361,13 @@ class Toolbox:
                 continue
             if not path.is_file():
                 continue
-            if any(part in SKIP_DIRS for part in path.parts):
+            # The parts *inside* the workspace: a workspace that itself sits under
+            # a directory called ``build`` or ``target`` used to show no files.
+            try:
+                inside = path.relative_to(self.workspace).parts
+            except ValueError:
+                continue    # not under the workspace at all
+            if any(part in SKIP_DIRS for part in inside):
                 continue
             if path.suffix.lower() in BINARY_SUFFIXES:
                 continue
@@ -433,6 +402,10 @@ class Toolbox:
         if not target.is_file():
             return ToolResult("read_file", False, f"{path!r} does not exist")
         try:
+            if target.stat().st_size > MAX_FILE_BYTES:
+                return ToolResult("read_file", False,
+                                  f"{path!r} is over {MAX_FILE_BYTES // 1_000_000} MB; search "
+                                  "it for what you need instead")
             lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as exc:
             return ToolResult("read_file", False, f"could not read {path!r}: {exc}")
@@ -458,21 +431,34 @@ class Toolbox:
         return ToolResult("read_file", True, f"{self._rel(target)}\n{body}{suffix}")
 
     def search(self, pattern: str, glob: str = "**/*") -> ToolResult:
+        if len(pattern) > MAX_PATTERN_CHARS:
+            return ToolResult("search", False, f"pattern is over {MAX_PATTERN_CHARS} characters")
+        if _NESTED_REPETITION.search(pattern):
+            return ToolResult("search", False,
+                              "the pattern repeats a group that itself repeats, which can "
+                              "take exponential time; search for something simpler")
         try:
             regex = re.compile(pattern, re.IGNORECASE)
         except re.error as exc:
             return ToolResult("search", False, f"invalid pattern: {exc}")
 
         hits: list[str] = []
+        deadline = time.monotonic() + SEARCH_SECONDS
+        stopped = False
         for path in self._walk():
             rel = self._rel(path)
             if glob not in ("", "**/*") and not fnmatch.fnmatch(rel, glob):
                 continue
+            if time.monotonic() > deadline:
+                stopped = True
+                break
             try:
+                if path.stat().st_size > MAX_FILE_BYTES:
+                    continue
                 for number, line in enumerate(
                     path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
                 ):
-                    if regex.search(line):
+                    if regex.search(line[:MAX_SEARCH_LINE_CHARS]):
                         hits.append(f"{rel}:{number}: {line.strip()[:180]}")
                         if len(hits) >= MAX_MATCHES:
                             break
@@ -480,7 +466,11 @@ class Toolbox:
                 continue
             if len(hits) >= MAX_MATCHES:
                 break
-        return ToolResult("search", True, "\n".join(hits) or "(no matches)")
+        body = "\n".join(hits) or "(no matches)"
+        if stopped:
+            body += (f"\n(search stopped after {SEARCH_SECONDS:.0f} s; narrow it with a glob "
+                     "to see the rest)")
+        return ToolResult("search", True, body)
 
     def write_file(self, path: str, content: str, scope: Scope | None = None) -> ToolResult:
         target = self._resolve(path)
@@ -646,7 +636,7 @@ class Toolbox:
                 "a file in your scope, or report the command for the host to run"
             )
 
-        inline = _inline_source_flag(tokens)
+        inline = inline_source_flag(tokens)
         if inline is not None:
             return (
                 f"an agent may not pass {inline!r} to {executable!r}: a program "
@@ -718,11 +708,7 @@ class Toolbox:
         argv[0] = executable
 
         try:
-            completed = subprocess.run(  # noqa: S603 - tokenised, no shell, allow-listed
-                argv, shell=False, cwd=str(self.workspace),
-                capture_output=True, text=True,
-                timeout=self.policy.command_timeout_seconds,
-            )
+            completed = run_bounded(argv, self.workspace, self.policy.command_timeout_seconds)
         except subprocess.TimeoutExpired:
             return ToolResult("run_command", False, f"timed out: {command}")
         except OSError as exc:

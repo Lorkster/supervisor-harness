@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -47,6 +48,22 @@ SNAPSHOT_REPLACE_BACKOFF = 0.02
 #: library is deliberately cross-workspace, so it needs an edge somewhere.
 DEFAULT_LESSON_MAX_AGE_DAYS = 180
 DEFAULT_LESSON_MAX_OCCURRENCES = 20
+
+
+#: A run id is one path component: letters, digits and ``_.-``, starting with a
+#: letter or digit. It arrives from the command line and from the host over MCP,
+#: and is joined onto the store's ``runs`` directory -- by ``delete_run`` among
+#: others, which removes the result recursively. Unchecked, ``../../x`` named a
+#: directory outside the store, and deleting that run deleted it.
+_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+
+
+def checked_run_id(run_id: str) -> str:
+    """``run_id`` if it can only name a directory inside ``runs/``; ``ValueError`` if not."""
+    rid = str(run_id)
+    if not _RUN_ID.fullmatch(rid) or ".." in rid:
+        raise ValueError(f"not a run id: {run_id!r}")
+    return rid
 
 
 def _artifact_name(name: str) -> str:
@@ -127,7 +144,7 @@ class RunStore:
     # -- run plumbing ------------------------------------------------------
 
     def run_dir(self, run_id: str) -> Path:
-        path = self.runs_dir / run_id
+        path = self.runs_dir / checked_run_id(run_id)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -135,7 +152,11 @@ class RunStore:
         return EventLog(self.run_dir(run_id) / "events.jsonl")
 
     def exists(self, run_id: str) -> bool:
-        return (self.runs_dir / run_id / "events.jsonl").exists()
+        try:
+            rid = checked_run_id(run_id)
+        except ValueError:
+            return False    # no run can have it, so none exists under it
+        return (self.runs_dir / rid / "events.jsonl").exists()
 
     def create(self, state: RunState) -> RunSession:
         """Start a new run and write its genesis event."""
@@ -583,7 +604,7 @@ class RunStore:
         leave a run the index has forgotten but the disk still holds, which is
         the harder state to notice.
         """
-        target = self.runs_dir / run_id
+        target = self.runs_dir / checked_run_id(run_id)
         if not target.exists():
             return False
         shutil.rmtree(target, ignore_errors=False)

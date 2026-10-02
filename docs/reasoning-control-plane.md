@@ -88,7 +88,7 @@ consults the model about whether it should apply.
 
 **The execution fence.** Writes and commands are checked against the agent's
 scope, and under that scope sits a floor nothing can lower: `VCS_DIRS` and
-`STORE_DIRS` in [core/tools.py:118](../src/supervisor_harness/core/tools.py:118)
+`STORE_DIRS` in [core/tools.py:125](../src/supervisor_harness/core/tools.py:125)
 keep every agent out of `.git` and out of the harness's own run store, whatever
 its scope says. The command fence is **universal** — every agent gets it, not
 only those with a declared scope. An empty scope relaxes the per-path check
@@ -108,7 +108,7 @@ about work done on it.
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:709](../src/supervisor_harness/core/dod.py:709)) holds a runner to
+([core/dod.py:857](../src/supervisor_harness/core/dod.py:857)) holds a runner to
 an allow-list. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.

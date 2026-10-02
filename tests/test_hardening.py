@@ -128,23 +128,26 @@ def test_appends_continue_the_sequence_after_reopening(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
+# Scripts rather than `python -c`: a criterion may no longer carry its program
+# inline (`unsafe_command`), so the check under test runs a file, as a real one would.
 @pytest.mark.parametrize(
-    ("command", "expect", "want"),
+    ("script", "expect", "want"),
     [
         # The original bug: the substring appears, but the command failed.
-        ('python -c "print(\'3 tests failed\'); raise SystemExit(1)"', "tests", "fail"),
-        ('python -c "print(\'7 tests passed\')"', "tests", "pass"),
-        ('python -c "raise SystemExit(1)"', "1", "pass"),          # exit code asserted
-        ('python -c "raise SystemExit(1)"', "exit 1", "pass"),
-        ('python -c "print(1)"', "", "pass"),
-        ('python -c "raise SystemExit(2)"', "", "fail"),
+        ("print('3 tests failed'); raise SystemExit(1)", "tests", "fail"),
+        ("print('7 tests passed')", "tests", "pass"),
+        ("raise SystemExit(1)", "1", "pass"),          # exit code asserted
+        ("raise SystemExit(1)", "exit 1", "pass"),
+        ("print(1)", "", "pass"),
+        ("raise SystemExit(2)", "", "fail"),
     ],
 )
 def test_verify_command_requires_success_not_just_matching_output(
-    tmp_path: Path, command: str, expect: str, want: str
+    tmp_path: Path, script: str, expect: str, want: str
 ) -> None:
+    (tmp_path / "check.py").write_text(script + "\n", encoding="utf-8")
     criterion = DoDCriterion(
-        statement="s", method=VerifyMethod.TEST, command=command, expect=expect
+        statement="s", method=VerifyMethod.TEST, command="python check.py", expect=expect
     )
     outcome = verify_command(criterion, tmp_path, timeout=60)
     assert str(outcome.status) == want, outcome.evidence
@@ -597,9 +600,11 @@ def test_a_criterion_command_with_a_shell_metacharacter_is_not_run(tmp_path: Pat
     assert not Path(marker).exists()
 
     # A quoted metacharacter is an argument, not a second command, and still runs.
+    (tmp_path / "echo_args.py").write_text("import sys; print(sys.argv[1:])\n",
+                                           encoding="utf-8")
     quoted = DoDCriterion(
         statement="s", method=VerifyMethod.TEST,
-        command="python -c \"print('a; b')\"", expect="0",
+        command="python echo_args.py \"a; b\"", expect="0",
     )
     assert str(verify_command(quoted, tmp_path, timeout=60).status) == "pass"
 

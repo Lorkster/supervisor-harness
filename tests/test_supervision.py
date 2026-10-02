@@ -483,10 +483,11 @@ def test_python_dash_m_pytest_is_not_a_marker_filter() -> None:
 def test_a_command_whose_filter_selected_nothing_fails_at_exit_zero(tmp_path: Path) -> None:
     """The static check refuses this shape when it is written; this is the
     filter that went stale after the user approved it."""
+    (tmp_path / "check.py").write_text("print('no tests to run')\n", encoding="utf-8")
     criterion = DoDCriterion(
         statement="The modification path is covered",
         method=VerifyMethod.TEST,
-        command="python -c \"print('no tests to run')\" -k modif",
+        command="python check.py -k modif",
         expect="0",
     )
 
