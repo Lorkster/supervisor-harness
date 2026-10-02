@@ -46,6 +46,7 @@ from .blackboard import (
     rank_findings,
 )
 from .dod import apply_quality_bars, summarise, validate_criteria
+from .paths import relative_patterns
 
 # --------------------------------------------------------------------------
 # Planning
@@ -179,7 +180,8 @@ def apply_plan(
                 brief=role.charter,
                 objectives=objectives or list(role.objectives),
                 scope=Scope(
-                    paths=[str(p) for p in (entry.get("scope_paths") or [])],
+                    paths=relative_patterns(
+                        [str(p) for p in (entry.get("scope_paths") or [])], state.workspace),
                     out_of_scope=[
                         *(str(o) for o in (entry.get("out_of_scope") or [])),
                         *role.out_of_scope,

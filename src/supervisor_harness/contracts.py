@@ -604,7 +604,10 @@ def parse_dod(items: Any) -> list[DoDCriterion]:
     return out
 
 
-def parse_tasks(data: dict[str, Any], run_id: str) -> list[ExecutionTask]:
+def parse_tasks(data: dict[str, Any], run_id: str, workspace: str = "") -> list[ExecutionTask]:
+    """The planned tasks; scope paths made workspace-relative (`relative_patterns`)."""
+    from .core.paths import relative_patterns
+
     out: list[ExecutionTask] = []
     for raw in data.get("tasks") or []:
         if not isinstance(raw, dict) or not str(raw.get("title", "")).strip():
@@ -618,7 +621,7 @@ def parse_tasks(data: dict[str, Any], run_id: str) -> list[ExecutionTask]:
                 rationale_refs=_strs(raw.get("rationale_refs")),
                 dod=parse_dod(raw.get("dod")),
                 scope=Scope(
-                    paths=_strs(raw.get("scope_paths")),
+                    paths=relative_patterns(_strs(raw.get("scope_paths")), workspace),
                     out_of_scope=_strs(raw.get("out_of_scope")),
                 ),
                 suggested_role=str(raw.get("suggested_role", "")).strip(),

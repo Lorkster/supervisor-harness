@@ -374,3 +374,25 @@ async def test_every_agent_in_a_run_is_within_the_envelope(supervisor: Superviso
             f"{agent.id} ({agent.role}) is scoped to {agent.scope.paths}, "
             f"outside the run envelope {state.envelope.paths}"
         )
+
+
+async def test_an_absolute_path_at_approval_means_the_same_file_relative(
+    supervisor: Supervisor, fake
+) -> None:
+    """A scope written as an absolute path matched nothing and was clamped to it.
+
+    Scope comparisons are against workspace-relative paths; an absolute edit
+    is placed in the workspace first (`relative_patterns`), as the planner's are.
+    """
+    _plan_with_envelope(fake, ["src/auth/**"])
+    response = await _reach_approval(supervisor)
+    task_id = response.tasks[0]["id"]
+    absolute = str(supervisor.workspace / "src" / "auth" / "login.py")
+
+    await supervisor.approve(response.run_id, [{
+        "task_id": task_id, "decision": "modify",
+        "modifications": {"scope_paths": [absolute]},
+    }])
+
+    state = supervisor.store.load_state(response.run_id)
+    assert state.tasks[task_id].scope.paths == ["src/auth/login.py"]

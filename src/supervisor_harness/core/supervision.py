@@ -18,6 +18,7 @@ The bodies are the ones that were on ``Supervisor``, moved verbatim.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -39,6 +40,7 @@ from ..models import (
     Directive,
     DirectiveKind,
     DriftAssessment,
+    Finding,
 )
 from ..providers.base import ChatMessage, CompletionRequest
 from ..providers.router import ModelRouter
@@ -65,6 +67,35 @@ from .responses import SupervisorResponse
 #: A directive an agent cannot read is not an answer, and an agent asking more
 #: than this per turn has a briefing problem rather than a question.
 MAX_QUESTIONS_PER_TURN = 3
+
+
+def new_findings(reported: list[Finding], recorded: list[Finding]) -> list[Finding]:
+    """The findings in a turn that are not ones its agent has already recorded, word for word.
+
+    A model that repeats its previous turn repeats its findings with it, and
+    each copy arrives with a fresh id. Recorded as given, one finding became two
+    in `supervisor findings`, the report and every count built on them -- a run
+    in which a lens repeated itself once reported nine findings in four places.
+
+    Only an exact repeat is held back: same agent, every field the same except
+    the id. A revised finding -- other lines, more evidence, another severity --
+    is new information and is recorded. So is the same finding from a different
+    agent, which is agreement between lenses, not a copy. The repeat is not
+    lost: the turn itself, findings included, is on the log as reported.
+    """
+    def content(finding: Finding) -> str:
+        body = to_jsonable(finding)
+        body.pop("id", None)
+        return json.dumps(body, sort_keys=True)
+
+    seen = {content(f) for f in recorded}
+    out: list[Finding] = []
+    for finding in reported:
+        key = content(finding)
+        if key not in seen:
+            seen.add(key)
+            out.append(finding)
+    return out
 
 
 class Supervision:
@@ -145,7 +176,7 @@ class Supervision:
         ]
         events += [
             (EventType.FINDING_ADDED, {"finding": to_jsonable(finding)}, agent.id)
-            for finding in turn.findings
+            for finding in new_findings(turn.findings, state.findings)
         ]
         events += [
             (EventType.FACT_ESTABLISHED, {"fact": to_jsonable(fact)}, agent.id)
@@ -154,6 +185,7 @@ class Supervision:
         events += self._message_events(session, turn)
         await session.aemit_many(events)
         return turn
+
     def _message_events(
         self, session: RunSession, turn: AgentTurn
     ) -> list[tuple[EventType, dict[str, Any], str]]:
