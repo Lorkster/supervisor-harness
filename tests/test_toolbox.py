@@ -124,7 +124,7 @@ def test_read_file_numbers_lines_from_the_requested_start(tree: Path) -> None:
     assert body[0] == "many.txt"
     assert body[1].strip().startswith("10  line 10")
     assert body[3].strip().startswith("12  line 12")
-    assert "... (18 more lines)" in result.output
+    assert "... (18 more lines; continue with read_file start=13)" in result.output
 
 
 def test_read_file_does_not_claim_more_lines_at_the_end_of_a_file(tree: Path) -> None:
