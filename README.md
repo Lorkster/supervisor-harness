@@ -69,6 +69,14 @@ locking, retries or I/O has to show it still terminates in bounded time. A
 criterion marked passed with no evidence is recorded as **failed**. The final
 report shows the checklist.
 
+A behaviour change also has to show that its tests detect it. In a git
+repository whose tests run under pytest, the harness runs the task's own tests
+in a worktree at the run's baseline commit and then in the working tree. If
+every one of them already passed at the baseline, the task fails: a test that
+passes without the change does not test it. No model is asked; this is the
+harness running the check (`core/fails_before.py`), and a verifier agent
+cannot overturn the result.
+
 **5b. Every finding is accounted for.** Each task names the findings it closes,
 and the run ends with a reconciliation — finding by finding, fixed here,
 attempted, still pending, or still open — written as its own artifact.
@@ -868,6 +876,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `require_code_quality` | true | Insert a mandatory convention criterion |
 | `require_negative_test` | true | Demand the rejected case on a fence or guard task |
 | `require_liveness_review` | true | Demand a bounded-time proof on locking, retry or I/O |
+| `require_fails_before` | true | Prove a behaviour change's tests fail on the baseline commit, by running them there (git and pytest; needs `allow_command_execution`, else the verifier agent judges it) |
 | `min_dod_criteria` | 2 | Reject thinner definitions of done |
 | `max_unreported_dispatches` | 3 | Packets to a silent host agent before abandoning it |
 | `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |
@@ -928,6 +937,7 @@ src/supervisor_harness/
     phases.py      prompts and pure transformations per phase
     drift.py       heuristics, escalation, the directive ladder
     dod.py         criteria validation, quality bars, verification
+    fails_before.py a task's tests run on the baseline commit: they must fail there
     envelope.py    the run's scope grant, and attenuation down the delegation chain
     facts.py       whether a fact one agent established is still true when another reads it
     blackboard.py  shared context, message routing, contradiction detection

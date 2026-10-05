@@ -131,6 +131,10 @@ class VerifyMethod(StrEnum):
     TEST = "test"              # named tests must exist and pass
     INSPECTION = "inspection"  # deterministic check of file content
     REVIEW = "review"          # judged against a rubric by a model or a human
+    # The task's tests fail on the baseline commit and pass with the change.
+    # Harness-owned: added as a quality bar, proven by `core/fails_before.py`,
+    # and not offered to models as a method they may propose.
+    FAILS_BEFORE = "fails_before"
 
 
 class CriterionStatus(StrEnum):
@@ -558,7 +562,8 @@ class DoDCriterion:
 
     @property
     def machine_checkable(self) -> bool:
-        return self.method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.INSPECTION)
+        return self.method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.INSPECTION,
+                               VerifyMethod.FAILS_BEFORE)
 
 
 @dataclass

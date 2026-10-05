@@ -92,6 +92,11 @@ class Policy:
     # neither fires on work that cannot fail that way.
     require_negative_test: bool = True
     require_liveness_review: bool = True
+    # The tests a task adds must fail on the baseline commit and pass with the
+    # change, proven by the harness running them (`core/fails_before.py`).
+    # Applied to code tasks that change behaviour, in a git workspace whose
+    # tests run under pytest.
+    require_fails_before: bool = True
     min_dod_criteria: int = 2
 
     # Whether the harness itself may run verification commands. Off by default:
@@ -313,6 +318,7 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     ("policy", "require_code_quality"),
     ("policy", "require_negative_test"),
     ("policy", "require_liveness_review"),
+    ("policy", "require_fails_before"),
     ("policy", "min_dod_criteria"),
     # The checkpoint's own pass mark.
     ("policy", "checkpoint_threshold"),

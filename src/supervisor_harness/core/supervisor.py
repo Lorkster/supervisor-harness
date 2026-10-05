@@ -76,6 +76,7 @@ from ..models import (
     TaskDecision,
     TaskStatus,
     Usage,
+    VerifyMethod,
 )
 from ..providers.base import ChatMessage, CompletionRequest, ProviderRefusal
 from ..providers.router import ModelRouter
@@ -83,10 +84,11 @@ from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import phases
-from .baseline import git_baseline
+from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
-from .dod import verify_criterion
+from .dod import VerificationOutcome, verify_criterion
 from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
+from .fails_before import changed_since, is_test_module, select_test_material, verify_fails_before
 from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
@@ -751,9 +753,19 @@ class Supervisor:
             for crit in task.dod:
                 if crit.status is not CriterionStatus.UNVERIFIED:
                     continue
-                outcome = verify_criterion(
-                    crit, self.workspace, self.config.policy, allow_commands=allow
-                )
+                outcome: VerificationOutcome | None
+                if crit.method is VerifyMethod.FAILS_BEFORE:
+                    # Needs the task's whole change in place, so not while an
+                    # agent is still writing it; and it runs the project's
+                    # tests, so only where commands are permitted. Otherwise
+                    # it is the verifier agent's, by the criterion's rubric.
+                    if not allow or task.status is not TaskStatus.AWAITING_VERIFICATION:
+                        continue
+                    outcome = self._verify_fails_before(state, task, crit)
+                else:
+                    outcome = verify_criterion(
+                        crit, self.workspace, self.config.policy, allow_commands=allow
+                    )
                 if outcome is None:
                     continue
                 session.emit(
@@ -766,6 +778,32 @@ class Supervisor:
                     },
                     actor="harness",
                 )
+
+    def _verify_fails_before(
+        self, state: RunState, task: ExecutionTask, crit: DoDCriterion
+    ) -> VerificationOutcome:
+        """Run the task's own tests on the baseline commit and in the working tree.
+
+        Which tests are the task's comes from what its execution agents
+        reported touching, across every attempt. Only when that names no test
+        module does it fall back to what changed in the tree since the baseline,
+        within the task's scope -- a shared tree cannot say which task changed
+        what, so the agents' own record is read first.
+        """
+        baseline = commit_from_fact(state.facts.get(BASELINE_FACT, ""))
+        touched = [
+            path
+            for turn in state.turns
+            if (agent := state.agents.get(turn.agent_id)) is not None
+            and agent.kind is AgentKind.EXECUTION and agent.task_id == task.id
+            for path in turn.files_touched
+        ]
+        files = select_test_material(touched, self.workspace)
+        if baseline and not any(is_test_module(f) for f in files):
+            files = select_test_material(changed_since(self.workspace, baseline, task.scope.paths),
+                               self.workspace)
+        return verify_fails_before(crit, files, self.workspace, baseline,
+                                   timeout=self.config.policy.command_timeout_seconds)
 
     def _settle_tasks(self, session: RunSession) -> None:
         state = session.state
@@ -857,6 +895,7 @@ class Supervisor:
                 continue
             task.status = TaskStatus.APPROVED
             task.assigned_agent_id = None
+            await self._reopen_criteria(session, task)
             mine = corrections_for_task(task, corrections, tasks)
             if mine:
                 task.action = (
@@ -874,6 +913,37 @@ class Supervisor:
             ):
                 await self.lifecycle._set_status(session, agent, AgentStatus.STOPPED)
         return count
+
+    async def _reopen_criteria(self, session: RunSession, task: ExecutionTask) -> None:
+        """Return a reopened task's verdicts to unverified, for the attempt to come.
+
+        A verdict is about the tree it was proven on, and the next attempt
+        changes that tree. Left standing, a criterion the harness proved failed
+        was never looked at again: `_verify_mechanically` checks only unverified
+        criteria, and a verifier agent may not overturn a mechanical result, so
+        an attempt that fixed the problem was still recorded as failing it. A
+        pass is reopened for the same reason -- the next attempt can break it.
+        A waiver is a person's decision about the criterion, not a verdict on
+        the tree, and stands.
+        """
+        attempt = task.attempts + 1
+        for crit in task.dod:
+            if crit.status in (CriterionStatus.UNVERIFIED, CriterionStatus.WAIVED):
+                continue
+            await session.aemit(
+                EventType.CRITERION_VERIFIED,
+                {
+                    "task_id": task.id,
+                    "criterion_id": crit.id,
+                    "status": str(CriterionStatus.UNVERIFIED),
+                    "evidence": (
+                        f"reopened for attempt {attempt}; attempt {task.attempts} "
+                        f"recorded {crit.status}: {crit.evidence[:300]}"
+                    ),
+                    "reopened_for_attempt": attempt,
+                },
+                actor="harness",
+            )
 
     # -- improvement ---------------------------------------------------
 
@@ -1164,6 +1234,16 @@ class Supervisor:
             # A verdict the harness proved by running the real check outranks an
             # agent's account of it. Only a criterion the harness could not
             # settle -- blocked or never checked -- is open to judgement.
+            # Agreeing with it changes nothing either, and recording the
+            # agreement would: the verdict would be re-attributed to the agent,
+            # and the trajectory would export a proof the harness ran as a
+            # model's claim.
+            if (
+                crit.verified_by == "harness"
+                and crit.status in (CriterionStatus.PASS, CriterionStatus.FAIL)
+                and status is crit.status
+            ):
+                continue
             if (
                 crit.verified_by == "harness"
                 and crit.status in (CriterionStatus.PASS, CriterionStatus.FAIL)
