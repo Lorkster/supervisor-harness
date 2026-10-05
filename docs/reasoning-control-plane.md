@@ -135,7 +135,7 @@ where the fence came from. The synthesis model drew the boundary that its own
 tasks then ran inside.
 
 **The run envelope** is the answer. `ScopeEnvelope`
-([models.py:255](../src/supervisor_harness/models.py:255)) is a run-level grant,
+([models.py:276](../src/supervisor_harness/models.py:276)) is a run-level grant,
 established once: configuration is the floor, the plan may **narrow** it, and
 nothing may widen it (`establish`,
 [envelope.py:83](../src/supervisor_harness/core/envelope.py:83)).
@@ -149,7 +149,7 @@ authority is handed on — when synthesis creates a task (`attenuate` at
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:1725](../src/supervisor_harness/core/supervisor.py:1725)). It
+[supervisor.py:1746](../src/supervisor_harness/core/supervisor.py:1746)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -183,7 +183,7 @@ it.*
 
 After every turn the harness issues a directive back to the agent — one of the
 nine kinds in `DirectiveKind`
-([models.py:96](../src/supervisor_harness/models.py:96)): continue, refocus,
+([models.py:117](../src/supervisor_harness/models.py:117)): continue, refocus,
 narrow, deepen, answer, escalate, accept, reject, stop. The choice is driven by
 deterministic drift heuristics and, only when those fire, a second model
 opinion. A directive whose reasoning cannot be recovered is indistinguishable
@@ -227,7 +227,7 @@ Parallel lenses that each rediscover the same thing are wasting turns; parallel
 lenses that quietly assume *different* things about the same thing are worse,
 because the contradiction only surfaces in the work.
 
-**A `Fact`** ([models.py:283](../src/supervisor_harness/models.py:283)) is
+**A `Fact`** ([models.py:304](../src/supervisor_harness/models.py:304)) is
 something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
 `FACT_ESTABLISHED` ([events.py:47](../src/supervisor_harness/store/events.py:47)),

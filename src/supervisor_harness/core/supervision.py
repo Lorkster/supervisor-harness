@@ -42,6 +42,7 @@ from ..models import (
     Directive,
     DirectiveKind,
     DriftAssessment,
+    EndCause,
     Finding,
     Scope,
 )
@@ -389,7 +390,13 @@ class Supervision:
                     files_read=coverage.read,
                     unread=coverage.unread,
                 )
-        await self.lifecycle._set_status(session, agent, status)
+        if status in ACTIVE_AGENT_STATUSES:
+            await self.lifecycle._set_status(session, agent, status)
+        else:
+            await self.lifecycle._set_status(
+                session, agent, status, cause=EndCause(directive.kind.value),
+                reason=directive.rationale or "no rationale given",
+            )
         return directive
     def _coverage(
         self, session: RunSession, agent: AgentSpec, turn: AgentTurn

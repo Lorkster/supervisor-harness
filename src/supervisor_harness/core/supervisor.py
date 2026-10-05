@@ -68,6 +68,7 @@ from ..models import (
     Decision,
     DirectiveKind,
     DoDCriterion,
+    EndCause,
     ExecutionTask,
     Phase,
     RunMode,
@@ -872,7 +873,10 @@ class Supervisor:
                 agent.kind in (AgentKind.EXECUTION, AgentKind.VERIFICATION)
                 and agent.status in ACTIVE_AGENT_STATUSES
             ):
-                await self.lifecycle._set_status(session, agent, AgentStatus.STOPPED)
+                await self.lifecycle._set_status(
+                    session, agent, AgentStatus.STOPPED, cause=EndCause.REMEDIATION,
+                    reason="its task was reopened by the checkpoint",
+                )
         return count
 
     # -- improvement ---------------------------------------------------
@@ -1189,7 +1193,8 @@ class Supervisor:
             )
             applied += 1
 
-        await self.lifecycle._set_status(session, agent, AgentStatus.DONE)
+        await self.lifecycle._set_status(session, agent, AgentStatus.DONE,
+                                         cause=EndCause.REPORTED, reason="verification reported")
         # This used to re-fetch the task from state, because emitting replaced
         # the object the caller held and the criterion verdicts above landed on
         # the replacement. The fold updates in place now, so `task` is that
@@ -1227,7 +1232,8 @@ class Supervisor:
             ))},
             actor=agent.id,
         )
-        await self.lifecycle._set_status(session, agent, AgentStatus.DONE)
+        await self.lifecycle._set_status(session, agent, AgentStatus.DONE,
+                                         cause=EndCause.REPORTED, reason=f"{agent.role} reported")
 
         if agent.role == "planner":
             registry = self.packets._registry_for(session, None)
@@ -1351,7 +1357,10 @@ class Supervisor:
                     traceback.format_exception(type(result), result, result.__traceback__)
                 )[-2000:],
             )
-            await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
+            await self.lifecycle._set_status(
+                session, agent, AgentStatus.FAILED, cause=EndCause.ERROR,
+                reason=f"{type(result).__name__}: {result}",
+            )
 
     async def _drive_agent(self, session: RunSession, agent: AgentSpec) -> None:
         """Run one agent to completion against its bound model.
@@ -1420,11 +1429,17 @@ class Supervisor:
                         provider=exc.provider, model=exc.model, category=exc.category,
                         explanation=exc.explanation,
                     )
-                    await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
+                    await self.lifecycle._set_status(
+                        session, agent, AgentStatus.FAILED, cause=EndCause.REFUSED,
+                        reason=exc.category or "refused",
+                    )
                     return
                 except Exception as exc:  # noqa: BLE001 - one agent must not kill the run
                     await session.anote(f"agent failed: {exc}", actor=agent.id)
-                    await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
+                    await self.lifecycle._set_status(
+                        session, agent, AgentStatus.FAILED, cause=EndCause.ERROR,
+                        reason=f"{type(exc).__name__}: {exc}",
+                    )
                     return
 
                 turn_usage = turn_usage.add(response.usage)
@@ -1473,7 +1488,10 @@ class Supervisor:
                 )
 
             if payload is None:
-                await self.lifecycle._set_status(session, agent, AgentStatus.FAILED)
+                await self.lifecycle._set_status(
+                    session, agent, AgentStatus.FAILED, cause=EndCause.ERROR,
+                    reason="no answer the output contract accepts",
+                )
                 return
             # Measured, like the tokens: what the drift check reads to tell a turn
             # spent reading from an idle one, and what `Budget.max_tool_calls`
@@ -1520,7 +1538,10 @@ class Supervisor:
             f"({turns_used}/{agent.budget.max_turns}) without a terminal directive",
             actor=agent.id,
         )
-        await self.lifecycle._set_status(session, agent, AgentStatus.STOPPED)
+        await self.lifecycle._set_status(
+            session, agent, AgentStatus.STOPPED, cause=EndCause.TURN_BUDGET,
+            reason=f"turn budget exhausted ({turns_used}/{agent.budget.max_turns})",
+        )
 
     async def run(
         self,

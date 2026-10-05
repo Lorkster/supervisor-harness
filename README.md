@@ -78,6 +78,14 @@ security weakness, its `cwe`, as fields the agent was asked to fill in. They are
 recorded as stated or left empty, never guessed from the prose.
 `supervisor findings --json` is the published way for another tool to read them.
 
+That export, with `run`, `status`, `events` and `providers` under `--json`,
+is a contract: `tests/test_consumer_contract.py` reads them the way
+[security-eval](https://github.com/Lorkster/security-eval) does, and fails
+when a field it depends on moves. An agent that has ended says why in
+`status --json`, as `ended.cause` (a fixed vocabulary: `accept`, `stop`,
+`escalate`, `reported`, `abandoned`, `refused`, `error`, `turn_budget`,
+`remediation`) and `ended.reason`.
+
 **5c. Agents build a shared record.** An analysis lens that establishes
 something the others need — which store the counters live in, which entrypoint
 is actually reachable — records it as a keyed fact with its evidence, and later
