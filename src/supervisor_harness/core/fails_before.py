@@ -229,18 +229,62 @@ def _blocked(reason: str) -> VerificationOutcome:
     return VerificationOutcome(CriterionStatus.BLOCKED, reason)
 
 
+def _judge_with_change(after: PytestRun, shown: str, *, only_tests: bool
+                       ) -> VerificationOutcome | None:
+    """The verdict the run with the change settles on its own, or ``None`` to compare.
+
+    Every way the task's tests can fail to stand up in the working tree ends the
+    check here, before a worktree is made: a test that does not pass with the
+    change has nothing to be compared.
+    """
+    if after.timed_out:
+        return VerificationOutcome(CriterionStatus.FAIL,
+                                   f"{shown}\nwith the change: {after.tail}")
+    if not after.reported:
+        return _blocked(f"{shown}\nwith the change, pytest wrote no report "
+                        f"(exit {after.exit_code}):\n{after.tail}")
+    if after.not_passed or after.uncollectable:
+        failing = after.not_passed | after.uncollectable
+        return VerificationOutcome(
+            CriterionStatus.FAIL,
+            f"{shown}\nthe task's own tests do not pass with the change: "
+            f"{_named(failing)}\n{after.tail}",
+        )
+    if not after.passed:
+        return VerificationOutcome(
+            CriterionStatus.FAIL,
+            f"{shown}\nselected no test with the change, so this proves nothing",
+        )
+    if only_tests:
+        return VerificationOutcome(
+            CriterionStatus.PASS,
+            f"{shown}\n{len(after.passed)} test(s) pass. This task changed only test "
+            "material, so there is no change in behaviour for them to detect and "
+            "they were not run on the baseline.",
+        )
+    return None
+
+
 def verify_fails_before(
     criterion: DoDCriterion,
     files: list[str],
     workspace: Path,
     baseline: str,
     timeout: float = 300,
+    *,
+    only_tests: bool = False,
 ) -> VerificationOutcome:
     """Prove that the tests in ``files`` fail on ``baseline`` and pass now.
 
     ``files`` is the task's test material, already made safe by
-    :func:`select_test_material`. Only its test modules are run; the rest (conftest files,
-    fixtures) is copied to the baseline so the modules can be collected there.
+    :func:`select_test_material`. Only its test modules are run; the rest
+    (conftest files, fixtures) is copied to the baseline so the modules can be
+    collected there.
+
+    ``only_tests`` says the task changed nothing but test material -- adding
+    coverage for behaviour that already exists. Its tests are *meant* to pass
+    on the baseline, so the comparison does not apply: they are run with the
+    change, must pass, and the evidence says the comparison was not made.
     """
     if not baseline:
         return _blocked("no baseline commit was recorded for this run, so there is "
@@ -269,24 +313,9 @@ def verify_fails_before(
         tmp = Path(scratch)
         after = run_tests(argv, modules, workspace, tmp / "after.xml", timeout)
         shown = f"$ {criterion.command} -- {' '.join(modules)}"
-        if after.timed_out:
-            return VerificationOutcome(CriterionStatus.FAIL,
-                                       f"{shown}\nwith the change: {after.tail}")
-        if not after.reported:
-            return _blocked(f"{shown}\nwith the change, pytest wrote no report "
-                            f"(exit {after.exit_code}):\n{after.tail}")
-        if after.not_passed or after.uncollectable:
-            failing = after.not_passed | after.uncollectable
-            return VerificationOutcome(
-                CriterionStatus.FAIL,
-                f"{shown}\nthe task's own tests do not pass with the change: "
-                f"{_named(failing)}\n{after.tail}",
-            )
-        if not after.passed:
-            return VerificationOutcome(
-                CriterionStatus.FAIL,
-                f"{shown}\nselected no test with the change, so this proves nothing",
-            )
+        judged = _judge_with_change(after, shown, only_tests=only_tests)
+        if judged is not None:
+            return judged
 
         tree = tmp / "baseline"
         added = _git(workspace, "worktree", "add", "--detach", str(tree), baseline,

@@ -611,7 +611,11 @@ def apply_quality_bars(
     # harness running the task's tests on the baseline commit, which needs a
     # git baseline to run them on and a runner whose per-test results it can
     # read -- so only where both exist, and only for a change in behaviour.
-    if policy.require_tests and policy.require_fails_before and workspace is not None:
+    # And only where the harness may run commands: handed to a verifier agent
+    # instead, it would be a model's account of the check again, which is the
+    # thing it exists to replace, at the cost of a worktree procedure per task.
+    if (policy.require_tests and policy.require_fails_before
+            and policy.allow_command_execution and workspace is not None):
         command = detect_test_command(workspace)
         if (pytest_argv(command) is not None and wants_fails_before(task)
                 and git_baseline(workspace)):

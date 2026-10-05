@@ -95,7 +95,8 @@ class Policy:
     # The tests a task adds must fail on the baseline commit and pass with the
     # change, proven by the harness running them (`core/fails_before.py`).
     # Applied to code tasks that change behaviour, in a git workspace whose
-    # tests run under pytest.
+    # tests run under pytest, when `allow_command_execution` is on: without it
+    # the check would be a verifier agent's claim, not the harness's proof.
     require_fails_before: bool = True
     min_dod_criteria: int = 2
 

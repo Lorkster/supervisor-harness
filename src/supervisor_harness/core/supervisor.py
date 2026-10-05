@@ -89,7 +89,14 @@ from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
 from .dod import VerificationOutcome, verify_criterion
 from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
-from .fails_before import changed_since, is_test_module, select_test_material, verify_fails_before
+from .fails_before import (
+    changed_since,
+    is_test_module,
+    is_test_path,
+    safe_relative,
+    select_test_material,
+    verify_fails_before,
+)
 from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
@@ -790,6 +797,11 @@ class Supervisor:
         module does it fall back to what changed in the tree since the baseline,
         within the task's scope -- a shared tree cannot say which task changed
         what, so the agents' own record is read first.
+
+        A task that changed only test material is judged by its tests passing,
+        not by the comparison. That reading takes the tree's changes within the
+        task's scope as well as the agents' reports, so an agent that forgot to
+        report a source file it changed errs towards the comparison being run.
         """
         baseline = commit_from_fact(state.facts.get(BASELINE_FACT, ""))
         touched = [
@@ -799,12 +811,16 @@ class Supervisor:
             and agent.kind is AgentKind.EXECUTION and agent.task_id == task.id
             for path in turn.files_touched
         ]
+        in_tree = changed_since(self.workspace, baseline, task.scope.paths) if baseline else []
         files = select_test_material(touched, self.workspace)
-        if baseline and not any(is_test_module(f) for f in files):
-            files = select_test_material(changed_since(self.workspace, baseline, task.scope.paths),
-                               self.workspace)
+        if not any(is_test_module(f) for f in files):
+            files = select_test_material(in_tree, self.workspace)
+        changed = {rel for raw in (*touched, *in_tree)
+                   if (rel := safe_relative(raw, self.workspace)) is not None}
+        only_tests = bool(changed) and all(is_test_path(rel) for rel in changed)
         return verify_fails_before(crit, files, self.workspace, baseline,
-                                   timeout=self.config.policy.command_timeout_seconds)
+                                   timeout=self.config.policy.command_timeout_seconds,
+                                   only_tests=only_tests)
 
     def _settle_tasks(self, session: RunSession) -> None:
         state = session.state

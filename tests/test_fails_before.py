@@ -33,6 +33,7 @@ from supervisor_harness.models import (
     DoDCriterion,
     ExecutionTask,
     RunMode,
+    Scope,
     TaskStatus,
     VerifyMethod,
 )
@@ -242,6 +243,11 @@ def test_paths_that_could_reach_a_command_line_as_options_are_dropped(
 # -- when the bar is added -----------------------------------------------------
 
 
+#: The bar is the harness's own check, so it is only added where the harness may
+#: run the tests itself.
+RUNS_COMMANDS = Policy(allow_command_execution=True)
+
+
 def _task(title: str) -> ExecutionTask:
     return ExecutionTask(title=title, action=f"{title} in calc.py",
                          dod=[DoDCriterion(statement="x", method=VerifyMethod.INSPECTION,
@@ -257,7 +263,7 @@ def test_the_bar_is_added_to_a_behaviour_change_in_a_git_pytest_workspace(
 ) -> None:
     root, _ = repo
     task = _task("Fix the addition bug")
-    added = apply_quality_bars(task, Policy(), root)
+    added = apply_quality_bars(task, RUNS_COMMANDS, root)
     bar = next(c for c in added if c.method is VerifyMethod.FAILS_BEFORE)
     assert bar.mandatory and bar.command and bar.rubric
 
@@ -269,7 +275,7 @@ def test_the_bar_is_not_added_where_no_behaviour_should_change(
 ) -> None:
     root, _ = repo
     task = _task(title)
-    apply_quality_bars(task, Policy(), root)
+    apply_quality_bars(task, RUNS_COMMANDS, root)
     assert not _has_bar(task)
 
 
@@ -277,12 +283,23 @@ def test_the_bar_needs_git_and_can_be_turned_off(tmp_path: Path, repo: tuple[Pat
     plain = tmp_path / "plain"
     write(plain, {"pyproject.toml": "", "calc.py": "def add(a, b):\n    return a\n"})
     task = _task("Fix the addition bug")
-    apply_quality_bars(task, Policy(), plain)
+    apply_quality_bars(task, RUNS_COMMANDS, plain)
     assert not _has_bar(task), "no git, no baseline to run the tests on"
 
     root, _ = repo
     task = _task("Fix the addition bug")
-    apply_quality_bars(task, Policy(require_fails_before=False), root)
+    apply_quality_bars(task, Policy(allow_command_execution=True, require_fails_before=False),
+                       root)
+    assert not _has_bar(task)
+
+
+def test_the_bar_is_not_handed_to_a_model_when_the_harness_cannot_run_it(
+    repo: tuple[Path, str],
+) -> None:
+    """Without command execution it would be a verifier agent's claim: the thing it replaces."""
+    root, _ = repo
+    task = _task("Fix the addition bug")
+    apply_quality_bars(task, Policy(allow_command_execution=False), root)
     assert not _has_bar(task)
 
 
@@ -417,3 +434,66 @@ def test_it_does_not_run_while_the_task_is_still_being_written(
     task.status = TaskStatus.AWAITING_VERIFICATION
     supervisor._verify_mechanically(session)  # type: ignore[arg-type]
     assert emitted, "the same task, finished, is checked"
+
+
+# -- a task that only adds tests -------------------------------------------------
+
+
+def test_tests_for_existing_behaviour_pass_when_only_tests_changed(
+    repo: tuple[Path, str],
+) -> None:
+    """Covering what already works is meant to pass on the baseline."""
+    root, base = repo
+    write(root, {"tests/test_calc.py": "from calc import add\n\ndef test_add_now():\n"
+                                       "    assert add(5, 3) == 2\n"})
+    outcome = verify_fails_before(criterion(), ["tests/test_calc.py"], root, base,
+                                  only_tests=True)
+    assert outcome.status is CriterionStatus.PASS, outcome.evidence
+    assert "changed only test material" in outcome.evidence
+
+    failing = verify_fails_before(criterion(), ["tests/test_calc.py"], root, base,
+                                  only_tests=False)
+    assert failing.status is CriterionStatus.FAIL, "the same tests, on a behaviour change"
+
+
+def _state_with_touched(base: str, task: ExecutionTask, touched: list[str]) -> Any:
+    from supervisor_harness.models import AgentKind, AgentSpec, AgentTurn, RunState
+
+    agent = AgentSpec(kind=AgentKind.EXECUTION, task_id=task.id)
+    return RunState(tasks={task.id: task}, agents={agent.id: agent},
+                    turns=[AgentTurn(agent_id=agent.id, files_touched=touched)],
+                    facts={"baseline commit": f"`{base}`"})
+
+
+def test_a_task_that_touched_source_is_compared_even_if_its_agent_said_tests_only(
+    supervisor: Supervisor, repo: tuple[Path, str],
+) -> None:
+    """The tree is read as well as the agent's report, and it errs towards comparing."""
+    root, base = repo
+    write(root, {"calc.py": "def add(a, b):\n    return a - b  # unchanged behaviour\n",
+                 "tests/test_calc.py": "from calc import add\n\ndef test_add_now():\n"
+                                       "    assert add(5, 3) == 2\n"})
+    supervisor.workspace = root
+    task = ExecutionTask(title="Cover add", dod=[criterion()],
+                         scope=Scope(paths=["calc.py", "tests/**"]))
+    bar = task.dod[0]
+
+    reported_tests_only = _state_with_touched(base, task, ["tests/test_calc.py"])
+    outcome = supervisor._verify_fails_before(reported_tests_only, task, bar)
+    assert outcome.status is CriterionStatus.FAIL, (
+        "calc.py changed in the tree, so this is not a tests-only task: " + outcome.evidence
+    )
+
+
+def test_a_task_that_only_changed_tests_is_judged_by_them_passing(
+    supervisor: Supervisor, repo: tuple[Path, str],
+) -> None:
+    root, base = repo
+    write(root, {"tests/test_calc.py": "from calc import add\n\ndef test_add_now():\n"
+                                       "    assert add(5, 3) == 2\n"})
+    supervisor.workspace = root
+    task = ExecutionTask(title="Cover add", dod=[criterion()])
+    outcome = supervisor._verify_fails_before(
+        _state_with_touched(base, task, ["tests/test_calc.py"]), task, task.dod[0])
+    assert outcome.status is CriterionStatus.PASS, outcome.evidence
+    assert "changed only test material" in outcome.evidence
