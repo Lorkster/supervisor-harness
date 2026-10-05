@@ -1,0 +1,439 @@
+# The autonomy plan: fewer interruptions, the same bar
+
+*Written 2026-10-05. Live: the work in it is scheduled, not done.*
+
+A working document in the same shape as [`development-plan.md`](development-plan.md):
+what each piece of work is, what has been *verified* about it, what is still only
+a reading of the source, and what has been decided. It stays in the present tense
+of the day it was written. Where a batch finds that the plan was wrong, the
+finding goes beneath the batch and the plan's text stays as it was.
+
+It does not replace the nine-batch plan. That plan's batch 9 is still open, and
+nothing here depends on it except where noted under [batch G](#batch-g--a-reviewer-that-can-only-veto-conditional).
+
+- [Why this plan exists](#why-this-plan-exists)
+- [What was taken from turnstone, and what was not](#what-was-taken-from-turnstone-and-what-was-not)
+- [The argument: where a person adds something](#the-argument-where-a-person-adds-something)
+- [Constraints from security-eval](#constraints-from-security-eval)
+- [Does a UI add value, and where does it go?](#does-a-ui-add-value-and-where-does-it-go)
+- [Part 1: the harness](#part-1-the-harness)
+- [The gate between the parts](#the-gate-between-the-parts)
+- [Part 2: the outer loop](#part-2-the-outer-loop)
+- [Decided against](#decided-against)
+- [Questions for the owner](#questions-for-the-owner)
+
+---
+
+## Why this plan exists
+
+The question was whether development work can run more autonomously without
+losing output quality, and whether the harness's human checkpoints are needed at
+all with the right architecture. A local agent gateway (Hermes) had been
+frustrating to run, while the same models driven through Claude Code, or through
+this harness, worked well. That contrast is the useful part. The difference is
+the loop around the model, not the model alone.
+
+The reading that prompted the plan is
+[turnstonelabs/turnstone](https://github.com/turnstonelabs/turnstone)
+(Apache-2.0 since 1.6.0), a self-hosted orchestration platform for tool-using
+agents. Its value here is not its code. It is
+[`PRIMER.md`](https://github.com/turnstonelabs/turnstone/blob/main/PRIMER.md),
+a plain-language account of what a harness can and cannot promise, which states
+one rule more exactly than this repository had.
+
+## What was taken from turnstone, and what was not
+
+Turnstone is a platform: CLI and web UI, cluster routing, RBAC, SSO, Slack and
+Discord channels, about 200,000 lines. Almost none of that is relevant. Four
+ideas are.
+
+**1. Only the owner widens; judges only tighten.** A model-based check may veto
+something the deterministic rules allow, and may never approve something they
+refuse. A judge's reasons come from a fixed menu, never free prose. The corollary
+is the one this plan is built on: *a fully autonomous run is a run whose owner is
+unreachable, so its authority is frozen at launch.* This harness already enforces
+the first half: the drift model's second opinion "can lower a score the
+heuristics are unsure of, never below what a scope violation alone says". What it
+has not done is draw the corollary about approval.
+
+**2. The irreversible line is where the decision belongs.** "Anything
+irreversible is decided at the gate. The verifier can reject a bad result; it
+cannot unsend the email." A code change on a branch is reversible until it is
+merged. So the human decision that cannot be replaced is at merge, and this
+repository already has it: every batch ends at a pull request the owner merges.
+
+**3. Declared success is not the same as a correct result.** The primer
+separates *success* (the shell said done), *safety* (nothing bad was touched)
+and *correctness*, which "no dashboard inside the system can produce; only a
+judge outside the run — a test suite, an audit, ground truth — can." Here that
+means the person reading each task at approval is doing a quality job, and if
+the person goes, something outside the model has to do it instead.
+
+**4. Measure the loop, per model.** `turnstone-eval` scores tool use against
+expected and *forbidden* actions, with several runs per case and held-out cases
+kept out of tuning. Turnstone also uses it to test whether the *wording* of its
+nudges changes what a model does. This harness has two measured cases of a
+directive being ignored: the parallel-dispatch instruction (issue #62) and the
+architecture lens ignoring a coverage nudge (PR #78).
+
+What was **not** taken is listed under [Decided against](#decided-against): the
+per-tool-call judge as a default, Smart Approvals (an LLM approving on
+confidence), the in-run prompt optimizer, and the platform.
+
+## The argument: where a person adds something
+
+Today a run pauses at `awaiting_approval` and a person approves, modifies or
+rejects each proposed task.
+
+That approval **cannot widen the envelope**. An edited scope is clamped to it
+([reasoning-control-plane.md](reasoning-control-plane.md), "Approval may not
+widen the envelope"). So as an authority decision, per-task approval adds
+nothing the envelope does not already enforce. What it does add is a *quality*
+judgement: are these the right tasks, and are these the right definitions of
+done? And it is the largest idle in the one run that was measured: at most 83%
+of that run's wall clock was inside dispatches, and the biggest gap was a person
+reading ([#62](https://github.com/Lorkster/supervisor-harness/issues/62)).
+
+So the plan moves the person rather than removing them:
+
+| Decision | Today | After this plan |
+| --- | --- | --- |
+| What the run may touch | the configured envelope, narrowed by the plan | the same, **granted once by the owner at launch**, recorded with who and when |
+| Whether each task is right | a person reads every task | deterministic gates, plus a verifier that is not a model; a veto-only reviewer if runs show it is needed |
+| Anything needing more authority | not possible mid-run | an **escalation**: one task parks and the others continue |
+| Whether the result ships | the owner merges a PR | unchanged, and now the main checkpoint |
+
+Per-task approval stays the default. Autonomy is something the owner turns on,
+and it is protected so that a workspace cannot turn it on for itself.
+
+**One precondition.** Without a person in the loop, a false stop is no longer
+caught; it just becomes a failed task. The turn-budget investigation
+([#67](https://github.com/Lorkster/supervisor-harness/issues/67)) has a strong
+candidate cause, absolute scope paths, fixed in #75 and #76, but it is not
+confirmed against the run that reported it. Batch E's go-live condition includes
+re-running `tools/where_the_turns_went.py` on that log.
+
+## Constraints from security-eval
+
+[security-eval](https://github.com/Lorkster/security-eval) depends on this
+harness. Every batch below has to respect four things about it.
+
+**1. It reads the harness through a published surface, and that surface is a
+contract.** The harness condition runs
+`supervisor run TASK --mode report --backend autonomous --yes --json -w TREE`,
+then reads `findings`, `status`, `events` and `providers`, all with `--json`.
+The baseline condition imports `load_config`, `ChatMessage`,
+`CompletionRequest`, `ProviderRefusal` and `ModelRouter` directly. Some of what
+it reads is prose. It finds why an agent was stopped by looking for
+`finished (stop):` inside a note's text. Nothing in this repository fails if any
+of that changes. Batch A makes it fail.
+
+**2. It pins a harness commit, and the pin is part of its study design.** The
+study's pre-registration fixes the harness version before the pilot. A harness
+change reaches the study only when the group moves the pin on purpose. So every
+batch here states whether it **changes the harness condition**, meaning whether
+a report-mode run behaves differently afterwards. Most do not: autonomy concerns
+execute mode, and security-eval runs report mode. The ones that do (batch H, and
+nine-batch 9b) are marked, and the group decides when or whether to take them.
+
+**3. The integrity line holds here too.** security-eval's
+[`working-with-regulated-models.md`](https://github.com/Lorkster/security-eval/blob/main/docs/working-with-regulated-models.md)
+commits to maximising regulated models' *legitimate* performance and not tuning
+toward a conclusion. For this repository that means any change aimed at
+detection quality is developed against the harness's own fixtures and
+security-eval's *tuning* split, never against held-out targets or adjudicated
+results, and is judged on a run the change was not tuned on.
+
+**4. The group's view of the results.** The group has said the harness condition
+is not performing well against the attacker proxies (RQ7: of what an unregulated
+model finds, how much do the regulated conditions find?). Their specific
+comments were not available when this was written, so this plan treats the
+claim as a question to measure rather than a defect to fix. The harness's
+legitimate levers are exactly the ones its own investigations keep finding:
+
+- agents stopped while working (the recidivist rule, #67);
+- agents accepted before reading their scope (the coverage gate, #78);
+- synthesis as one judgement (nine-batch 9b);
+- and, so far unmeasured, which *role* a given model is weak in.
+
+Batch F produces that last measurement, per model and per role. It is also the
+missing half of security-eval's RQ4 (failure attribution: the model or the
+harness?). If the gap is the harness, the fix belongs here. If it is refusals or
+model capability, the study should say so.
+
+## Does a UI add value, and where does it go?
+
+Two different needs hide in the question.
+
+**Following a run while you watch it.** The host is already the UI. Under Claude
+Code, the ledger line prints on every dispatch, and `status` and `explain` answer
+questions. A separate UI for a run you are watching would duplicate the terminal.
+**Low value.**
+
+**Being the owner of work you are not watching.** Once runs go autonomous, and
+especially once a loop runs them overnight, three things need a place to live:
+the escalations waiting for an answer, what each run did and what it cost, and
+the PRs waiting for review. A terminal you are not looking at is not that place.
+**High value, but only once there is an outer loop.** With the harness alone you
+start every run yourself, so you are already there.
+
+**Where it goes: the outer loop, built on data the harness publishes.**
+
+- **The harness publishes data, not screens.** `status --json`, `events --json`,
+  `findings --json` already exist; batch C adds `escalations --json`. A UI is one
+  more consumer of the same published surface security-eval reads, which keeps
+  that surface honest. It is also an *observing* surface in batch 8's sense, and
+  observers do not belong inside the enforcing core.
+- **Answering an escalation is not observing.** It grants authority. So the UI
+  never holds that state. It calls the harness's own resolve command, and the
+  decision lands on the run's log like any other approval.
+- **Offline by default.** Some workspaces are on a machine whose run data may not
+  leave it. The precedent is security-eval's `review.html`, a generated page that
+  opens with no network. For repositories already on GitHub, the same inbox can
+  be draft PRs and issue comments, which reaches a phone without hosting anything.
+
+Recommendation: no UI work until the outer loop exists. Then its first screen is
+the escalation inbox, generated offline. Batch L2 below.
+
+---
+
+## Part 1: the harness
+
+Each batch is one PR, branched from main. Batches are never stacked.
+
+### Batch A — The consumer contract
+
+Pin everything security-eval reads, as tests in this repository:
+
+- the `run --json` response fields (`run_id`, `action`, `ledger`, `message`);
+- `status --json`: `phase`, and `agents[]` with `kind` and `status`;
+- the event shapes it folds: `turn_recorded` usage and `files_read`, and the
+  notes that carry refusals;
+- `findings --json`, and `providers --json` `routing`;
+- the provider-layer names the baseline imports, with the call shapes it uses.
+
+Add a **structured stop reason**: the `agent_status` event for a stopped agent
+carries the directive's rationale as a field, and `status --json` shows it. The
+`finished (stop):` note stays as it is, so the group can move off it whenever
+they like.
+
+*Changes the harness condition:* no. Report-mode behaviour is identical; one
+field is added.
+
+### Batch B — A verifier that is not a model
+
+The owner's own verification bar, made mechanical. Batches 1–8 kept finding
+first-draft tests that passed against unfixed code. The fix each time was to run
+the new tests against the previous commit and see them go red.
+
+**A new harness-owned criterion, `fails_before`:** *the tests this task adds or
+changes fail on the baseline commit, then pass with the change.* The harness
+proves it itself:
+
+1. a temporary git worktree at the run's baseline commit;
+2. the task's changed test files copied into it;
+3. those test modules run there, then in the working tree;
+4. a per-test comparison.
+
+It passes only if at least one test that passes now did not pass at the baseline.
+It fails, with the test ids named, if every one of them already passed: those
+tests do not detect the change. The verdict is an ordinary `criterion_verified`
+event, so replay never re-runs it.
+
+Applied as a quality bar where it fits: the task changes behaviour (not a
+refactor), the workspace is a git repository with a baseline, and the runner is
+pytest. When the harness may not run commands
+(`allow_command_execution: false`), the criterion goes to the verifier agent with
+the procedure written out, and the verdict is recorded as an agent's claim, as
+every delegated criterion already is. A new protected policy key,
+`require_fails_before`, turns it off.
+
+**Also in this batch, if a test confirms it:** a criterion the harness proved
+`fail` on attempt 1 appears never to be re-checked on attempt 2.
+`_verify_mechanically` only looks at unverified criteria, nothing resets them
+when a task is reopened, and a verifier's contrary verdict is discarded because
+"the mechanical result stands". If true, remediation of a mechanically failed
+task cannot succeed. Reading only; the batch starts with a test that shows it.
+
+*Changes the harness condition:* no. Execute mode only.
+
+### Batch C — Escalations
+
+Today `DirectiveKind.ESCALATE` ends an agent as `blocked`, and nothing tells
+anyone. This batch gives "needs the owner" a destination:
+
+- `escalation_raised` and `escalation_resolved` events. The reason is a fixed
+  value: `needs_wider_scope`, `needs_command_execution`, `irreversible_action`,
+  `reviewer_veto`, `attempts_exhausted`, `envelope_stale`, `agent_blocked`. An
+  agent's own words travel with it as data, labelled as such.
+- A parked task does not block its siblings. Its dependents wait.
+- `supervisor escalations [RUN] --json` lists open escalations. They are answered
+  through `approve`, which records the decision as it records task decisions now.
+
+*Changes the harness condition:* no. A blocked analysis agent ends exactly as
+before; the escalation is recorded beside it.
+
+### Batch D — A run on its own branch
+
+An execute-mode run writes into a git worktree on a branch named for the run,
+not into the owner's working tree. The run ends with the branch and a summary of
+the diff. **The harness never pushes.** Pushing reaches outside the machine,
+which is the owner's decision, or a loop's with the owner's standing permission.
+
+This is what makes "reversible until merged" true, rather than true only if the
+owner happened to start on a clean tree. It is a run-level worktree. The
+per-agent worktree the nine-batch plan declined stays declined: agents in one
+run still share one tree, and `core/baseline.py` still exists for that reason.
+
+The autonomous backend comes first. Under a host, the harness cannot fence the
+host's own tools, so the packets name the worktree, and drift's scope check
+already flags files touched outside it.
+
+*Changes the harness condition:* no. Report mode writes nothing.
+
+### Batch E — Approve the envelope, not each task
+
+A protected policy key, `approval: "task" | "envelope"`, default `"task"`.
+
+- In `"envelope"` mode the owner grants the envelope when starting the run
+  (`--grant-envelope` on the command line, or a field on `supervisor_start`). The
+  grant is recorded with `granted_at` and by whom.
+- Tasks inside it that pass every deterministic gate proceed without a pause.
+  Anything else becomes an escalation (batch C): a scope the clamp had to
+  narrow, a criterion the harness will not run, a reviewer veto (batch G).
+- **No autonomy without a verifier that is not a model.** Envelope mode refuses
+  to start unless `allow_command_execution` is on, the workspace has a baseline
+  commit, and batch D's branch can be created. Without those, nothing checks the
+  work except models, and that is the always-open lock again.
+- `--yes` keeps its meaning. It approves everything and records nothing about a
+  grant. security-eval uses it in report mode, where it never fires.
+
+*Go-live condition, before calling this done:* the turn-budget log re-read
+(#67), and three envelope-mode runs on the owner's own repositories that end in
+PRs the owner would merge.
+
+*Changes the harness condition:* no. Execute mode only.
+
+### Batch F — Does the model do what the harness asks?
+
+An eval in the shape of `turnstone-eval`, aimed at the harness's own directives
+rather than at tool use in general:
+
+- small fixture workspaces;
+- per case: the directive or brief, the expected behaviour, the *forbidden*
+  behaviour (writing outside scope, claiming done with nothing read), several
+  runs, and held-out cases;
+- covering `refocus`, `deepen` (coverage), `narrow`, parallel dispatch, and
+  `fails_before` fixing.
+
+The output is a table of model × role × adherence. It says which roles a local
+model can hold and which need a frontier one, which is the measured version of
+"Hermes frustrates me, Claude Code doesn't".
+
+It reads nothing from security-eval's benchmarks. Its output is what
+security-eval's RQ4 needs from this side.
+
+*Changes the harness condition:* no. It is a tool, and observe-only.
+
+### Batch G — A reviewer that can only veto *(conditional)*
+
+The adaptation of turnstone's judge: a review of each proposed task, by a
+different model from the one that proposed it, against the original request.
+Its output is a verdict from a fixed menu (`off_request`, `scope_unjustified`,
+`criteria_cannot_fail`, `risk_understated`). A veto parks the task as an
+escalation. It can never pass a task the gates refused.
+
+Built only if batch E's runs show tasks reaching execution that a person would
+have rejected. A judge that is never needed is cost and attack surface. Pairs
+with nine-batch 9b, which is the other half of plan quality.
+
+### Batch H — A stuck signal *(conditional)*
+
+Turnstone's `RepeatDetector`: three identical tool calls in a row is the cheapest
+reliable "stuck" signal there is. Added as a drift signal only if batch F, or a
+real run, shows looping that the existing signals miss.
+
+*Changes the harness condition:* **yes**. It is a drift signal, and report mode
+is supervised. Flag it to security-eval before merging.
+
+---
+
+## The gate between the parts
+
+Part 2 starts only when batches B to E are merged and envelope-mode runs have
+been trusted on the owner's own repositories. A loop multiplies whatever a
+single run does. If a single run is not yet trusted overnight, a loop of them is
+less so.
+
+## Part 2: the outer loop
+
+**A new, thin repository, not this one.** It depends on the harness through the
+published CLI, the same way security-eval does. The primer's argument for
+keeping it separate: the loop is "the same harness, one level up", with its own
+memory (the backlog), its own gate (which work it may pick), and its own
+cadence. Keeping it outside keeps the harness's guarantees about one run, such
+as replay from the log, about one run.
+
+### L1 — One task, on demand, end to end
+
+Take one item (a local backlog file, or a GitHub issue with a label). Run the
+harness in envelope mode, on its own branch. Open a **draft** PR, only in
+repositories where the owner has granted that in the loop's own config. Write a
+run record. Started by hand, never on a schedule yet.
+
+### L2 — The owner's inbox
+
+A generated, offline page: open escalations, what each run did and cost, the
+`fails_before` evidence, links to PRs. Answering an escalation calls the
+harness's resolve command; the page holds no decision state. Optionally, the
+same inbox as PR comments for repositories already on GitHub.
+
+### L3 — A schedule, and resets
+
+Runs on a schedule, with a spend ceiling per night. The envelope's maximum age
+(already a policy) is how stale consent is refused. The loop stops rather than
+guesses when an escalation it depends on is unanswered. **It never merges.** The
+primer's point about daemons applies: safety that is fine per cycle decays over
+many cycles, and scheduled re-confirmation is the counter to that.
+
+---
+
+## Decided against
+
+**Smart Approvals: an LLM approving on confidence.** Turnstone's opt-in mode
+auto-approves a batch when every call has a confident LLM "approve". It is
+batch-atomic and keeps a deterministic deny floor, so it is carefully built. But
+it lets a model's verdict widen what happens, and the primer's own rule is that
+a judge "that can approve is a tricked judge that can open the vault". Here the
+deterministic gates and the envelope decide, and a model may only veto
+(batch G).
+
+**A judge on every tool call as the default.** It is the right design for an
+interactive chat agent with a shell. Here the fence on tools is deterministic
+code (`core/tools.py`), supervision happens per turn, and a model call per tool
+call is cost with no matching gap.
+
+**The in-run prompt optimizer** (`turnstone-optimizer`, a UCB search that edits
+prompts and tool descriptions until tests pass). Inside a run, it is an agent
+setting the terms of its own judgement, which the nine-batch plan already
+declined for NOOA's self-extending agents. Offline, against batch F's eval and
+its held-out cases, it is legitimate tooling and may be revisited there.
+
+**The platform**: cluster routing, RBAC, SSO, chat channels, a server. The owner
+is one person on one machine, and some runs' data may not leave it.
+
+## Questions for the owner
+
+Each has a recommendation; none blocks batches A or B.
+
+1. **Approval mode is a protected setting** (batch E). Recommended: yes. A
+   workspace that could set `approval: envelope` would be choosing to skip review
+   of work done on itself.
+2. **Envelope mode requires harness-run commands** (batch E). Recommended: yes.
+   The alternative is autonomy checked only by models.
+3. **The outer loop is a new repository**, started only after the gate.
+   Recommended: yes.
+4. **The inbox is offline first, GitHub optional** (L2). Recommended: yes.
+5. **The group's actual comments on the results.** Please pass them on. This
+   plan treats "underperforming against the attacker proxies" as a question for
+   batch F and RQ4, not as a known defect, and their specifics could change that.

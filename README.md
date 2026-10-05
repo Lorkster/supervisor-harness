@@ -86,6 +86,14 @@ security weakness, its `cwe`, as fields the agent was asked to fill in. They are
 recorded as stated or left empty, never guessed from the prose.
 `supervisor findings --json` is the published way for another tool to read them.
 
+That export, with `run`, `status`, `events` and `providers` under `--json`,
+is a contract: `tests/test_consumer_contract.py` reads them the way
+[security-eval](https://github.com/Lorkster/security-eval) does, and fails
+when a field it depends on moves. An agent that has ended says why in
+`status --json`, as `ended.cause` (a fixed vocabulary: `accept`, `stop`,
+`escalate`, `reported`, `abandoned`, `refused`, `error`, `turn_budget`,
+`remediation`) and `ended.reason`.
+
 **5c. Agents build a shared record.** An analysis lens that establishes
 something the others need — which store the counters live in, which entrypoint
 is actually reachable — records it as a keyed fact with its evidence, and later
@@ -993,6 +1001,7 @@ memory.
 | [`docs/protocol.md`](docs/protocol.md) | The wire protocol between the harness and the host. |
 | [`docs/quality-standard.md`](docs/quality-standard.md) | **The standard this codebase is held to.** Ten criteria, the CI gates that enforce each, and when a new gate is worth adding. |
 | [`docs/development-plan.md`](docs/development-plan.md) | **The work that is scheduled.** Nine batches: three from what a real run cost in latency, context and unused local agents, and six adapted from a reading of another agent framework. Says what is verified, what is only a reading, and what was decided against. |
+| [`docs/autonomy-plan.md`](docs/autonomy-plan.md) | **The next work.** Fewer interruptions without lowering the bar: a verifier that is not a model, escalations, a run on its own branch, and approving the envelope rather than each task. Then a separate outer loop. Written from a reading of turnstone, with the constraints security-eval sets. |
 | [`docs/history/`](docs/history/) | **Closed records.** The self-review that found the defects and how they were closed, the plan the work followed, the quality assessment that set the standard, and the design pass for shared context. Kept for the reasoning; nothing in there describes the harness as it is now. |
 
 Documents that cite code by line number are checked in CI

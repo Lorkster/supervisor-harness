@@ -93,6 +93,27 @@ ACTIVE_AGENT_STATUSES = {
 }
 
 
+class EndCause(StrEnum):
+    """Why an agent stopped being driven: a fixed vocabulary, never prose.
+
+    Recorded on the ``agent_status`` event that ends an agent, beside the
+    free-text reason. A consumer that needs to tell "the supervisor stopped a
+    working agent" from "the model never answered" used to find out by
+    searching note text for ``finished (stop):``, which nothing in this
+    repository promised to keep saying.
+    """
+
+    ACCEPT = "accept"            # a directive accepted its work
+    STOP = "stop"                # a directive stopped it: budget, drift or scope
+    ESCALATE = "escalate"        # a directive escalated it to the owner
+    REPORTED = "reported"        # a single-answer stage agent reported
+    ABANDONED = "abandoned"      # it went silent and was abandoned
+    REFUSED = "refused"          # the model refused the request
+    ERROR = "error"              # it raised, or never gave an answer the contract accepts
+    TURN_BUDGET = "turn_budget"  # its turns ran out with no terminal directive
+    REMEDIATION = "remediation"  # its task was reopened, so its attempt was retired
+
+
 class DirectiveKind(StrEnum):
     """Supervisor's response to an agent turn."""
 
@@ -389,6 +410,10 @@ class AgentSpec:
     # moment it does.
     unreported_dispatches: int = 0
     unreported_since: str = ""
+    # Why it ended, once it has: an `EndCause` value and the reason given with
+    # it. Empty while it runs, and on a log written before these were recorded.
+    ended_cause: str = ""
+    ended_reason: str = ""
 
 
 @dataclass

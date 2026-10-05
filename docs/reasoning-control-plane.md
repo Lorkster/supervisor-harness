@@ -108,13 +108,13 @@ about work done on it.
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:942](../src/supervisor_harness/core/dod.py:942)) holds a runner to
+([core/dod.py:946](../src/supervisor_harness/core/dod.py:946)) holds a runner to
 an allow-list. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.
 
 A behaviour change's tests also have to fail without it. `verify_fails_before`
-([core/fails_before.py:232](../src/supervisor_harness/core/fails_before.py:232))
+([core/fails_before.py:268](../src/supervisor_harness/core/fails_before.py:268))
 runs them in a worktree at the baseline commit and then in the working tree,
 and compares them test by test. The verdict is the harness's own, so a verifier
 agent can neither overturn it nor take the credit for it by agreeing.
@@ -141,7 +141,7 @@ where the fence came from. The synthesis model drew the boundary that its own
 tasks then ran inside.
 
 **The run envelope** is the answer. `ScopeEnvelope`
-([models.py:259](../src/supervisor_harness/models.py:259)) is a run-level grant,
+([models.py:280](../src/supervisor_harness/models.py:280)) is a run-level grant,
 established once: configuration is the floor, the plan may **narrow** it, and
 nothing may widen it (`establish`,
 [envelope.py:83](../src/supervisor_harness/core/envelope.py:83)).
@@ -151,11 +151,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:566](../src/supervisor_harness/core/supervisor.py:566)), when an
+[supervisor.py:574](../src/supervisor_harness/core/supervisor.py:574)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:1805](../src/supervisor_harness/core/supervisor.py:1805)). It
+[supervisor.py:1842](../src/supervisor_harness/core/supervisor.py:1842)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -189,7 +189,7 @@ it.*
 
 After every turn the harness issues a directive back to the agent — one of the
 nine kinds in `DirectiveKind`
-([models.py:96](../src/supervisor_harness/models.py:96)): continue, refocus,
+([models.py:117](../src/supervisor_harness/models.py:117)): continue, refocus,
 narrow, deepen, answer, escalate, accept, reject, stop. The choice is driven by
 deterministic drift heuristics and, only when those fire, a second model
 opinion. A directive whose reasoning cannot be recovered is indistinguishable
@@ -233,7 +233,7 @@ Parallel lenses that each rediscover the same thing are wasting turns; parallel
 lenses that quietly assume *different* things about the same thing are worse,
 because the contradiction only surfaces in the work.
 
-**A `Fact`** ([models.py:287](../src/supervisor_harness/models.py:287)) is
+**A `Fact`** ([models.py:308](../src/supervisor_harness/models.py:308)) is
 something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
 `FACT_ESTABLISHED` ([events.py:47](../src/supervisor_harness/store/events.py:47)),
