@@ -983,6 +983,7 @@ memory.
 | [`docs/protocol.md`](docs/protocol.md) | The wire protocol between the harness and the host. |
 | [`docs/quality-standard.md`](docs/quality-standard.md) | **The standard this codebase is held to.** Ten criteria, the CI gates that enforce each, and when a new gate is worth adding. |
 | [`docs/development-plan.md`](docs/development-plan.md) | **The work that is scheduled.** Nine batches: three from what a real run cost in latency, context and unused local agents, and six adapted from a reading of another agent framework. Says what is verified, what is only a reading, and what was decided against. |
+| [`docs/autonomy-plan.md`](docs/autonomy-plan.md) | **The next work.** Fewer interruptions without lowering the bar: a verifier that is not a model, escalations, a run on its own branch, and approving the envelope rather than each task. Then a separate outer loop. Written from a reading of turnstone, with the constraints security-eval sets. |
 | [`docs/history/`](docs/history/) | **Closed records.** The self-review that found the defects and how they were closed, the plan the work followed, the quality assessment that set the standard, and the design pass for shared context. Kept for the reasoning; nothing in there describes the harness as it is now. |
 
 Documents that cite code by line number are checked in CI
