@@ -35,6 +35,7 @@ from ..models import (
     AgentStatus,
     Backend,
     Budget,
+    EndCause,
     RunState,
     Scope,
 )
@@ -120,10 +121,23 @@ class Lifecycle:
                 parent.scope if parent is not None else None,
             ),
         ]
-    async def _set_status(self, session: RunSession, agent: AgentSpec, status: AgentStatus) -> None:
+    async def _set_status(
+        self, session: RunSession, agent: AgentSpec, status: AgentStatus,
+        *, cause: EndCause | None = None, reason: str = "",
+    ) -> None:
+        """Move an agent to ``status``; when that ends it, say why.
+
+        ``cause`` is the fixed-vocabulary half and ``reason`` the prose. Both go
+        on the event only when a cause is given, so a transition that ends
+        nothing carries the same payload it always has.
+        """
         if agent.status is status:
             return
-        await session.aemit(EventType.AGENT_STATUS, {"agent_id": agent.id, "status": str(status)})
+        payload: dict[str, str] = {"agent_id": agent.id, "status": str(status)}
+        if cause is not None:
+            payload["cause"] = str(cause)
+            payload["reason"] = reason
+        await session.aemit(EventType.AGENT_STATUS, payload)
     async def _abandon_agent(self, session: RunSession, agent: AgentSpec, reason: str) -> None:
         """End an agent that will never report, naming it and the cause on the log.
 
@@ -138,7 +152,8 @@ class Lifecycle:
             kind=str(agent.kind),
             task_id=agent.task_id or "",
         )
-        await self._set_status(session, agent, AgentStatus.FAILED)
+        await self._set_status(session, agent, AgentStatus.FAILED,
+                               cause=EndCause.ABANDONED, reason=reason)
     def _abandonment_reason(self, agent: AgentSpec) -> str | None:
         """Why this agent should be given up on, or ``None`` to keep waiting."""
         policy = self.config.policy

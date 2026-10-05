@@ -85,6 +85,11 @@ class Reporting:
                     "unreported_dispatches": a.unreported_dispatches,
                     "drift": state.drift[a.id].score if a.id in state.drift else None,
                     "model": a.binding.ref(),
+                    # Why it ended, as a fixed `EndCause` value and the reason
+                    # given with it; None while it runs, and for an agent whose
+                    # end was recorded before causes were.
+                    "ended": ({"cause": a.ended_cause, "reason": a.ended_reason}
+                              if a.ended_cause else None),
                 }
                 for a in state.agents.values()
             ],

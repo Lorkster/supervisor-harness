@@ -200,6 +200,9 @@ def _on_agent_status(state: RunState, event: Event) -> None:
     agent = state.agents.get(p["agent_id"])
     if agent is not None:
         agent.status = AgentStatus(p["status"])
+        if "cause" in p:
+            agent.ended_cause = str(p["cause"])
+            agent.ended_reason = str(p.get("reason", ""))
     else:
         _orphan(state, event.type, p["agent_id"])
 
