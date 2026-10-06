@@ -1122,6 +1122,37 @@ def _report_open_questions(state: RunState) -> list[str]:
     return lines
 
 
+def _report_escalations(state: RunState) -> list[str]:
+    """What the run asked its owner, and what the owner said.
+
+    A deferred task is outstanding work, not a failed one: the owner chose not
+    to let it go on in this run, and it is listed here with its definition of
+    done so a later run can start from it rather than from the analysis.
+    """
+    lines: list[str] = []
+    if not state.escalations:
+        return lines
+    lines += ["## Escalations to the owner", ""]
+    for esc in sorted(state.escalations.values(), key=lambda e: e.raised_at):
+        task = state.tasks.get(esc.task_id)
+        title = task.title if task else esc.task_id
+        answer = (f"**{esc.resolution}**" + (f": {esc.note}" if esc.note else "")
+                  if esc.resolution else "**unanswered**")
+        lines.append(f"- `{esc.id}` ({esc.reason}) on *{title}*: {answer}")
+        lines.append(f"    - the agent's account: {esc.detail}")
+    deferred = [t for t in state.tasks.values()
+                if t.status is TaskStatus.DEFERRED and t.decision_note.startswith(
+                    "deferred by the owner")]
+    if deferred:
+        lines += ["", "Deferred by the owner, to carry forward:", ""]
+        for task in deferred:
+            lines.append(f"- **{task.title}**: {task.action.splitlines()[0]}")
+            for crit in task.mandatory_criteria:
+                lines.append(f"    - done when: {crit.statement}")
+    lines.append("")
+    return lines
+
+
 def _report_checkpoints(state: RunState) -> list[str]:
     """The quality gate's verdict on each iteration."""
     lines: list[str] = []
@@ -1173,6 +1204,7 @@ def final_report_markdown(state: RunState) -> str:
         _report_reconciliation,
         _report_conflicts,
         _report_open_questions,
+        _report_escalations,
         _report_checkpoints,
         _report_lessons,
     ):

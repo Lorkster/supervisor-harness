@@ -50,7 +50,7 @@ EXPECTED_TOOLS = {
     "supervisor_start", "supervisor_report", "supervisor_abandon", "supervisor_advance",
     "supervisor_approve", "supervisor_status", "supervisor_explain", "supervisor_runs",
     "supervisor_resume", "supervisor_check_drift", "supervisor_lessons",
-    "supervisor_providers",
+    "supervisor_providers", "supervisor_resolve",
 }
 
 
@@ -123,7 +123,8 @@ async def test_every_tool_carries_a_description_and_a_usable_schema(server: Any)
 async def test_the_server_tells_the_host_how_to_drive_it(server: Any) -> None:
     """`INSTRUCTIONS` is the only place the required call order is stated."""
     for expected in ("supervisor_start", "supervisor_report", "supervisor_advance",
-                     "supervisor_abandon", "supervisor_approve"):
+                     "supervisor_abandon", "supervisor_approve", "supervisor_resolve",
+                     "await_owner"):
         assert expected in mcp_server.INSTRUCTIONS
     assert "in parallel" in mcp_server.INSTRUCTIONS
     assert "Never approve on the user's behalf" in mcp_server.INSTRUCTIONS

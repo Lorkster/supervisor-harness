@@ -334,6 +334,24 @@ class _Builder:
             detail={"id": task.get("id", ""), "action": task.get("action", "")},
         )
 
+    def on_escalation_raised(self, event: Event, p: dict[str, Any]) -> None:
+        escalation = p.get("escalation") or {}
+        # The harness deciding to ask, on an agent's account of being stuck:
+        # the account is the agent's, the question is policy.
+        self.add(
+            event, "escalation_raised", decided_by=POLICY,
+            content=str(escalation.get("reason", "")),
+            detail={key: escalation.get(key, "") for key in
+                    ("id", "task_id", "agent_id", "detail")},
+        )
+
+    def on_escalation_resolved(self, event: Event, p: dict[str, Any]) -> None:
+        self.add(
+            event, "escalation_resolved", source="person", decided_by=PERSON,
+            content=str(p.get("resolution", "")),
+            detail={"escalation_id": p.get("escalation_id", ""), "note": p.get("note", "")},
+        )
+
     def on_task_decided(self, event: Event, p: dict[str, Any]) -> None:
         self.add(
             event, "task_decided", source="person", decided_by=PERSON,
@@ -446,6 +464,8 @@ _HANDLERS = {
     EventType.ASSISTS_RECORDED: _Builder.on_assists_recorded,
     EventType.TASK_PROPOSED: _Builder.on_task_proposed,
     EventType.TASK_DECIDED: _Builder.on_task_decided,
+    EventType.ESCALATION_RAISED: _Builder.on_escalation_raised,
+    EventType.ESCALATION_RESOLVED: _Builder.on_escalation_resolved,
     EventType.CRITERION_VERIFIED: _Builder.on_criterion_verified,
     EventType.CHECKPOINT_RECORDED: _Builder.on_checkpoint_recorded,
     EventType.LESSON_LEARNED: _Builder.on_lesson_learned,

@@ -57,6 +57,12 @@ whatever phase it had reached, in another process or a later session.
       └─────┬──────┘
             │ passed — or the remediation budget is spent, or nothing
             │ actionable came back
+            ▼
+      ┌────────────────┐   an escalation is open: an execution agent
+      │ awaiting_owner │   said it could not go on, its task is parked,
+      └───────┬────────┘   and the run waits for supervisor_resolve.
+            │              A grant sends the task back to executing;
+            │              with none open, the run goes on below
             ▼                                 │
       ┌───────────┐◀──────────────────────────┘
       │ improving │   lessons, the final report, the reconciliation
@@ -78,6 +84,7 @@ Nothing here loops without a counter, and each one is a policy setting:
 | An agent's silence | `max_unreported_dispatches`, `agent_timeout_seconds` | 3 packets, off | The agent is abandoned, on the log, and the phase settles without it |
 | A task's attempts | `max_task_attempts` | 3 | The task is not reopened again; it ends `failed`, with its unmet criteria named |
 | Remediation rounds | `max_checkpoint_iterations` | 3 | The run proceeds to `improving` and reports what did not pass |
+| Escalation rounds | the owner | — | Not a counter, and the one exception: each round ends at `awaiting_owner`, so the loop goes round only as often as a person answers `grant` |
 
 **So: what happens when a task fails verification twice?** Its criteria are
 verified mechanically where they can be, and the verdict of a check the harness

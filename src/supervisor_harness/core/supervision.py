@@ -32,6 +32,7 @@ from ..contracts import (
     parse_messages,
     parse_status,
 )
+from ..ids import now_iso
 from ..models import (
     ACTIVE_AGENT_STATUSES,
     SUPERVISOR,
@@ -43,8 +44,11 @@ from ..models import (
     DirectiveKind,
     DriftAssessment,
     EndCause,
+    Escalation,
+    EscalationReason,
     Finding,
     Scope,
+    TaskStatus,
 )
 from ..providers.base import ChatMessage, CompletionRequest
 from ..providers.router import ModelRouter
@@ -397,7 +401,36 @@ class Supervision:
                 session, agent, status, cause=EndCause(directive.kind.value),
                 reason=directive.rationale or "no rationale given",
             )
+        if directive.kind is DirectiveKind.ESCALATE and agent.kind is AgentKind.EXECUTION:
+            await self._park_task(session, agent, turn, directive)
         return directive
+
+    async def _park_task(
+        self, session: RunSession, agent: AgentSpec, turn: AgentTurn, directive: Directive
+    ) -> None:
+        """Put an execution agent's question to the owner, and park its task until answered.
+
+        Execution only. An analysis agent that says it is blocked ends as it
+        always has, with whatever it found: a report-mode run has nothing to
+        park, and pausing one would change what every evaluation of report
+        mode measures.
+        """
+        task = session.state.tasks.get(agent.task_id or "")
+        if task is None:
+            return
+        escalation = Escalation(
+            run_id=session.state.id,
+            reason=EscalationReason.AGENT_BLOCKED,
+            task_id=task.id,
+            agent_id=agent.id,
+            detail=turn.blocked_on or directive.rationale or "no reason given",
+        )
+        await session.aemit(EventType.ESCALATION_RAISED,
+                            {"escalation": to_jsonable(escalation)}, actor="harness")
+        task.status = TaskStatus.BLOCKED
+        task.updated_at = now_iso()
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+
     def _coverage(
         self, session: RunSession, agent: AgentSpec, turn: AgentTurn
     ) -> ScopeCoverage | None:

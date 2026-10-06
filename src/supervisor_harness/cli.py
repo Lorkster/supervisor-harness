@@ -77,7 +77,8 @@ def _print_proposed_tasks(response: SupervisorResponse) -> None:
     """
     if not response.tasks:
         return
-    print(f"\n  {len(response.tasks)} task(s) proposed:")
+    waiting = response.action == "await_owner"
+    print(f"\n  {len(response.tasks)} task(s) {'parked' if waiting else 'proposed'}:")
     for task in response.tasks:
         print(f"\n  - {task['id']}  {task['title']}  "
               f"(risk {task['risk']}, effort {task['effort']})")
@@ -91,6 +92,20 @@ def _print_proposed_tasks(response: SupervisorResponse) -> None:
                 print(f"            $ {crit['command']}")
         for note in response.task_notes.get(task["id"], []):
             print(f"      note: {note}")
+
+
+def _print_escalations(response: SupervisorResponse) -> None:
+    """What the run is waiting on its owner for, and how to answer."""
+    escalations = response.detail.get("escalations") if response.action == "await_owner" else None
+    if not escalations:
+        return
+    print(f"\n  {len(escalations)} escalation(s) waiting for you:")
+    for esc in escalations:
+        print(f"\n  - {esc['id']}  ({esc['reason']}) on task {esc['task_id']}")
+        print(f"      the agent's account: {esc['detail']}")
+    print("\n  Answer each with:")
+    print("    supervisor resolve <escalation-id> grant  --note \"<your answer>\"")
+    print("    supervisor resolve <escalation-id> decline")
 
 
 def _print_directive(response: SupervisorResponse) -> None:
@@ -128,6 +143,7 @@ def _print_response(
 
     _print_packets(response)
     _print_proposed_tasks(response)
+    _print_escalations(response)
     _print_directive(response)
 
     if response.action == "complete":
@@ -352,6 +368,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if response.action == "await_approval" and not args.json:
         print("\nApprove with:")
         print(f"  supervisor approve {response.run_id} --all")
+    # Not answered by `--yes`: that approves proposed tasks, and an escalation
+    # is a question only the owner can answer.
     return 0 if response.action != "failed" else 1
 
 
@@ -521,6 +539,65 @@ def cmd_approve(args: argparse.Namespace) -> int:
             await sup.aclose()
 
     _print_response(asyncio.run(go()), args.json, sup)
+    return 0
+
+
+def cmd_resolve(args: argparse.Namespace) -> int:
+    """Answer one escalation; the run carries on if that was what it waited for."""
+    sup = _supervisor(args)
+    run_id = args.run or sup.store.latest_run_id()
+    if not run_id:
+        print("error: no runs found", file=sys.stderr)
+        return 2
+    if run_id not in sup.store.list_run_ids():
+        print(f"error: no such run: {run_id}", file=sys.stderr)
+        return 2
+
+    async def go() -> SupervisorResponse:
+        try:
+            return await sup.resolve(run_id, [{"escalation_id": args.escalation_id,
+                                                "decision": args.decision,
+                                                "note": args.note}])
+        finally:
+            await sup.aclose()
+
+    response = asyncio.run(go())
+    refused = response.detail.get("not_applied") or {}
+    _print_response(response, args.json, sup)
+    if refused and not args.json:
+        for escalation_id, why in refused.items():
+            print(f"error: {escalation_id or '(no id)'} not applied: {why}", file=sys.stderr)
+    return 1 if refused else 0
+
+
+def cmd_escalations(args: argparse.Namespace) -> int:
+    """What a run has asked its owner, answered or not."""
+    sup = _supervisor(args)
+    run_id = args.run_id or sup.store.latest_run_id()
+    if not run_id:
+        print("No runs recorded yet.", file=sys.stderr)
+        return 1
+    if run_id not in sup.store.list_run_ids():
+        print(f"error: no such run: {run_id}", file=sys.stderr)
+        return 2
+    state = sup.store.load_state(run_id)
+    escalations = sorted(state.escalations.values(), key=lambda e: e.raised_at)
+    if args.open:
+        escalations = [e for e in escalations if e.open]
+    if args.json:
+        _emit({"run_id": run_id, "phase": str(state.phase),
+               "escalations": [to_jsonable(e) for e in escalations]}, True)
+        return 0
+    if not escalations:
+        print("No escalations.")
+        return 0
+    for esc in escalations:
+        task = state.tasks.get(esc.task_id)
+        answer = f"{esc.resolution}" + (f": {esc.note}" if esc.note else "") \
+            if esc.resolution else "open"
+        print(f"{esc.id}  {esc.reason:<14} {answer}")
+        print(f"    task:    {task.title if task else esc.task_id}")
+        print(f"    account: {esc.detail}")
     return 0
 
 
@@ -1162,6 +1239,18 @@ def _add_run_commands(sub: Any, common: argparse.ArgumentParser) -> None:
                         "Renews the date, never the paths")
     p.set_defaults(func=cmd_approve)
 
+    p = sub.add_parser("resolve", parents=[common],
+                       help="answer an escalation a run is waiting on")
+    p.add_argument("escalation_id", help="the escalation, as `escalations` lists it")
+    p.add_argument("decision", choices=["grant", "decline"],
+                   help="grant: the task gets another attempt with your note added to "
+                        "its action. decline: the task is deferred and reported as "
+                        "outstanding")
+    p.add_argument("--note", default="", help="your answer, for a grant")
+    p.add_argument("--run", default="",
+                   help="which run (default: the most recent one in this store)")
+    p.set_defaults(func=cmd_resolve)
+
     p = sub.add_parser("resume", parents=[common], help="resume a persisted run")
     p.add_argument("run_id", nargs="?", default="",
                    help="which run (default: the most recent one in this store)")
@@ -1192,6 +1281,13 @@ def _add_read_commands(sub: Any, common: argparse.ArgumentParser) -> None:
     p.add_argument("-o", "--out", default="", metavar="NAME",
                    help="filename for the evidence written under the run (default: audit.md)")
     p.set_defaults(func=cmd_audit)
+
+    p = sub.add_parser("escalations", parents=[common],
+                       help="what a run has asked its owner, answered or not")
+    p.add_argument("run_id", nargs="?", default="",
+                   help="which run (default: the most recent one in this store)")
+    p.add_argument("--open", action="store_true", help="only the unanswered ones")
+    p.set_defaults(func=cmd_escalations)
 
     p = sub.add_parser("findings", parents=[common],
                        help="every finding a run recorded, with its location, CWE and "

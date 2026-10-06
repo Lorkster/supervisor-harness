@@ -141,7 +141,7 @@ where the fence came from. The synthesis model drew the boundary that its own
 tasks then ran inside.
 
 **The run envelope** is the answer. `ScopeEnvelope`
-([models.py:280](../src/supervisor_harness/models.py:280)) is a run-level grant,
+([models.py:285](../src/supervisor_harness/models.py:285)) is a run-level grant,
 established once: configuration is the floor, the plan may **narrow** it, and
 nothing may widen it (`establish`,
 [envelope.py:83](../src/supervisor_harness/core/envelope.py:83)).
@@ -151,11 +151,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:574](../src/supervisor_harness/core/supervisor.py:574)), when an
+[supervisor.py:578](../src/supervisor_harness/core/supervisor.py:578)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:1842](../src/supervisor_harness/core/supervisor.py:1842)). It
+[supervisor.py:1976](../src/supervisor_harness/core/supervisor.py:1976)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -189,7 +189,7 @@ it.*
 
 After every turn the harness issues a directive back to the agent — one of the
 nine kinds in `DirectiveKind`
-([models.py:117](../src/supervisor_harness/models.py:117)): continue, refocus,
+([models.py:120](../src/supervisor_harness/models.py:120)): continue, refocus,
 narrow, deepen, answer, escalate, accept, reject, stop. The choice is driven by
 deterministic drift heuristics and, only when those fire, a second model
 opinion. A directive whose reasoning cannot be recovered is indistinguishable
@@ -233,10 +233,10 @@ Parallel lenses that each rediscover the same thing are wasting turns; parallel
 lenses that quietly assume *different* things about the same thing are worse,
 because the contradiction only surfaces in the work.
 
-**A `Fact`** ([models.py:308](../src/supervisor_harness/models.py:308)) is
+**A `Fact`** ([models.py:313](../src/supervisor_harness/models.py:313)) is
 something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
-`FACT_ESTABLISHED` ([events.py:47](../src/supervisor_harness/store/events.py:47)),
+`FACT_ESTABLISHED` ([events.py:50](../src/supervisor_harness/store/events.py:50)),
 and facts reach later agents' briefs through `render_context`
 ([core/blackboard.py:104](../src/supervisor_harness/core/blackboard.py:104)).
 
