@@ -105,7 +105,7 @@ from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
 from .paths import relative_patterns
-from .placement import placed_in_tree
+from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
 
@@ -661,6 +661,11 @@ class Supervisor:
             # read as narrowing, it sent every such task to the owner.
             task.clamped = list(clamped) if declared else []
             notes[task.id].extend(clamped)
+            for path in named_outside_scope(task, self.workspace):
+                gap = (f"the task names `{path}`, which its scope does not cover; "
+                       "its agent could not change it")
+                task.clamped.append(gap)
+                notes[task.id].append(gap)
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
                                                    "notes": notes.get(task.id, [])})
         session.emit(EventType.NOTE, {"text": "tasks proposed", "notes": notes})

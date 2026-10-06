@@ -20,13 +20,17 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from supervisor_harness.config import Policy
 from supervisor_harness.contracts import parse_tasks
-from supervisor_harness.core.dod import apply_quality_bars, fill_suite_commands
+from supervisor_harness.core.dod import apply_quality_bars, fill_suite_commands, run_bounded
 from supervisor_harness.core.drift import TurnContext, assess_heuristically
 from supervisor_harness.core.phases import prepare_tasks
+from supervisor_harness.core.placement import named_outside_scope
 from supervisor_harness.core.supervision import drift_judge_prompt
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import (
@@ -43,6 +47,7 @@ from supervisor_harness.models import (
     VerifyMethod,
 )
 
+from .conftest import FakeProvider
 from .test_send_back_criteria import PROMPT, Recording
 
 SUITE = "Existing unit tests still pass with no new failures"
@@ -182,3 +187,74 @@ def test_the_drift_judge_measures_an_implementer_against_its_own_task() -> None:
     assert "# The overall task" not in judged
 
     assert "# The overall task\nDo task P3-18" in drift_judge_prompt(state, lens, "x", opinion)
+
+
+# -- a task that names a file its scope does not cover ---------------------------
+
+
+def _tree(root: Path) -> Path:
+    for rel in ("src/core/timing.py", "src/core/reporting.py", "src/cache.py", "e2e/smoke.spec.ts"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("", encoding="utf-8")
+    return root
+
+
+def _scoped(action: str, *inspect: str) -> ExecutionTask:
+    return ExecutionTask(
+        title="Add the conc token", action=action,
+        scope=Scope(paths=["src/core/timing.py", "tests/"]),
+        dod=[DoDCriterion(statement="s", method=VerifyMethod.INSPECTION, expect=f"{p}: x")
+             for p in inspect],
+    )
+
+
+def test_a_file_the_action_changes_outside_the_scope_is_named(tmp_path: Path) -> None:
+    """The shape measured: the envelope missed the file the task was about."""
+    task = _scoped("In Reporting.ledger (core/reporting.py:202-260), append a conc part")
+    assert named_outside_scope(task, _tree(tmp_path)) == ["src/core/reporting.py"]
+
+
+def test_a_file_an_inspection_checks_is_one_the_task_must_produce(tmp_path: Path) -> None:
+    """Measured too: a Playwright test due in e2e/, outside a scope of src/ and tests/."""
+    task = _scoped("create", "e2e/offline.spec.ts")
+    assert named_outside_scope(task, _tree(tmp_path)) == ["e2e/offline.spec.ts"]
+
+
+def test_a_file_the_task_only_reads_or_could_not_create_is_not_named(tmp_path: Path) -> None:
+    _tree(tmp_path)
+    assert named_outside_scope(_scoped("Add a limiter using the client in src/cache.py"),
+                               tmp_path) == [], "reads are not fenced"
+    assert named_outside_scope(_scoped("Write nowhere/else/at_all.py"), tmp_path) == []
+    assert named_outside_scope(_scoped("In src/core/timing.py add phase()"), tmp_path) == []
+    whole = _scoped("In src/core/reporting.py append it")
+    whole.scope.paths = []
+    assert named_outside_scope(whole, tmp_path) == [], "no paths is the whole workspace"
+
+
+async def test_such_a_task_is_marked_as_needing_a_wider_scope(
+    supervisor: Supervisor, fake: FakeProvider,
+) -> None:
+    plan = fake._synthesis(None)  # type: ignore[arg-type]
+    plan["tasks"][0]["action"] = "Add middleware in src/auth/login.py and in src/cache.py"
+    fake.overrides["synthesis"] = plan
+
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE)
+    (task,) = supervisor.store.load_state(response.run_id).tasks.values()
+
+    assert any("`src/cache.py`, which its scope does not cover" in c for c in task.clamped)
+
+
+# -- a check does not inherit the harness's settings -----------------------------
+
+
+def test_a_check_does_not_inherit_the_harness_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Measured: three CLI tests read the run's SUPERVISOR_HOME and failed a full suite."""
+    monkeypatch.setenv("SUPERVISOR_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SUPERVISOR_ROUTE_ANALYSIS", "ollama:x")
+    monkeypatch.setenv("KEEP_ME", "1")
+    done = run_bounded([sys.executable, "-c", "import os; print(sorted(k for k in os.environ "
+                        "if k.upper().startswith(('SUPERVISOR_', 'KEEP_ME'))))"],
+                       tmp_path, timeout=30)
+    assert done.stdout.strip() == "['KEEP_ME']"

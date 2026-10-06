@@ -913,10 +913,19 @@ _CREDENTIAL_NAME = re.compile(
     re.IGNORECASE,
 )
 
+#: Nor the harness's own settings. ``SUPERVISOR_HOME`` names the store and the
+#: one configuration that may set protected policy; a check runner has no use
+#: for either. Measured in a go-live run on this repository: three of its CLI
+#: tests inherited the run's ``SUPERVISOR_HOME``, looked for their runs in the
+#: trial store, and failed the full-suite criterion of a task that broke
+#: nothing.
+_HARNESS_SETTING = re.compile(r"^SUPERVISOR_", re.IGNORECASE)
+
 
 def child_environment() -> dict[str, str]:
-    """This process's environment without the credentials in it."""
-    return {k: v for k, v in os.environ.items() if not _CREDENTIAL_NAME.search(k)}
+    """This process's environment without the credentials or the harness's settings."""
+    return {k: v for k, v in os.environ.items()
+            if not _CREDENTIAL_NAME.search(k) and not _HARNESS_SETTING.search(k)}
 
 
 def run_bounded(argv: list[str], cwd: Path | str, timeout: float,
