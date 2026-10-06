@@ -440,6 +440,30 @@ PRs the owner would merge.
 > and the owner's tree untouched. Fifteen mechanisms broken in turn, fifteen
 > red.
 
+> **Found preparing the go-live runs, 2026-10-06**, before any model was asked
+> anything. Three things would have failed every task in the owner's other
+> repositories for reasons unrelated to the work, and envelope approval would
+> have blamed the model:
+>
+> - **The wrong test runner.** `detect_test_command` searched the whole tree
+>   for `test_*.py` before reading the root's own markers, so a TypeScript app
+>   with a Python sub-project got `pytest` at its root. Root markers now come
+>   first, and the tree search is gone.
+> - **The wrong Python.** The `pytest` on PATH is the system Python's; a
+>   project's suite passes in its own `.venv` and fails at import outside it.
+>   The command now names the project's virtualenv interpreter, absolutely.
+> - **A worktree without dependencies.** Batch D's worktree holds only what git
+>   tracks, so it had no `node_modules`. It now gets its own from the lockfile
+>   (`npm ci`), under the command-execution switch, and they are never
+>   committed. Linking the owner's copy was rejected: an agent's `npm install`
+>   would then change the owner's dependencies, which is what the branch exists
+>   to prevent.
+>
+> **The #67 log is no longer available**, so that half of the go-live condition
+> cannot be met as written. Its purpose -- knowing whether the supervisor stops
+> agents that are working -- is served instead by reading
+> `tools/where_the_turns_went.py` on each of the go-live runs.
+
 ### Batch F — Does the model do what the harness asks?
 
 An eval in the shape of `turnstone-eval`, aimed at the harness's own directives

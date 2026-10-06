@@ -1128,10 +1128,15 @@ class Supervisor:
             return (f"could not give this run its own branch: {error}. Nothing was "
                     "executed. To execute in the workspace itself instead, set "
                     "policy.execution_worktree to false.")
-        note = ""
+        notes = []
         if "already modified" in fact:
-            note = ("the workspace had uncommitted changes when the run started; they "
-                    "are not on the run's branch, which starts at the baseline commit")
+            notes.append("the workspace had uncommitted changes when the run started; they "
+                         "are not on the run's branch, which starts at the baseline commit")
+        # Installing runs the project's own scripts, the same trust as running
+        # its tests, so it waits on the same switch.
+        if self.config.policy.allow_command_execution:
+            notes.append(worktree.prepare(tree))
+        note = "; ".join(n for n in notes if n)
         session.emit(EventType.WORKTREE_OPENED, {"worktree": to_jsonable(RunWorktree(
             path=str(tree), branch=branch, base=base, note=note,
         ))})

@@ -33,10 +33,12 @@ model.
 from __future__ import annotations
 
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from .baseline import _git
+from .dod import run_bounded
 
 #: Branches the harness creates are all under here, so they are easy to find,
 #: list and delete, and never collide with the owner's own naming.
@@ -49,6 +51,36 @@ TIMEOUT = 300
 
 def branch_for(run_id: str) -> str:
     return f"{BRANCH_PREFIX}{run_id}"
+
+
+def prepare(tree: Path, timeout: float = TIMEOUT * 3) -> str:
+    """Install the project's dependencies into a fresh worktree; what happened, as a note.
+
+    A worktree holds what git tracks, and dependencies are exactly what it does
+    not: a fresh worktree has no `node_modules`, so every check that needs one
+    fails there for a reason that has nothing to do with the work. Linking the
+    owner's copy in was the cheap answer and the wrong one -- an agent's
+    `npm install` would then change the owner's dependencies, the one thing a
+    run's own branch exists to prevent. So the worktree gets its own, from the
+    project's lockfile, the way CI would.
+
+    Python needs nothing here: the test command names the project's own
+    virtualenv interpreter by absolute path (`dod._pytest_command`).
+    """
+    if not (tree / "package-lock.json").is_file() or (tree / "node_modules").exists():
+        return ""
+    npm = shutil.which("npm")
+    if npm is None:
+        return ("the project has a package-lock.json but npm is not on PATH, so its "
+                "dependencies were not installed in the run's worktree")
+    try:
+        done = run_bounded([npm, "ci", "--no-audit", "--no-fund"], tree, timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"`npm ci` in the run's worktree did not finish: {exc}"
+    if done.returncode != 0:
+        tail = (done.stdout + done.stderr).strip()[-400:]
+        return f"`npm ci` in the run's worktree failed (exit {done.returncode}): {tail}"
+    return "installed the project's npm dependencies in the run's worktree with `npm ci`"
 
 
 def create(workspace: Path, tree: Path, branch: str, base: str) -> str | None:
@@ -83,7 +115,13 @@ def close(workspace: Path, tree: Path, base: str, message: str) -> Closed:
     """
     if not tree.is_dir():
         return Closed(note=f"the worktree at {tree} is gone; nothing to commit")
-    if _git(tree, "add", "-A", timeout=TIMEOUT) is None:
+    # Never the dependencies `prepare` installed: they are the worktree's tools,
+    # not the run's work, and a repository that does not ignore them would
+    # otherwise get every package in its history.
+    # Staged then unstaged rather than excluded by pathspec: git refuses a
+    # pathspec that names an ignored path, which is the usual case.
+    if (_git(tree, "add", "-A", timeout=TIMEOUT) is None
+            or _git(tree, "reset", "-q", "--", "node_modules", timeout=TIMEOUT) is None):
         return Closed(note="git could not stage the run's changes; the worktree is kept")
     staged = _git(tree, "diff", "--cached", "--stat", base, timeout=TIMEOUT) or ""
     if not staged.strip():

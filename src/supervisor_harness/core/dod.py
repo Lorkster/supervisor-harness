@@ -538,10 +538,13 @@ def detect_test_command(workspace: Path) -> str:
     if not workspace.is_dir():
         return ""
 
-    if (workspace / "pyproject.toml").is_file() or (workspace / "pytest.ini").is_file():
-        return "pytest -q"
-    if any(workspace.rglob("test_*.py")) or (workspace / "tests").is_dir():
-        return "pytest -q"
+    # The project's own marker files first, at the root, in the order a
+    # project declares itself. Searching the whole tree for `test_*.py` came
+    # first once, and it is wrong twice over in a real repository: a
+    # TypeScript app with a Python sub-project was given `pytest` at its root,
+    # and the search walked every `node_modules` and virtualenv to decide it.
+    if any((workspace / marker).is_file() for marker in _PYTHON_MARKERS):
+        return _pytest_command(workspace)
 
     package = workspace / "package.json"
     if package.is_file():
@@ -555,7 +558,33 @@ def detect_test_command(workspace: Path) -> str:
         return "go test ./..."
     if (workspace / "Cargo.toml").is_file():
         return "cargo test"
+    # Last, a Python project with no marker file at all, known only by its tests.
+    tests = workspace / "tests"
+    if (tests.is_dir() and any(tests.glob("test_*.py"))) or any(workspace.glob("test_*.py")):
+        return _pytest_command(workspace)
     return ""
+
+
+#: Files at a repository's root that say it is a Python project.
+_PYTHON_MARKERS = ("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini", "setup.py")
+
+
+def _pytest_command(workspace: Path) -> str:
+    """pytest as the project runs it: from its own virtualenv when it has one.
+
+    The `pytest` on PATH belongs to whichever Python is first there, which for
+    most projects is not the one their dependencies are installed in -- so a
+    suite that passes in the project's environment fails at import in the
+    harness's. Absolute, so it resolves from any working directory, including
+    a run's own worktree, which has no virtualenv of its own.
+    """
+    for name in (".venv", "venv"):
+        for bindir, python, pytest in (("Scripts", "python.exe", "pytest.exe"),
+                                       ("bin", "python", "pytest")):
+            interpreter = workspace / name / bindir / python
+            if interpreter.is_file() and (workspace / name / bindir / pytest).is_file():
+                return f'"{interpreter}" -m pytest -q'
+    return "pytest -q"
 
 
 def apply_quality_bars(
