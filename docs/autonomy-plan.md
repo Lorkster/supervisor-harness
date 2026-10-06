@@ -496,6 +496,17 @@ PRs the owner would merge.
 > narrow, because the lenses' own scopes had the same missing-prefix paths.
 > Those are placed now too.
 
+> **Go-live run 3** (plantsandclimate, task P3-18 of its own plan, 8 minutes).
+> A good plan again -- five tasks, a sensible envelope -- and every task sent
+> to the owner for the same missing commands. And one finding that is exactly
+> what the #67 check existed for: **four of five analysis lenses were stopped by
+> the supervisor on their first turn.** The plan had marked the documents the
+> task said to read as not to be modified, and an analysis agent's reported
+> reads arrive in the same field as an execution agent's writes, so reading
+> them was an "uncorrectable" violation. The drift model's own second opinion
+> said the agents were working correctly. A forbidden path now constrains only
+> an agent that can write.
+
 ### Batch F — Does the model do what the harness asks?
 
 An eval in the shape of `turnstone-eval`, aimed at the harness's own directives

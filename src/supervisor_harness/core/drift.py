@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from ..config import Policy
 from ..models import (
     ACTIVE_AGENT_STATUSES,
+    AgentKind,
     AgentSpec,
     AgentStatus,
     AgentTurn,
@@ -131,10 +132,17 @@ def _check_scope_paths(ctx: TurnContext) -> DriftSignal | None:
         return None
 
     scope = ctx.agent.scope
+    # A forbidden path is one no agent may *modify*, and only an execution agent
+    # can. For any other kind, what arrives here is what it read: a host agent
+    # reports the files it examined in the same field. Counted as a violation,
+    # it was "uncorrectable" and stopped the agent outright -- four of five
+    # analysis lenses in one real run, on their first turn, for reading the
+    # very documents the task told them to read, which the plan had marked as
+    # not to be modified.
     forbidden = [
         f for f in touched
         if matches_any(f, scope.forbidden_paths)
-    ]
+    ] if ctx.agent.kind is AgentKind.EXECUTION else []
     if forbidden:
         return DriftSignal(
             kind="forbidden_paths",
