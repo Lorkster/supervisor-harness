@@ -38,7 +38,9 @@ from ..models import (
     RunMode,
     RunState,
     Scope,
+    Severity,
     TaskStatus,
+    VerifyMethod,
 )
 from .blackboard import (
     contested_keys,
@@ -46,7 +48,7 @@ from .blackboard import (
     detect_contradictions,
     rank_findings,
 )
-from .dod import apply_quality_bars, summarise, validate_criteria
+from .dod import apply_quality_bars, summarise, unsafe_command, validate_criteria
 from .paths import relative_patterns
 
 # --------------------------------------------------------------------------
@@ -395,6 +397,49 @@ def resolve_dependencies(tasks: list[ExecutionTask]) -> dict[str, list[str]]:
                 resolved.append(match)
         task.depends_on = resolved
     return notes
+
+
+def unenforceable_criteria(tasks: list[ExecutionTask], policy: Policy) -> list[str]:
+    """Each proposed criterion the harness could not enforce, named, with why.
+
+    The model's own criteria only, before any quality bar is added: those are
+    the harness's, and are always enforceable. A line per criterion, because the
+    point is to hand it back to the model that wrote it.
+    """
+    lines: list[str] = []
+    for task in tasks:
+        by_id = {c.id: c for c in task.dod}
+        for issue in validate_criteria(task.dod, policy):
+            if issue.severity is not Severity.HIGH:
+                continue
+            crit = by_id.get(issue.criterion_id)
+            where = f"criterion {crit.statement!r}" if crit else "its definition of done"
+            lines.append(f"task {task.title!r}, {where}: {issue.problem}")
+        for crit in task.mandatory_criteria:
+            if (crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST)
+                    and crit.command.strip()):
+                refusal = unsafe_command(crit.command)
+                if refusal:
+                    lines.append(f"task {task.title!r}, criterion {crit.statement!r}: "
+                                 f"the harness will not run {crit.command!r}: {refusal}")
+    return lines
+
+
+def revision_prompt(user: str, weak: list[str]) -> str:
+    """The synthesis request again, with what made the last answer unusable."""
+    listed = "\n".join(f"- {line}" for line in weak)
+    return (
+        f"{user}\n\n## Your previous answer cannot be used as it stands\n\n"
+        "These definition-of-done criteria cannot be checked by the harness:\n\n"
+        f"{listed}\n\n"
+        "Return the complete answer again, in the same format, with each of these "
+        "fixed and nothing else changed. A `test` or `command` criterion must give "
+        "the exact command that runs that one check -- for example "
+        "`pytest tests/test_ledger.py::test_conc_is_shown -q` -- using only a test "
+        "runner, with no `;`, `&&`, `|` or redirection. If a criterion has no such "
+        "command, make it an `inspection` (`expect`: `path/to/file: text that must be "
+        "present`) or a `review` with a `rubric`."
+    )
 
 
 def prepare_tasks(

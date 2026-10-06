@@ -23,6 +23,7 @@ from supervisor_harness.core.drift import (
 )
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import (
+    AgentKind,
     AgentSpec,
     AgentStatus,
     AgentTurn,
@@ -97,7 +98,7 @@ def test_solid_turn_is_not_flagged() -> None:
 
 def test_forbidden_path_stops_immediately() -> None:
     """Writing to a forbidden path cannot be corrected after the fact."""
-    agent = _agent()
+    agent = _agent(kind=AgentKind.EXECUTION)
     turn = AgentTurn(output="Rewrote the terraform module.", files_touched=["infra/waf.tf"])
     assessment = _assess(agent, turn)
     directive = decide_directive(assessment, agent, turn, Policy(), turns_used=1)
@@ -105,6 +106,25 @@ def test_forbidden_path_stops_immediately() -> None:
     assert assessment.score == 1.0
     assert directive.kind is DirectiveKind.STOP
     assert "forbidden" in directive.corrections[0].lower()
+
+
+def test_reading_a_forbidden_path_is_not_a_violation_for_an_agent_that_cannot_write() -> None:
+    """Forbidden means not to be modified, and an analysis agent modifies nothing.
+
+    Measured in a go-live run: the plan marked the documents the task said to
+    read as not to be modified, and four of five analysis lenses were stopped on
+    their first turn as "uncorrectable" for reading them -- the field a host
+    agent reports what it examined in is the same one an execution agent
+    reports what it wrote in.
+    """
+    agent = _agent()  # an analysis lens
+    turn = AgentTurn(output="Read the module to see where the boundary is.",
+                     files_touched=["infra/waf.tf", "src/auth/login.py"])
+    assessment = _assess(agent, turn)
+    directive = decide_directive(assessment, agent, turn, Policy(), turns_used=1)
+
+    assert not any(s.kind == "forbidden_paths" for s in assessment.signals)
+    assert directive.kind is not DirectiveKind.STOP
 
 
 def test_excluded_topic_is_corrected_before_it_is_stopped() -> None:
@@ -1249,7 +1269,7 @@ async def test_an_answer_never_displaces_a_correction(workspace: Path, config, f
     session = supervisor.store.create(
         RunState(id="run_A", prompt=PROMPT, workspace=str(workspace))
     )
-    agent = _agent(id="agt_1")
+    agent = _agent(id="agt_1", kind=AgentKind.EXECUTION)
     supervisor.lifecycle._spawn(session, [agent])
     live = session.state.agents["agt_1"]
 
