@@ -82,7 +82,9 @@ start unless the work can be checked by something other than a model: commands
 run by the harness, mandatory tests, `fails_before`, and the run's own branch.
 What you review is the branch. In a workspace that is not a git repository the run
 works in place and says so; where git is there but the branch cannot be made,
-it stops before doing any work. A host-delegated run still works in place, for
+it stops before doing any work. The worktree gets its own dependencies from the
+project's lockfile (`npm ci`), never your `node_modules`, and Python checks run in
+the project's own `.venv` when it has one. A host-delegated run still works in place, for
 now: the harness cannot fence a host's own tools.
 
 **5. Done means proven.** Criteria phrased so they cannot fail ("the code is
@@ -987,6 +989,7 @@ src/supervisor_harness/
     journal.py     the decision journal `supervisor explain` renders
     tools.py       sandboxed workspace tools for autonomous agents
     paths.py       path normalisation and scope matching
+    placement.py   a model's paths placed in the tree, when they name no file
     baseline.py    the commit a run measures its whole-repository checks against
     worktree.py    an execute-mode run's own branch: where it works, and what it leaves
     autonomy.py    approving within the envelope: what must hold first, and the task gate

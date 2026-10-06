@@ -440,6 +440,49 @@ PRs the owner would merge.
 > and the owner's tree untouched. Fifteen mechanisms broken in turn, fifteen
 > red.
 
+> **Found preparing the go-live runs, 2026-10-06**, before any model was asked
+> anything. Three things would have failed every task in the owner's other
+> repositories for reasons unrelated to the work, and envelope approval would
+> have blamed the model:
+>
+> - **The wrong test runner.** `detect_test_command` searched the whole tree
+>   for `test_*.py` before reading the root's own markers, so a TypeScript app
+>   with a Python sub-project got `pytest` at its root. Root markers now come
+>   first, and the tree search is gone.
+> - **The wrong Python.** The `pytest` on PATH is the system Python's; a
+>   project's suite passes in its own `.venv` and fails at import outside it.
+>   The command now names the project's virtualenv interpreter, absolutely.
+> - **A worktree without dependencies.** Batch D's worktree holds only what git
+>   tracks, so it had no `node_modules`. It now gets its own from the lockfile
+>   (`npm ci`), under the command-execution switch, and they are never
+>   committed. Linking the owner's copy was rejected: an agent's `npm install`
+>   would then change the owner's dependencies, which is what the branch exists
+>   to prevent.
+>
+> **The #67 log is no longer available**, so that half of the go-live condition
+> cannot be met as written. Its purpose -- knowing whether the supervisor stops
+> agents that are working -- is served instead by reading
+> `tools/where_the_turns_went.py` on each of the go-live runs.
+
+> **Go-live run 1, 2026-10-06** (this repository, item 9a of the nine-batch
+> plan, `qwen3.8-code` through Ollama, 10 minutes). Analysis was good: the
+> technical lens found where `conc` is computed and that `Span` carries no
+> phase. Synthesis cut the item into five sensible tasks. Every one was sent to
+> the owner, for three reasons, two of them the harness's:
+>
+> - **A false positive in the gate.** A task that declared no scope inherits the
+>   envelope, and the clamp's note for that was read as the task being narrowed.
+>   Only a declared scope can be narrowed now.
+> - **The plan's paths named nothing.** The planner drew the envelope as
+>   `core/timing.py` for `src/supervisor_harness/core/timing.py`; agents fenced
+>   to it could not have written the code. A path that names no file is now
+>   placed at the only file it can mean, and noted (`core/placement.py`);
+>   otherwise it is kept and the note says it names nothing.
+> - **The model's own definitions of done.** Two criteria per task were
+>   `method: test` with no command. The gate refusing those is it working.
+>
+> The run waits at `awaiting_owner`; its escalations are the owner's to answer.
+
 ### Batch F — Does the model do what the harness asks?
 
 An eval in the shape of `turnstone-eval`, aimed at the harness's own directives

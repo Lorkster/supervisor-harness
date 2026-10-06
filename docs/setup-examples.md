@@ -6,6 +6,7 @@ one this document was written for; the rest are variations on it.
 - [Claude Code on Bedrock, and Cursor on corporate SSO, on one machine](#claude-code-on-bedrock-and-cursor-on-corporate-sso-on-one-machine)
 - [Adding autonomous runs to that setup](#adding-autonomous-runs-to-that-setup)
 - [One store across every project](#one-store-across-every-project)
+- [Envelope approval on a local model, step by step](#envelope-approval-on-a-local-model-step-by-step)
 
 ---
 
@@ -208,6 +209,98 @@ learned in the project actually being worked on.
 It is worth pairing with `supervisor delete --older-than 90` or
 `supervisor prune-lessons` on occasion: a shared store holds every prompt and
 every agent's full output, for every project, indefinitely.
+
+---
+
+## Envelope approval on a local model, step by step
+
+How to have a run approve its own tasks within an envelope you grant (batch E of
+[the autonomy plan](autonomy-plan.md)), with every stage on a model running on
+your own machine. Nothing leaves the machine, nothing is pushed, and your
+working tree is never written: the run works on its own branch.
+
+### 1. The model
+
+Ollama, with a coding model whose context is set high enough for a brief:
+
+```bash
+ollama show qwen3.8-code:latest      # look for num_ctx under Parameters
+```
+
+A missing or small `num_ctx` (Ollama's own default is a few thousand tokens)
+truncates briefs silently. If it is not set, make a variant with a two-line
+`Modelfile`: `FROM qwen3.8-code:latest` and `PARAMETER num_ctx 65536`.
+
+### 2. A home just for these runs
+
+A separate `SUPERVISOR_HOME` keeps the runs, and the permissions they need, out
+of your everyday configuration. The file under it is *trusted*: it is the only
+place `approval` and `allow_command_execution` can be set.
+
+```json
+{
+  "routing": {"default": "ollama:qwen3.8-code:latest"},
+  "policy": {"approval": "envelope", "allow_command_execution": true}
+}
+```
+
+Save it as `<home>/config.json`, then check the routing took:
+
+```powershell
+$env:SUPERVISOR_HOME = "C:\path\to\trial-home"
+supervisor providers --json -w C:\path\to\repo
+```
+
+Every stage should show `ollama:qwen3.8-code:latest`, and `config_sources`
+should name only your trial home.
+
+### 3. The repository
+
+The run starts from the commit the repository is on, so check out the commit
+you want the work built on. Then check what the harness will need:
+
+- **git, with a commit and an identity** (`git config user.name`), or the
+  branch cannot be made or committed to;
+- **a test command it can find from the root**: `pyproject.toml`, `pytest.ini`,
+  `setup.cfg`, `tox.ini` or `setup.py` means pytest; a `package.json` with a
+  `test` script means `npm test`;
+- **its dependencies**: a Python project's `.venv` (or `venv`) with pytest in
+  it is used directly; a JavaScript project needs a `package-lock.json`, from
+  which the run's worktree gets its own `node_modules`.
+
+If your checkout is on a branch you do not want to build on, clone it for the
+run instead (`git clone <repo> <dir>`, then check out the commit there).
+
+### 4. Run it
+
+```powershell
+supervisor run "<the task, in your words, naming the plan item it is>" `
+    --mode execute --grant-envelope -w C:\path\to\repo
+```
+
+It refuses to start, saying why, unless every precondition holds. A local model
+is slow: analysis lenses queue on one Ollama instance, so expect minutes per
+lens. `supervisor status -w <repo>` shows where it is from another terminal.
+
+### 5. When it stops
+
+- **`complete`**: the report's *Where the changes are* names the branch and the
+  commit. `git diff <base>..supervisor/<run>` to read it; merge it, open a pull
+  request from it, or `git branch -D` it.
+- **`await_owner`**: something needs you. `supervisor escalations --open`
+  lists what and why; answer each with
+  `supervisor resolve <id> grant --note "..."` or `... decline`, and the run
+  carries on from there.
+
+### 6. What to keep from each run
+
+```bash
+python tools/where_the_turns_went.py <home>/runs/<id>/events.jsonl
+```
+
+prints turns against budget, the directives issued, and any agent the supervisor
+stopped, as counts. Together with whether you would merge the branch, that is
+what a go-live run is for.
 
 ---
 
