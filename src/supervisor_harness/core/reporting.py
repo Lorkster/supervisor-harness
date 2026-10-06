@@ -139,6 +139,11 @@ class Reporting:
             # Where an execute-mode run did its work: its branch, and while it
             # runs, its worktree. None for a run that never executed.
             "worktree": to_jsonable(state.worktree) if state.worktree else None,
+            # Who approves this run's tasks: "task", a person one by one, or
+            # "envelope", the harness within the grant recorded here.
+            "approval": "envelope" if state.envelope_grant else "task",
+            "envelope_grant": to_jsonable(state.envelope_grant) if state.envelope_grant
+            else None,
             "checkpoints": [
                 {"iteration": c.iteration, "passed": c.passed, "quality": c.quality,
                  "scope_fidelity": c.scope_fidelity, "completeness": c.completeness}

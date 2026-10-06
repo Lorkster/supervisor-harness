@@ -102,7 +102,8 @@ def _print_escalations(response: SupervisorResponse) -> None:
     print(f"\n  {len(escalations)} escalation(s) waiting for you:")
     for esc in escalations:
         print(f"\n  - {esc['id']}  ({esc['reason']}) on task {esc['task_id']}")
-        print(f"      the agent's account: {esc['detail']}")
+        label = "the agent's account" if esc["reason"] == "agent_blocked" else "why"
+        print(f"      {label}: {esc['detail']}")
     print("\n  Answer each with:")
     print("    supervisor resolve <escalation-id> grant  --note \"<your answer>\"")
     print("    supervisor resolve <escalation-id> decline")
@@ -359,11 +360,20 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     async def go() -> SupervisorResponse:
         try:
-            return await sup.run(args.prompt, mode=RunMode(args.mode), auto_approve=args.yes)
+            return await sup.run(
+                args.prompt, mode=RunMode(args.mode), auto_approve=args.yes,
+                grant_envelope="the owner, with `supervisor run --grant-envelope`"
+                if args.grant_envelope else "",
+            )
         finally:
             await sup.aclose()
 
-    response = asyncio.run(go())
+    try:
+        response = asyncio.run(go())
+    except ValueError as exc:
+        # Refused before the run was created: nothing was started.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     _print_response(response, args.json, sup)
     if response.action == "await_approval" and not args.json:
         print("\nApprove with:")
@@ -597,7 +607,8 @@ def cmd_escalations(args: argparse.Namespace) -> int:
             if esc.resolution else "open"
         print(f"{esc.id}  {esc.reason:<14} {answer}")
         print(f"    task:    {task.title if task else esc.task_id}")
-        print(f"    account: {esc.detail}")
+        label = "account" if esc.reason == "agent_blocked" else "why"
+        print(f"    {label}: {esc.detail}")
     return 0
 
 
@@ -1189,6 +1200,12 @@ def _add_run_commands(sub: Any, common: argparse.ArgumentParser) -> None:
                         "assumes when config says host and nothing is passed here")
     p.add_argument("-y", "--yes", action="store_true",
                    help="approve every proposed task without asking")
+    p.add_argument("--grant-envelope", action="store_true",
+                   help="let the harness approve tasks within the envelope your config "
+                        "draws, sending any its checks refuse to you as escalations. "
+                        "Needs policy.approval set to \"envelope\" in your own config, "
+                        "and a verifier that is not a model: command execution, tests, "
+                        "fails_before and the run's own branch")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("start", parents=[common],

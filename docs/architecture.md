@@ -42,7 +42,10 @@ whatever phase it had reached, in another process or a later session.
   │ awaiting_approval │───▶ envelope stale?   │
   └─────────┬─────────┘     wait here for     │
             │               --renew-envelope  │
-            │ you approve (per task)          │
+            │ you approve (per task) -- or,   │
+            │ under an envelope grant, the    │
+            │ harness's gate does, and parks  │
+            │ what it refuses for the owner   │
             ▼                                 │
       ┌───────────┐                           │
       │ executing │◀────────────────┐         │

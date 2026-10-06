@@ -70,7 +70,17 @@ The run works in a git worktree on its own branch, `supervisor/<run id>`,
 started from the commit it measured as its baseline. At the end it commits its
 changes there, removes the worktree, and the report says how to see, take or
 drop the branch. Nothing is pushed. Your uncommitted work is never touched, and
-is not on the branch either. In a workspace that is not a git repository the run
+is not on the branch either.
+
+**And you can approve the envelope instead of each task.** With
+`"approval": "envelope"` in your own configuration (a repository's file cannot
+set it), `supervisor run --grant-envelope` asks nothing until the end. A
+deterministic gate approves each task that fits the envelope, has a definition
+of done that can fail, carries only checks the harness will run, and is not
+rated high risk. Everything else waits for you as an escalation. It refuses to
+start unless the work can be checked by something other than a model: commands
+run by the harness, mandatory tests, `fails_before`, and the run's own branch.
+What you review is the branch. In a workspace that is not a git repository the run
 works in place and says so; where git is there but the branch cannot be made,
 it stops before doing any work. A host-delegated run still works in place, for
 now: the harness cannot fence a host's own tools.
@@ -344,13 +354,13 @@ shorthand for something the CLI will not tell you itself.
 | --- | --- | --- |
 | `init` | install host integrations and an example config, or refresh them after an upgrade | `--host claude\|cursor\|both` (default: whichever host is detected), `--force` to also replace `supervisor.config.json`, `--keep-integrations` to leave edited files alone |
 | `uninstall` | remove what `init` installed: the skill, rules, commands and the `supervisor` MCP entry, keeping every other server | `--force` to also remove copies that differ from the shipped ones, `--purge` to also delete `supervisor.config.json` and the project's own `.supervisor/`, `--dry-run` to only say what would go |
-| `run PROMPT` | drive a whole run to completion without a host | `--mode`, `--backend host\|autonomous`, `-y/--yes` |
+| `run PROMPT` | drive a whole run to completion without a host | `--mode`, `--backend host\|autonomous`, `-y/--yes`, `--grant-envelope` to have tasks approved within the envelope and the rest sent to you |
 | `start PROMPT` | begin a host-delegated run and print its first work packets | `--mode`, `--host-agents` — the subagent types you can spawn, as a JSON array: `'["general-purpose"]'`, or `'[{"name": "general-purpose", "description": "..."}]'` when you want the description to inform role matching |
 | `report RUN AGENT` | hand back one agent's result | `-i/--input` a JSON file, or `-` for stdin (the default) |
 | `advance [RUN]` | move a run to its next phase once its packets are reported | — |
 | `abandon AGENT [RUN]` | give up on an agent that will never report | `--reason`, recorded on the run's log |
 | `approve [RUN]` | decide on proposed tasks | `--all`, or `--task ID[:approve\|reject\|defer]`, repeatable; `--renew-envelope` to re-grant a scope envelope that has gone stale |
-| `escalations [RUN]` | what the run has asked you, answered or not, with each agent's own account | `--open` for the unanswered ones only |
+| `escalations [RUN]` | what the run has asked you, answered or not, with each agent's own account or the harness's reason | `--open` for the unanswered ones only |
 | `resolve ESC DECISION` | answer an escalation: `grant` gives the task another attempt with your note added, `decline` defers it; the run carries on once nothing is open | `--note`, `--run RUN` |
 | `resume [RUN]` | continue an interrupted run from its event log | — |
 | `status [RUN]` | show one run in detail: phase, agents, drift, criteria | — |
@@ -911,6 +921,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `max_unreported_dispatches` | 3 | Packets to a silent host agent before abandoning it |
 | `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |
 | `allow_command_execution` | false | Let the harness run commands itself |
+| `approval` | "task" | **Protected.** `"envelope"` lets `supervisor run --grant-envelope` approve tasks within the run's envelope by a deterministic gate, sending what it refuses to you; it needs command execution, tests, `fails_before` and `execution_worktree` |
 | `execution_worktree` | true | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
 | `apply_lessons` | true | Inject past lessons into briefs |
 | `lesson_decay_after_runs` | 10 | Runs a lesson may go unconfirmed before its confidence falls |
@@ -978,6 +989,7 @@ src/supervisor_harness/
     paths.py       path normalisation and scope matching
     baseline.py    the commit a run measures its whole-repository checks against
     worktree.py    an execute-mode run's own branch: where it works, and what it leaves
+    autonomy.py    approving within the envelope: what must hold first, and the task gate
     audit.py       what a finished run's agents actually did, from the record
     timing.py      where a run's wall clock went, folded from the log
     trajectory.py  a run exported as a portable, validated document

@@ -114,6 +114,13 @@ class Policy:
     # tree, which is the owner's call about the owner's tree.
     execution_worktree: bool = True
 
+    # How proposed tasks are approved: "task", one by one by a person, or
+    # "envelope", by the harness within an envelope the owner granted when the
+    # run started, with anything its deterministic gate refuses sent to the
+    # owner as an escalation. See `core/autonomy.py`. Protected: a repository
+    # able to set this would be choosing to skip review of work done on itself.
+    approval: str = "task"
+
     # The run's scope envelope: the ceiling on every agent scope in the run.
     # Empty means the whole workspace, which is what an empty scope already
     # means to the toolbox and to the floor beneath it. This is deliberately
@@ -339,6 +346,8 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     # How much of its scope an analysis agent must read before "done" is
     # accepted: a repository lowering it would choose how closely it is read.
     ("policy", "min_scope_coverage"),
+    # Whether a person reviews each task, or the harness does within a grant.
+    ("policy", "approval"),
 )
 
 # Per-provider keys an untrusted file may not touch, for the same reason.
