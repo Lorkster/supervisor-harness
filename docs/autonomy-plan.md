@@ -483,6 +483,19 @@ PRs the owner would merge.
 >
 > The run waits at `awaiting_owner`; its escalations are the owner's to answer.
 
+> **Go-live run 2**, the same task after the fixes above. Both held: the plan's
+> paths were placed (`core/timing.py` to `src/supervisor_harness/core/timing.py`)
+> and no task was counted as narrowed. All four tasks still went to the owner,
+> now for one reason: the model's `method: test` criteria named no command, in
+> every task, in both runs. A person at approval would have asked for the
+> command; nothing in the harness did. Now it does, once: a synthesis whose own
+> criteria cannot be enforced is sent back with each criterion named and what
+> is wrong with it, and the revision is used whatever it says. The turn audit
+> on both runs found **no agent stopped by the supervisor and none out of
+> turns**, the question the #67 log was for; it did find every lens told to
+> narrow, because the lenses' own scopes had the same missing-prefix paths.
+> Those are placed now too.
+
 ### Batch F — Does the model do what the harness asks?
 
 An eval in the shape of `turnstone-eval`, aimed at the harness's own directives

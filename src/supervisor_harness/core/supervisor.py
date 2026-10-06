@@ -472,6 +472,13 @@ class Supervisor:
                 "spawned; keeping the running fleet rather than adding to it"
             )
         else:
+            # Placed like the envelope and the task scopes. A lens scoped to
+            # paths that name nothing reads the right files "outside its
+            # scope", and was told to narrow on every turn of a real run.
+            for spec in specs:
+                spec.scope.paths, placed = placed_in_tree(spec.scope.paths, state.workspace)
+                for text in placed:
+                    session.note(f"{spec.role}: {text}")
             self.lifecycle._spawn(session, specs)
 
         if state.phase is not Phase.ANALYZING:
@@ -560,8 +567,50 @@ class Supervisor:
             )
 
         data = await self.supervision._call(stage, system, user, SYNTHESIS_SCHEMA, session)
+        data = await self._send_back_weak_criteria(session, system, user, data)
         self._apply_synthesis(session, data)
         return None
+
+    async def _send_back_weak_criteria(
+        self, session: RunSession, system: str, user: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Return a synthesis whose criteria cannot be enforced to its author, once.
+
+        Measured on a local model in both go-live runs: every task carried
+        `method: test` criteria with no command. The harness noted it and moved
+        on, and under envelope approval every task went to the owner for it --
+        where a person at the approval prompt would simply have asked for the
+        command. This asks, once, naming each criterion and what is wrong with
+        it. The revised answer is used whatever it says; one that is still weak
+        is judged by the same gates as any other. Only when the run is going to
+        execute: a report-mode synthesis proposes nothing anyone will run.
+        """
+        state = session.state
+        wants_execution = (
+            state.mode is RunMode.EXECUTE
+            or (state.mode is RunMode.AUTO
+                and str(data.get("recommended_mode", "")).lower() == "execute")
+        )
+        if not wants_execution:
+            return data
+        weak = phases.unenforceable_criteria(
+            parse_tasks(data, state.id, state.workspace), self.config.policy)
+        if not weak:
+            return data
+        await session.anote("synthesis sent back once: criteria it proposed cannot be "
+                            "enforced", criteria=len(weak))
+        try:
+            revised = await self.supervision._call(
+                "synthesis", system, phases.revision_prompt(user, weak),
+                SYNTHESIS_SCHEMA, session,
+            )
+        except Exception as exc:  # noqa: BLE001 - the first answer still stands
+            await session.anote(f"synthesis revision failed; the first answer stands: {exc}")
+            return data
+        if not revised.get("tasks"):
+            await session.anote("synthesis revision proposed no tasks; the first answer stands")
+            return data
+        return revised
 
     def _apply_synthesis(self, session: RunSession, data: dict[str, Any]) -> None:
         state = session.state
