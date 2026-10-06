@@ -106,6 +106,14 @@ class Policy:
     allow_command_execution: bool = False
     command_timeout_seconds: int = 300
 
+    # An execute-mode run on the autonomous backend works in a git worktree on
+    # its own branch, never in the owner's tree, and ends with that branch.
+    # `core/worktree.py`. In a workspace that is not a git repository there is
+    # nothing to branch from, and the run executes in place, saying so.
+    # Not protected: a workspace turning it off puts the work back in its own
+    # tree, which is the owner's call about the owner's tree.
+    execution_worktree: bool = True
+
     # The run's scope envelope: the ceiling on every agent scope in the run.
     # Empty means the whole workspace, which is what an empty scope already
     # means to the toolbox and to the floor beneath it. This is deliberately

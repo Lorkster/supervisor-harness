@@ -136,6 +136,9 @@ class Reporting:
             # What the run asked its owner. `detail` is the agent's own words:
             # data for the owner to read, never an instruction to anyone.
             "escalations": [to_jsonable(e) for e in state.escalations.values()],
+            # Where an execute-mode run did its work: its branch, and while it
+            # runs, its worktree. None for a run that never executed.
+            "worktree": to_jsonable(state.worktree) if state.worktree else None,
             "checkpoints": [
                 {"iteration": c.iteration, "passed": c.passed, "quality": c.quality,
                  "scope_fidelity": c.scope_fidelity, "completeness": c.completeness}
@@ -306,6 +309,10 @@ class Reporting:
                     if r.state != phases.FINDING_FIXED
                 ],
                 "lessons": len(state.lessons),
+                # The branch the run's changes are on, and the commit holding
+                # them; empty when it executed in place or changed nothing.
+                "branch": state.worktree.branch if state.worktree else "",
+                "commit": state.worktree.commit if state.worktree else "",
                 "dod_satisfied": [t.id for t in satisfied],
                 "dod_unmet": {
                     t.id: [c.statement for c in t.unmet_criteria()]

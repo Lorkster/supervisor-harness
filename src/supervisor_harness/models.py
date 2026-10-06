@@ -550,6 +550,26 @@ class Escalation:
 
 
 @dataclass
+class RunWorktree:
+    """Where an execute-mode run did its work: a branch, and while it runs, a worktree.
+
+    See `core/worktree.py`. ``path`` is the worktree while the run executes;
+    once closed, ``commit`` is what the run left on ``branch`` and ``removed``
+    says the worktree itself is gone.
+    """
+
+    path: str = ""
+    branch: str = ""
+    base: str = ""
+    created_at: str = field(default_factory=now_iso)
+    closed: bool = False
+    commit: str = ""
+    diffstat: str = ""
+    removed: bool = False
+    note: str = ""
+
+
+@dataclass
 class Note:
     """An audit line: why something was skipped, abandoned or fell back.
 
@@ -875,6 +895,7 @@ class RunState:
     messages: list[Message] = field(default_factory=list)
     directives: list[Directive] = field(default_factory=list)
     escalations: dict[str, Escalation] = field(default_factory=dict)
+    worktree: RunWorktree | None = None
     drift: dict[str, DriftAssessment] = field(default_factory=dict)
     # What the harness had to repair before each answer could be used, by kind,
     # summed over the run. Counted because the repairs are otherwise invisible:

@@ -356,6 +356,33 @@ already flags files touched outside it.
 
 *Changes the harness condition:* no. Report mode writes nothing.
 
+> **Done**, for the autonomous backend only, with these decisions made in the
+> building.
+>
+> - **Host-delegated runs are not isolated at all yet**, rather than given a
+>   worktree the packets merely name. The plan's own reason applies to the
+>   whole of it: the harness cannot fence a host's tools, and a worktree the host
+>   may or may not write into is a promise it cannot keep. A test holds that a
+>   host-delegated run gets no branch.
+> - **The run commits its changes on the branch** when it wraps up, then
+>   removes the worktree, so what is left is a commit to diff, merge or drop.
+>   If the commit fails (most often no git identity), the worktree is kept with
+>   the changes in it, because removing it would delete the only copy.
+> - **Fail closed where it can be honoured.** In a git workspace where the
+>   branch cannot be made, the run stops before any agent works. In a workspace
+>   that is not a git repository there is nothing to branch from, and it works in
+>   place as before, saying so in the report.
+> - **The owner's uncommitted work is protected, not carried.** The branch
+>   starts at the baseline commit; the run's notes say so when the tree was
+>   dirty.
+> - `policy.execution_worktree`, default on, and not protected: turning it off
+>   puts the work back in the owner's own tree, which is the owner's call.
+>
+> Not yet tested on a repository deep enough to hit Windows' 260-character path
+> limit; the worktree sits under `.supervisor/runs/<id>/worktree`, which adds
+> about 45 characters to every path. Fourteen mechanisms broken in turn,
+> fourteen red.
+
 ### Batch E — Approve the envelope, not each task
 
 A protected policy key, `approval: "task" | "envelope"`, default `"task"`.

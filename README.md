@@ -65,6 +65,16 @@ Grant it, with your answer, and the task gets another attempt; decline it, and
 the task is reported as deferred work to carry forward. Nothing answers an
 escalation for you, `--yes` included.
 
+On the autonomous backend, approved work does not happen in your working tree.
+The run works in a git worktree on its own branch, `supervisor/<run id>`,
+started from the commit it measured as its baseline. At the end it commits its
+changes there, removes the worktree, and the report says how to see, take or
+drop the branch. Nothing is pushed. Your uncommitted work is never touched, and
+is not on the branch either. In a workspace that is not a git repository the run
+works in place and says so; where git is there but the branch cannot be made,
+it stops before doing any work. A host-delegated run still works in place, for
+now: the harness cannot fence a host's own tools.
+
 **5. Done means proven.** Criteria phrased so they cannot fail ("the code is
 clean") are rejected at proposal time, and so are the ones that pass by running
 nothing: a `pytest -k` or `go test -run` filter that selects no test still exits
@@ -901,6 +911,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `max_unreported_dispatches` | 3 | Packets to a silent host agent before abandoning it |
 | `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |
 | `allow_command_execution` | false | Let the harness run commands itself |
+| `execution_worktree` | true | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
 | `apply_lessons` | true | Inject past lessons into briefs |
 | `lesson_decay_after_runs` | 10 | Runs a lesson may go unconfirmed before its confidence falls |
 | `lesson_decay_per_run` | 0.05 | How much it falls per run past that |
@@ -966,6 +977,7 @@ src/supervisor_harness/
     tools.py       sandboxed workspace tools for autonomous agents
     paths.py       path normalisation and scope matching
     baseline.py    the commit a run measures its whole-repository checks against
+    worktree.py    an execute-mode run's own branch: where it works, and what it leaves
     audit.py       what a finished run's agents actually did, from the record
     timing.py      where a run's wall clock went, folded from the log
     trajectory.py  a run exported as a portable, validated document

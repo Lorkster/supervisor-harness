@@ -331,9 +331,13 @@ def _one_task_synthesis() -> dict[str, Any]:
     }
 
 
-def _executing(root: Path, test_body: str):  # type: ignore[no-untyped-def]
+def _executing(supervisor: Supervisor, test_body: str):  # type: ignore[no-untyped-def]
+    """An execution agent writing where a real one's tools would: the run's own tree."""
     def execute(request: Any) -> dict[str, Any]:
-        write(root, {"calc.py": "def add(a, b):\n    return a + b\n",
+        state = supervisor.store.load_state(supervisor.store.latest_run_id() or "")
+        wt = state.worktree
+        tree = Path(wt.path) if wt is not None and wt.path else supervisor.workspace
+        write(tree, {"calc.py": "def add(a, b):\n    return a + b\n",
                      "tests/test_calc.py": f"from calc import add\n\n{test_body}"})
         return {"output": "fixed add and tested it",
                 "files_touched": ["calc.py", "tests/test_calc.py"],
@@ -365,8 +369,8 @@ def git_supervisor(repo: tuple[Path, str], config, fake) -> Supervisor:  # type:
 async def test_a_run_proves_the_bar_itself_and_a_verifier_cannot_overturn_it(
     git_supervisor: Supervisor, fake, repo: tuple[Path, str],
 ) -> None:
-    root, _ = repo
-    fake.script("execution", _executing(root, "def test_add():\n    assert add(2, 3) == 5\n"))
+    fake.script("execution",
+                _executing(git_supervisor, "def test_add():\n    assert add(2, 3) == 5\n"))
 
     response = await git_supervisor.run("Fix add", mode=RunMode.EXECUTE, auto_approve=True)
     task = next(iter(git_supervisor.store.load_state(response.run_id).tasks.values()))
@@ -382,8 +386,8 @@ async def test_a_run_whose_tests_pass_on_the_baseline_ends_with_the_task_failed(
     git_supervisor: Supervisor, fake, repo: tuple[Path, str],
 ) -> None:
     """The fake verifier passes every criterion; the harness's verdict stands."""
-    root, _ = repo
-    fake.script("execution", _executing(root, "def test_zero():\n    assert add(0, 0) == 0\n"))
+    fake.script("execution",
+                _executing(git_supervisor, "def test_zero():\n    assert add(0, 0) == 0\n"))
 
     response = await git_supervisor.run("Fix add", mode=RunMode.EXECUTE, auto_approve=True)
     task = next(iter(git_supervisor.store.load_state(response.run_id).tasks.values()))

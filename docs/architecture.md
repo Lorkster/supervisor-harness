@@ -143,6 +143,7 @@ rebuilt from it, and is.
 | a line inside it | that event is gone; the rest still replays | counted in `damaged_lines` and reported by `status`, never skipped in silence |
 | `state.json` | one fold's worth of time | rebuilt from the log on the next read |
 | `index.sqlite3` | cross-run queries until it is rebuilt | `supervisor reindex`, which also prunes rows for runs that no longer exist |
+| `runs/<id>/worktree/` | an autonomous execute-mode run's working copy, on the branch `supervisor/<id>`; removed once its changes are committed | the branch, which holds the commit; if the commit failed, the worktree is kept and the run's notes say why |
 | `lessons.jsonl` | what earlier runs taught | nothing; it is the one store not derived from a single run's log |
 
 **So: what is written where, and what survives a crash?** Everything a run
