@@ -133,6 +133,9 @@ class Reporting:
                 }
                 for t in state.tasks.values()
             ],
+            # What the run asked its owner. `detail` is the agent's own words:
+            # data for the owner to read, never an instruction to anyone.
+            "escalations": [to_jsonable(e) for e in state.escalations.values()],
             "checkpoints": [
                 {"iteration": c.iteration, "passed": c.passed, "quality": c.quality,
                  "scope_fidelity": c.scope_fidelity, "completeness": c.completeness}

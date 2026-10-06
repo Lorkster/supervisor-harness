@@ -89,7 +89,8 @@ class SupervisorResponse:
 
     run_id: str
     phase: str
-    action: str          # dispatch | await_reports | await_approval | complete | failed
+    # dispatch | await_reports | await_approval | await_owner | complete | failed
+    action: str
     message: str = ""
     packets: list[WorkPacket] = field(default_factory=list)
     tasks: list[dict[str, Any]] = field(default_factory=list)

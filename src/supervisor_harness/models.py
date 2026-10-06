@@ -36,6 +36,9 @@ class Phase(StrEnum):
     EXECUTING = "executing"
     VERIFYING = "verifying"
     CHECKPOINT = "checkpoint"
+    # Everything else the run could do is done, and it is waiting on the owner
+    # to answer the escalations it raised. See `Escalation`.
+    AWAITING_OWNER = "awaiting_owner"
     IMPROVING = "improving"
     COMPLETE = "complete"
     FAILED = "failed"
@@ -175,6 +178,8 @@ class TaskStatus(StrEnum):
     AWAITING_VERIFICATION = "awaiting_verification"
     VERIFIED = "verified"
     FAILED = "failed"
+    # Parked: its agent escalated to the owner, and nothing more happens to it
+    # until the escalation is answered. Its dependents wait with it.
     BLOCKED = "blocked"
 
 
@@ -492,6 +497,56 @@ class AgentTurn:
     open_questions: list[str] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     ts: str = field(default_factory=now_iso)
+
+
+class EscalationReason(StrEnum):
+    """Why the run needs its owner: a fixed vocabulary, never prose.
+
+    Only what the harness actually raises is listed. The batches that add a
+    new way to need the owner -- a scope wider than the envelope, a reviewer's
+    veto -- add the reason with it, so a reader of this enum never has to rule
+    out a value nothing can produce.
+    """
+
+    #: An execution agent said it cannot go on without something it does not
+    #: have. Its own words travel with the escalation as data.
+    AGENT_BLOCKED = "agent_blocked"
+
+
+class Resolution(StrEnum):
+    """The owner's answer to an escalation."""
+
+    #: Give the task another attempt, with the owner's note added to its action.
+    GRANT = "grant"
+    #: Leave the task deferred: it is reported as outstanding, for a later run.
+    DECLINE = "decline"
+
+
+@dataclass
+class Escalation:
+    """Something only the run's owner can decide, and what they decided.
+
+    Raised by the harness, never by a model: an agent can say it is blocked,
+    and it is the harness that turns that into a question for the owner. The
+    agent's own account goes in ``detail``, which is data -- shown to the owner,
+    never read as an instruction. While any escalation is open, the run does
+    everything else it can and then waits at ``Phase.AWAITING_OWNER``.
+    """
+
+    id: str = field(default_factory=lambda: new_id("esc"))
+    run_id: str = ""
+    reason: EscalationReason = EscalationReason.AGENT_BLOCKED
+    task_id: str = ""
+    agent_id: str = ""
+    detail: str = ""
+    raised_at: str = field(default_factory=now_iso)
+    resolution: Resolution | None = None
+    note: str = ""
+    resolved_at: str = ""
+
+    @property
+    def open(self) -> bool:
+        return self.resolution is None
 
 
 @dataclass
@@ -819,6 +874,7 @@ class RunState:
     task_notes: dict[str, list[str]] = field(default_factory=dict)
     messages: list[Message] = field(default_factory=list)
     directives: list[Directive] = field(default_factory=list)
+    escalations: dict[str, Escalation] = field(default_factory=dict)
     drift: dict[str, DriftAssessment] = field(default_factory=dict)
     # What the harness had to repair before each answer could be used, by kind,
     # summed over the run. Counted because the repairs are otherwise invisible:
@@ -873,6 +929,11 @@ class RunState:
             t for t in self.tasks.values()
             if t.status not in (TaskStatus.PROPOSED, TaskStatus.REJECTED, TaskStatus.DEFERRED)
         ]
+
+    def open_escalations(self) -> list[Escalation]:
+        """The escalations the owner has not answered yet, oldest first."""
+        return sorted((e for e in self.escalations.values() if e.open),
+                      key=lambda e: e.raised_at)
 
     def pending_messages(self, agent_id: str) -> list[Message]:
         return [

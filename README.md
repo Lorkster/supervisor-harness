@@ -58,6 +58,13 @@ somewhere it was forbidden.
 a concrete action, a motivation tied to a finding, and a definition of done. You
 approve, modify, or reject each one. Nothing touches your code before that.
 
+An execution agent that cannot go on without something it does not have says
+so, and the harness turns that into an **escalation**: the task is parked, the
+rest of the run carries on, and then the run waits for you at `awaiting_owner`.
+Grant it, with your answer, and the task gets another attempt; decline it, and
+the task is reported as deferred work to carry forward. Nothing answers an
+escalation for you, `--yes` included.
+
 **5. Done means proven.** Criteria phrased so they cannot fail ("the code is
 clean") are rejected at proposal time, and so are the ones that pass by running
 nothing: a `pytest -k` or `go test -run` filter that selects no test still exits
@@ -289,6 +296,7 @@ supervisor start "..." --json          # returns work packets
 supervisor report <run> <agent> -i turn.json --json
 supervisor advance <run> --json
 supervisor approve <run> --all
+supervisor resolve <escalation> grant --note "..."   # at await_owner
 supervisor resume                      # picks up where it stopped
 ```
 
@@ -332,6 +340,8 @@ shorthand for something the CLI will not tell you itself.
 | `advance [RUN]` | move a run to its next phase once its packets are reported | — |
 | `abandon AGENT [RUN]` | give up on an agent that will never report | `--reason`, recorded on the run's log |
 | `approve [RUN]` | decide on proposed tasks | `--all`, or `--task ID[:approve\|reject\|defer]`, repeatable; `--renew-envelope` to re-grant a scope envelope that has gone stale |
+| `escalations [RUN]` | what the run has asked you, answered or not, with each agent's own account | `--open` for the unanswered ones only |
+| `resolve ESC DECISION` | answer an escalation: `grant` gives the task another attempt with your note added, `decline` defers it; the run carries on once nothing is open | `--note`, `--run RUN` |
 | `resume [RUN]` | continue an interrupted run from its event log | — |
 | `status [RUN]` | show one run in detail: phase, agents, drift, criteria | — |
 | `explain [RUN]` | how the run got here: every turn, its drift signals, and the directive each one drew | `-a/--agent` one agent, `--width COLS` |

@@ -308,7 +308,35 @@ before; the escalation is recorded beside it.
 > **Decided by the owner, 2026-10-06:** when an escalation is raised, the run
 > does everything else it can and then pauses at a new `awaiting_owner` phase,
 > shaped like `awaiting_approval`. Recording escalations without anywhere to
-> answer them was the alternative, declined.
+> answer them was the alternative, declined. And a run that has completed is
+> never reopened: an open escalation keeps it from completing, and a declined
+> task is carried forward in the report, with its definition of done, for a
+> later run to start from.
+>
+> **Done**, with four departures from this plan.
+>
+> - **Answered through a new `supervisor_resolve`, not `approve`.** `approve`
+>   moves the run to execution unconditionally, which is right at
+>   `awaiting_approval` and wrong anywhere else; folding a second decision into
+>   it would have given one call two meanings. CLI: `supervisor escalations`,
+>   `supervisor resolve ESC grant|decline --note`.
+> - **One reason, not seven.** Only `agent_blocked` is raised today. The others
+>   arrive with the batches that can raise them, so nobody reading the enum has
+>   to rule out values nothing produces.
+> - **A decline defers rather than fails**, and the final report lists the
+>   deferred task with its definition of done as work to carry forward.
+> - **Report mode is untouched.** An analysis agent that blocks raises nothing
+>   and ends as before, so security-eval's harness condition does not change.
+>
+> Found on the way: `Supervisor.run` would have looped forever on the new
+> action, since it advanced on anything it did not recognise. And both paths
+> that end an execution agent sent an escalating agent's task straight to
+> verification, where a verifier could pass the work its own agent had said it
+> could not finish. `docs/protocol.md` also said there were eleven tools when
+> there were twelve: `supervisor_explain` was missing from its table, and is now
+> there beside `supervisor_resolve`. Fifteen mechanisms broken in turn: thirteen red, one a
+> hang (the `run` loop), and one survivor, the execution-only check, which is
+> redundant by construction (an analysis agent has no task to park).
 
 ### Batch D — A run on its own branch
 

@@ -91,6 +91,11 @@ class HostSimulator:
             if response.action == "complete" or response.action == "failed":
                 return response
 
+            # The owner's question is the user's to answer, never the host's:
+            # the skill stops here and asks, and so does the simulator.
+            if response.action == "await_owner":
+                return response
+
             if response.action == "await_approval":
                 if not approve:
                     return response
@@ -391,8 +396,9 @@ async def test_escalate_settles_the_agent_the_same_way_on_both_backends(
     """An escalating execution agent ends identically whoever ran it.
 
     ``status_after`` maps ESCALATE to BLOCKED on both paths, so the agent has to
-    leave the active set and its task has to reach verification either way --
-    otherwise the same directive finishes one backend and loops the other.
+    leave the active set, its task has to park, and the run has to wait for its
+    owner either way -- otherwise the same directive finishes one backend and
+    loops the other.
     """
     from supervisor_harness.models import ACTIVE_AGENT_STATUSES, AgentKind, AgentStatus
     from supervisor_harness.providers.router import ModelRouter
@@ -418,10 +424,11 @@ async def test_escalate_settles_the_agent_the_same_way_on_both_backends(
         assert agent.status not in ACTIVE_AGENT_STATUSES, "an escalated agent is not still running"
         return agent.status, state.tasks[agent.task_id].status
 
-    assert host_final.action != "failed", host_final.message
-    assert auto_final.action != "failed", auto_final.message
+    assert host_final.action == "await_owner", host_final.message
+    assert auto_final.action == "await_owner", auto_final.message
     assert settled(host_supervisor, host_final.run_id) == settled(autonomous, auto_final.run_id)
-    assert settled(host_supervisor, host_final.run_id)[0] is AgentStatus.BLOCKED
+    assert settled(host_supervisor, host_final.run_id) == (AgentStatus.BLOCKED,
+                                                           TaskStatus.BLOCKED)
 
 
 # -- the phase machine must not issue the same work twice --------------------

@@ -22,6 +22,7 @@ from ..models import (
     CriterionStatus,
     Directive,
     DriftAssessment,
+    Escalation,
     ExecutionTask,
     Fact,
     Finding,
@@ -30,6 +31,7 @@ from ..models import (
     Note,
     Phase,
     Report,
+    Resolution,
     RunMode,
     RunState,
     ScopeEnvelope,
@@ -72,6 +74,9 @@ class EventType(StrEnum):
     #: without this, an autonomous run's total left out every call the
     #: supervisor made on its own behalf.
     USAGE_RECORDED = "usage_recorded"
+    #: Something only the owner can decide, and the owner's answer to it.
+    ESCALATION_RAISED = "escalation_raised"
+    ESCALATION_RESOLVED = "escalation_resolved"
     RUN_ENDED = "run_ended"
     #: Never emitted: what a type this build does not define is read back as,
     #: so the log line survives the read. See :func:`event_from_dict`.
@@ -379,6 +384,22 @@ def _on_note(state: RunState, event: Event) -> None:
     )
 
 
+def _on_escalation_raised(state: RunState, event: Event) -> None:
+    escalation = from_jsonable(event.payload["escalation"], Escalation)
+    state.escalations[escalation.id] = escalation
+
+
+def _on_escalation_resolved(state: RunState, event: Event) -> None:
+    p = event.payload
+    escalation = state.escalations.get(p["escalation_id"])
+    if escalation is None:
+        _orphan(state, event.type, p["escalation_id"])
+        return
+    escalation.resolution = Resolution(p["resolution"])
+    escalation.note = str(p.get("note", ""))
+    escalation.resolved_at = event.ts
+
+
 def _on_run_ended(state: RunState, event: Event) -> None:
     p = event.payload
     state.phase = Phase(p.get("phase", Phase.COMPLETE))
@@ -408,6 +429,8 @@ _HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
     EventType.TURN_RECORDED: _on_turn_recorded,
     EventType.FINDING_ADDED: _on_finding_added,
     EventType.DIRECTIVE_ISSUED: _on_directive_issued,
+    EventType.ESCALATION_RAISED: _on_escalation_raised,
+    EventType.ESCALATION_RESOLVED: _on_escalation_resolved,
     EventType.DRIFT_ASSESSED: _on_drift_assessed,
     EventType.LESSONS_CONSOLIDATED: _on_lessons_consolidated,
     EventType.ASSISTS_RECORDED: _on_assists_recorded,
