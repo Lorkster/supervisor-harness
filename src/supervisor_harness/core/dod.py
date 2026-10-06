@@ -587,6 +587,50 @@ def _pytest_command(workspace: Path) -> str:
     return "pytest -q"
 
 
+#: A criterion about the whole suite still passing, as opposed to one test.
+#: "The new component test passes" is not one of these: the suite passing
+#: proves nothing about a test that was never written.
+_WHOLE_SUITE = re.compile(
+    r"""
+      \b(existing|all|other|remaining|whole|full|entire)\b[\w\s-]{0,24}?\btests?\b
+        [\w\s]{0,16}?\bpass
+    | \bno\s+new\s+(test\s+)?failures?\b
+    | \bno\s+regressions?\b
+    | \b(test\s+)?suite\b[\w\s]{0,12}?\bpass
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def fill_suite_commands(task: ExecutionTask, workspace: Path | None) -> list[str]:
+    """Give a whole-suite criterion that names no command the project's own.
+
+    Measured on a local model: each task's definition of done carried "existing
+    unit tests still pass" as a `command` criterion with no command, even after
+    being sent back once naming it -- and under envelope approval seven of
+    eight tasks went to the owner for it. Which command runs the whole suite is
+    not a judgement the model has to make: it is the one the harness's own test
+    bar runs. The model's expectation was written for a command it never named,
+    so the suite's own verdict, its exit code, replaces it.
+
+    Returns a line per criterion filled, for the task's notes.
+    """
+    if workspace is None:
+        return []
+    candidates = [
+        c for c in task.dod
+        if c.method in (VerifyMethod.COMMAND, VerifyMethod.TEST)
+        and not c.command.strip() and _WHOLE_SUITE.search(c.statement)
+    ]
+    command = detect_test_command(workspace) if candidates else ""
+    if not command:
+        return []
+    for crit in candidates:
+        crit.command, crit.expect = command, "0"
+    return [f"criterion {c.statement!r} named no command; it runs the project's "
+            f"test suite, `{command}`" for c in candidates]
+
+
 def apply_quality_bars(
     task: ExecutionTask, policy: Policy, workspace: Path | None = None
 ) -> list[DoDCriterion]:
@@ -599,6 +643,14 @@ def apply_quality_bars(
         return []
 
     existing = " ".join(c.statement.lower() + " " + c.command.lower() for c in task.dod)
+    # A test criterion with no command covers nothing: it cannot be run. Let it
+    # stand in for the test bar and a run measured on a local model got the
+    # worst of both -- the harness's runnable bar left off, and the task sent
+    # to the owner for the criterion that displaced it.
+    runnable = " ".join(
+        c.statement.lower() + " " + c.command.lower() for c in task.dod
+        if c.command.strip() or c.method not in (VerifyMethod.COMMAND, VerifyMethod.TEST)
+    )
     subject = f"{task.title} {task.action} {task.motivation}"
     present = {_statement_key(c.statement) for c in task.dod}
     added: list[DoDCriterion] = []
@@ -623,7 +675,7 @@ def apply_quality_bars(
 
     if policy.require_tests:
         bar(
-            bool(_COVERS_TESTS.search(existing)),
+            bool(_COVERS_TESTS.search(runnable)),
             DoDCriterion(
                 statement=(
                     "Automated tests cover the behaviour changed by this task, including "

@@ -615,11 +615,20 @@ def parse_tasks(data: dict[str, Any], run_id: str, workspace: str = "") -> list[
     for raw in data.get("tasks") or []:
         if not isinstance(raw, dict) or not str(raw.get("title", "")).strip():
             continue
+        title = str(raw["title"]).strip()
+        action = str(raw.get("action", "")).strip()
+        # Measured on a local model: the change's kind -- "create", "modify" --
+        # where the schema asks what will concretely be done. That one word was
+        # the implementer's first objective and what its brief said was supposed
+        # to happen, and the drift judge read it against the whole request. The
+        # title says what the task is.
+        if len(action.split()) < 2:
+            action = title
         out.append(
             ExecutionTask(
                 run_id=run_id,
-                title=str(raw["title"]).strip(),
-                action=str(raw.get("action", "")).strip(),
+                title=title,
+                action=action,
                 motivation=str(raw.get("motivation", "")).strip(),
                 rationale_refs=_strs(raw.get("rationale_refs")),
                 dod=parse_dod(raw.get("dod")),
