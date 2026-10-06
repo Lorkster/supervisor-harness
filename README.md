@@ -989,6 +989,7 @@ src/supervisor_harness/
     journal.py     the decision journal `supervisor explain` renders
     tools.py       sandboxed workspace tools for autonomous agents
     paths.py       path normalisation and scope matching
+    placement.py   a model's paths placed in the tree, when they name no file
     baseline.py    the commit a run measures its whole-repository checks against
     worktree.py    an execute-mode run's own branch: where it works, and what it leaves
     autonomy.py    approving within the envelope: what must hold first, and the task gate

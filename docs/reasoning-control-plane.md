@@ -151,11 +151,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:597](../src/supervisor_harness/core/supervisor.py:597)), when an
+[supervisor.py:603](../src/supervisor_harness/core/supervisor.py:603)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:2137](../src/supervisor_harness/core/supervisor.py:2137)). It
+[supervisor.py:2147](../src/supervisor_harness/core/supervisor.py:2147)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 

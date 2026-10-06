@@ -105,6 +105,7 @@ from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
 from .paths import relative_patterns
+from .placement import placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
 
@@ -445,14 +446,16 @@ class Supervisor:
         # Placed in the workspace first, like every model-written path: an
         # absolute envelope matched nothing, and a lens that declared no scope
         # inherited it, so every file it read was "outside" (relative_patterns).
+        paths, placed = placed_in_tree(relative_patterns(
+            [str(x) for x in (plan.get("envelope_paths") or [])], state.workspace),
+            state.workspace)
         envelope, refusals = establish(
             self._configured_envelope(),
-            relative_patterns(
-                [str(x) for x in (plan.get("envelope_paths") or [])], state.workspace),
+            paths,
             relative_patterns(
                 [str(x) for x in (plan.get("envelope_forbidden_paths") or [])], state.workspace),
         )
-        for text in refusals:
+        for text in [*placed, *refusals]:
             session.note(text)
         self._set_envelope(session, envelope, source="run plan")
 
@@ -594,11 +597,18 @@ class Supervisor:
         # narrowing is recorded against the task, which is what puts it in front
         # of the user at approval alongside the definition of done.
         for task in tasks:
+            task.scope.paths, placed = placed_in_tree(task.scope.paths, self.workspace)
+            notes.setdefault(task.id, []).extend(placed)
+            declared = bool(task.scope.paths)
             task.scope, clamped = attenuate(
                 task.scope, [Ceiling.of("run envelope", effective(state.envelope))]
             )
-            task.clamped = list(clamped)
-            notes.setdefault(task.id, []).extend(clamped)
+            # Only a scope the task declared can have been narrowed. One that
+            # declared none inherits the envelope, and the clamp's note for that
+            # ("taken from the run envelope") is not the task asking for more:
+            # read as narrowing, it sent every such task to the owner.
+            task.clamped = list(clamped) if declared else []
+            notes[task.id].extend(clamped)
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
                                                    "notes": notes.get(task.id, [])})
         session.emit(EventType.NOTE, {"text": "tasks proposed", "notes": notes})

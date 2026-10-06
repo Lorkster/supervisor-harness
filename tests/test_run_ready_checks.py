@@ -162,3 +162,77 @@ def test_installed_dependencies_are_never_committed_on_the_runs_branch(node_repo
     committed = _git(node_repo, "show", "--name-only", "--format=", closed.commit).split()
     assert "index.js" in committed
     assert not [path for path in committed if path.startswith("node_modules")], committed
+
+
+# -- a model's paths, placed in the tree -----------------------------------------
+
+
+def test_a_path_missing_its_prefix_is_placed_at_the_only_file_it_can_mean(
+    tmp_path: Path,
+) -> None:
+    """Measured: a local model drew `core/timing.py` for `src/pkg/core/timing.py`."""
+    from supervisor_harness.core.placement import placed_in_tree
+
+    write(tmp_path, {"src/pkg/core/timing.py": "", "src/pkg/core/other.py": "",
+                     "node_modules/x/core/timing.py": ""})
+    paths, notes = placed_in_tree(["core/timing.py", "src/pkg/core/other.py", "src/**"],
+                                  tmp_path)
+
+    assert paths == ["src/pkg/core/timing.py", "src/pkg/core/other.py", "src/**"]
+    assert len(notes) == 1 and "only file it can mean" in notes[0]
+
+
+def test_a_path_that_could_mean_several_files_or_none_is_left_and_said(tmp_path: Path) -> None:
+    from supervisor_harness.core.placement import placed_in_tree
+
+    write(tmp_path, {"a/util.py": "", "b/util.py": "", "tests/test_a.py": ""})
+    paths, notes = placed_in_tree(["util.py", "tests/test_new.py", "reporting/ledger.py"],
+                                  tmp_path)
+
+    assert paths == ["util.py", "tests/test_new.py", "reporting/ledger.py"]
+    assert any("any of 2" in n for n in notes)
+    assert any("directory that does not exist" in n for n in notes)
+    assert not any("test_new.py" in n for n in notes), "a new file in a real directory is fine"
+
+
+async def test_the_plans_envelope_is_placed_before_it_is_granted(supervisor, fake) -> None:  # type: ignore[no-untyped-def]
+    from supervisor_harness.models import RunMode
+
+    plan = fake._planning(None)
+    plan["envelope_paths"] = ["auth/login.py", "tests/**"]
+    fake.overrides["planning"] = plan
+
+    response = await supervisor.run("Review the login handler", mode=RunMode.REPORT)
+    state = supervisor.store.load_state(response.run_id)
+
+    assert state.envelope is not None
+    assert "src/auth/login.py" in state.envelope.paths
+    assert any("only file it can mean" in n.text for n in state.notes)
+
+
+async def test_a_task_that_declared_no_scope_was_not_narrowed(supervisor, fake) -> None:  # type: ignore[no-untyped-def]
+    """Measured: every task in a real run declared none, and every one was sent to the owner."""
+    from supervisor_harness.models import RunMode
+
+    synthesis = fake._synthesis(None)
+    synthesis["tasks"][0].pop("scope_paths")
+    fake.overrides["synthesis"] = synthesis
+
+    response = await supervisor.run("Add rate limiting", mode=RunMode.EXECUTE,
+                                    auto_approve=True)
+    (task,) = supervisor.store.load_state(response.run_id).tasks.values()
+    assert task.scope.paths, "it inherited the envelope"
+    assert task.clamped == []
+
+
+async def test_a_tasks_scope_is_placed_too(supervisor, fake) -> None:  # type: ignore[no-untyped-def]
+    from supervisor_harness.models import RunMode
+
+    synthesis = fake._synthesis(None)
+    synthesis["tasks"][0]["scope_paths"] = ["auth/login.py", "tests/**"]
+    fake.overrides["synthesis"] = synthesis
+
+    response = await supervisor.run("Add rate limiting", mode=RunMode.EXECUTE,
+                                    auto_approve=True)
+    (task,) = supervisor.store.load_state(response.run_id).tasks.values()
+    assert "src/auth/login.py" in task.scope.paths
