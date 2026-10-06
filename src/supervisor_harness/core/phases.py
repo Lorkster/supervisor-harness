@@ -1153,6 +1153,35 @@ def _report_escalations(state: RunState) -> list[str]:
     return lines
 
 
+def _report_worktree(state: RunState) -> list[str]:
+    """Where the run's changes are, and how to look at them before taking them."""
+    wt = state.worktree
+    if wt is None:
+        return []
+    lines = ["## Where the changes are", ""]
+    if not wt.branch:
+        lines.append(f"- In the workspace itself: {wt.note}")
+        lines.append("")
+        return lines
+    if wt.commit:
+        lines.append(f"- On the branch `{wt.branch}`, commit `{wt.commit[:12]}`, from "
+                     f"`{wt.base[:12]}`. Nothing was pushed.")
+        lines += [
+            "", "```", wt.diffstat.strip(), "```", "",
+            f"- See it: `git diff {wt.base[:12]}..{wt.branch}`",
+            f"- Take it: `git merge {wt.branch}`, or open a pull request from it",
+            f"- Drop it: `git branch -D {wt.branch}`",
+        ]
+    elif wt.closed:
+        lines.append(f"- The branch `{wt.branch}` has no new commit.")
+    else:
+        lines.append(f"- In progress on `{wt.branch}`, in the worktree at `{wt.path}`.")
+    if wt.note:
+        lines.append(f"- Note: {wt.note}")
+    lines.append("")
+    return lines
+
+
 def _report_checkpoints(state: RunState) -> list[str]:
     """The quality gate's verdict on each iteration."""
     lines: list[str] = []
@@ -1205,6 +1234,7 @@ def final_report_markdown(state: RunState) -> str:
         _report_conflicts,
         _report_open_questions,
         _report_escalations,
+        _report_worktree,
         _report_checkpoints,
         _report_lessons,
     ):

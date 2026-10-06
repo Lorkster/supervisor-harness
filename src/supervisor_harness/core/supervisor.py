@@ -75,6 +75,7 @@ from ..models import (
     Resolution,
     RunMode,
     RunState,
+    RunWorktree,
     ScopeEnvelope,
     TaskDecision,
     TaskStatus,
@@ -86,7 +87,7 @@ from ..providers.router import ModelRouter
 from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
-from . import phases
+from . import phases, worktree
 from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
 from .dod import VerificationOutcome, verify_criterion
@@ -159,6 +160,9 @@ class Supervisor:
         self.host = host or detect_host(self.workspace)
         self.router = router or ModelRouter(self.config, host_name=self.host.name)
         self.toolbox = Toolbox(self.workspace, self.config.policy, self.store.root)
+        # One per tree an agent may be fenced to: the workspace, and the
+        # worktree of a run executing on its own branch.
+        self._toolboxes: dict[Path, Toolbox] = {self.workspace: self.toolbox}
         # The layers below the phase machine. Neither calls back into it, which
         # is what made them separable at all -- see docs/history/quality-assessment.md.
         self.reporting = Reporting(self.config, self.store)
@@ -655,6 +659,11 @@ class Supervisor:
         if not active and stale is not None:
             return self._await_envelope_renewal(session, stale)
 
+        if not active and phases.runnable_tasks(state):
+            refused = self._open_worktree(session)
+            if refused is not None:
+                return self.reporting._error(session, refused)
+
         if not active:
             registry = self.packets._registry_for(session, None)
             fresh: list[AgentSpec] = []
@@ -758,6 +767,7 @@ class Supervisor:
     def _verify_mechanically(self, session: RunSession) -> None:
         """Close the criteria the harness can prove without asking anyone."""
         state = session.state
+        tree = self._tree(state)
         allow = self.config.policy.allow_command_execution
         for task in state.tasks.values():
             if task.status not in (TaskStatus.AWAITING_VERIFICATION, TaskStatus.IN_PROGRESS):
@@ -776,7 +786,7 @@ class Supervisor:
                     outcome = self._verify_fails_before(state, task, crit)
                 else:
                     outcome = verify_criterion(
-                        crit, self.workspace, self.config.policy, allow_commands=allow
+                        crit, tree, self.config.policy, allow_commands=allow
                     )
                 if outcome is None:
                     continue
@@ -815,14 +825,15 @@ class Supervisor:
             and agent.kind is AgentKind.EXECUTION and agent.task_id == task.id
             for path in turn.files_touched
         ]
-        in_tree = changed_since(self.workspace, baseline, task.scope.paths) if baseline else []
-        files = select_test_material(touched, self.workspace)
+        tree = self._tree(state)
+        in_tree = changed_since(tree, baseline, task.scope.paths) if baseline else []
+        files = select_test_material(touched, tree)
         if not any(is_test_module(f) for f in files):
-            files = select_test_material(in_tree, self.workspace)
+            files = select_test_material(in_tree, tree)
         changed = {rel for raw in (*touched, *in_tree)
-                   if (rel := safe_relative(raw, self.workspace)) is not None}
+                   if (rel := safe_relative(raw, tree)) is not None}
         only_tests = bool(changed) and all(is_test_path(rel) for rel in changed)
-        return verify_fails_before(crit, files, self.workspace, baseline,
+        return verify_fails_before(crit, files, tree, baseline,
                                    timeout=self.config.policy.command_timeout_seconds,
                                    only_tests=only_tests)
 
@@ -1013,8 +1024,78 @@ class Supervisor:
 
     # -- improvement ---------------------------------------------------
 
+    # -- the run's own branch -------------------------------------------
+
+    def _tree(self, state: RunState) -> Path:
+        """The tree this run's agents and checks work in: its worktree while open."""
+        wt = state.worktree
+        if wt is not None and wt.path and not wt.closed:
+            return Path(wt.path)
+        return self.workspace
+
+    def _toolbox_for(self, state: RunState) -> Toolbox:
+        tree = self._tree(state)
+        if tree not in self._toolboxes:
+            self._toolboxes[tree] = Toolbox(tree, self.config.policy, self.store.root)
+        return self._toolboxes[tree]
+
+    def _open_worktree(self, session: RunSession) -> str | None:
+        """Give an execute-mode run its own branch before its first agent; or say why not.
+
+        Returns the reason execution must not start, or ``None``. A workspace
+        that is not a git repository has nothing to branch from, and executes in
+        place as it always did -- recorded, so the report can say so. A git
+        workspace where the worktree cannot be made refuses instead: carrying on
+        in place would put the run's work in the owner's tree when the policy
+        said it must not.
+        """
+        state = session.state
+        if (state.worktree is not None or state.backend is not Backend.AUTONOMOUS
+                or not self.config.policy.execution_worktree):
+            return None
+        fact = state.facts.get(BASELINE_FACT, "")
+        base = commit_from_fact(fact)
+        if not base:
+            session.emit(EventType.WORKTREE_OPENED, {"worktree": to_jsonable(RunWorktree(
+                note="not a git repository, so there is no branch to work on: the run "
+                     "executed in the workspace itself",
+            ))})
+            return None
+        branch = worktree.branch_for(state.id)
+        tree = self.store.run_dir(state.id) / "worktree"
+        error = worktree.create(self.workspace, tree, branch, base)
+        if error is not None:
+            return (f"could not give this run its own branch: {error}. Nothing was "
+                    "executed. To execute in the workspace itself instead, set "
+                    "policy.execution_worktree to false.")
+        note = ""
+        if "already modified" in fact:
+            note = ("the workspace had uncommitted changes when the run started; they "
+                    "are not on the run's branch, which starts at the baseline commit")
+        session.emit(EventType.WORKTREE_OPENED, {"worktree": to_jsonable(RunWorktree(
+            path=str(tree), branch=branch, base=base, note=note,
+        ))})
+        return None
+
+    def _close_worktree(self, session: RunSession) -> None:
+        """Commit the run's changes on its branch and take the worktree down."""
+        state = session.state
+        wt = state.worktree
+        if wt is None or not wt.path or wt.closed:
+            return
+        tasks = "\n".join(f"- [{t.status}] {t.title}" for t in state.approved_tasks())
+        message = (f"supervisor: {state.prompt.splitlines()[0][:60] if state.prompt else ''}"
+                   f"\n\nRun {state.id}.\n\n{tasks}\n")
+        closed = worktree.close(self.workspace, Path(wt.path), wt.base, message)
+        session.emit(EventType.WORKTREE_CLOSED, {
+            "commit": closed.commit, "diffstat": closed.diffstat,
+            "removed": closed.removed,
+            "note": "; ".join(n for n in (wt.note, closed.note) if n),
+        })
+
     async def _run_improvement(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
+        self._close_worktree(session)
         if not self.config.policy.learn_from_failures:
             return self._finish(session)
 
@@ -1698,7 +1779,8 @@ class Supervisor:
                     )
                     break
 
-                results = [self.toolbox.call(name, args, agent) for name, args in calls]
+                toolbox = self._toolbox_for(session.state)
+                results = [toolbox.call(name, args, agent) for name, args in calls]
                 tools_called += len(calls)
                 files_read.update(r.path for r in results if r.ok and r.path)
                 await session.anote(

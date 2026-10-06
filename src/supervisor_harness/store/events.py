@@ -34,6 +34,7 @@ from ..models import (
     Resolution,
     RunMode,
     RunState,
+    RunWorktree,
     ScopeEnvelope,
     Usage,
 )
@@ -77,6 +78,9 @@ class EventType(StrEnum):
     #: Something only the owner can decide, and the owner's answer to it.
     ESCALATION_RAISED = "escalation_raised"
     ESCALATION_RESOLVED = "escalation_resolved"
+    #: An execute-mode run's own worktree and branch, and what it left there.
+    WORKTREE_OPENED = "worktree_opened"
+    WORKTREE_CLOSED = "worktree_closed"
     RUN_ENDED = "run_ended"
     #: Never emitted: what a type this build does not define is read back as,
     #: so the log line survives the read. See :func:`event_from_dict`.
@@ -400,6 +404,22 @@ def _on_escalation_resolved(state: RunState, event: Event) -> None:
     escalation.resolved_at = event.ts
 
 
+def _on_worktree_opened(state: RunState, event: Event) -> None:
+    state.worktree = from_jsonable(event.payload["worktree"], RunWorktree)
+
+
+def _on_worktree_closed(state: RunState, event: Event) -> None:
+    if state.worktree is None:
+        _orphan(state, event.type, "worktree")
+        return
+    p = event.payload
+    state.worktree.closed = True
+    state.worktree.commit = str(p.get("commit", ""))
+    state.worktree.diffstat = str(p.get("diffstat", ""))
+    state.worktree.removed = bool(p.get("removed", False))
+    state.worktree.note = str(p.get("note", ""))
+
+
 def _on_run_ended(state: RunState, event: Event) -> None:
     p = event.payload
     state.phase = Phase(p.get("phase", Phase.COMPLETE))
@@ -431,6 +451,8 @@ _HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
     EventType.DIRECTIVE_ISSUED: _on_directive_issued,
     EventType.ESCALATION_RAISED: _on_escalation_raised,
     EventType.ESCALATION_RESOLVED: _on_escalation_resolved,
+    EventType.WORKTREE_OPENED: _on_worktree_opened,
+    EventType.WORKTREE_CLOSED: _on_worktree_closed,
     EventType.DRIFT_ASSESSED: _on_drift_assessed,
     EventType.LESSONS_CONSOLIDATED: _on_lessons_consolidated,
     EventType.ASSISTS_RECORDED: _on_assists_recorded,

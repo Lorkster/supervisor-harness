@@ -327,7 +327,9 @@ per-criterion checklist showing what was proven and what was not, and a
 reconciliation of every finding the run produced: fixed here, attempted, still
 pending, or still open. `detail.reconciliation` names the artifact holding the
 full finding-by-finding mapping, and `detail.findings_open` lists the finding
-ids this run did not close. Present it as written. Do not describe a task as
+ids this run did not close. An autonomous execute-mode run also reports
+`detail.branch` and `detail.commit`: the branch its changes are on, never
+pushed. A host-delegated run works in the workspace, and both are empty. Present it as written. Do not describe a task as
 done when its criteria are unmet — say plainly what is outstanding.
 
 ---
