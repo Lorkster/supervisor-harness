@@ -97,8 +97,8 @@ alone, and relaxes it to the workspace rather than to the machine.
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:307](../src/supervisor_harness/config.py:307)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:349](../src/supervisor_harness/config.py:349))
+([config.py:312](../src/supervisor_harness/config.py:312)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:355](../src/supervisor_harness/config.py:355))
 are the list of what it may not set: command execution, provider `base_url`, API
 keys, the AWS `region` and `profile` a Bedrock route would use, the store
 location. The principle is the same one in a different costume —
@@ -108,10 +108,16 @@ about work done on it.
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:857](../src/supervisor_harness/core/dod.py:857)) holds a runner to
+([core/dod.py:946](../src/supervisor_harness/core/dod.py:946)) holds a runner to
 an allow-list. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.
+
+A behaviour change's tests also have to fail without it. `verify_fails_before`
+([core/fails_before.py:268](../src/supervisor_harness/core/fails_before.py:268))
+runs them in a worktree at the baseline commit and then in the working tree,
+and compares them test by test. The verdict is the harness's own, so a verifier
+agent can neither overturn it nor take the credit for it by agreeing.
 
 **What this deliberately does not do.** It does not sandbox. The autonomous
 toolset confines reads to the workspace and writes to the agent's scope, but
@@ -135,7 +141,7 @@ where the fence came from. The synthesis model drew the boundary that its own
 tasks then ran inside.
 
 **The run envelope** is the answer. `ScopeEnvelope`
-([models.py:276](../src/supervisor_harness/models.py:276)) is a run-level grant,
+([models.py:280](../src/supervisor_harness/models.py:280)) is a run-level grant,
 established once: configuration is the floor, the plan may **narrow** it, and
 nothing may widen it (`establish`,
 [envelope.py:83](../src/supervisor_harness/core/envelope.py:83)).
@@ -145,11 +151,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:563](../src/supervisor_harness/core/supervisor.py:563)), when an
+[supervisor.py:574](../src/supervisor_harness/core/supervisor.py:574)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:1746](../src/supervisor_harness/core/supervisor.py:1746)). It
+[supervisor.py:1842](../src/supervisor_harness/core/supervisor.py:1842)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -227,7 +233,7 @@ Parallel lenses that each rediscover the same thing are wasting turns; parallel
 lenses that quietly assume *different* things about the same thing are worse,
 because the contradiction only surfaces in the work.
 
-**A `Fact`** ([models.py:304](../src/supervisor_harness/models.py:304)) is
+**A `Fact`** ([models.py:308](../src/supervisor_harness/models.py:308)) is
 something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
 `FACT_ESTABLISHED` ([events.py:47](../src/supervisor_harness/store/events.py:47)),

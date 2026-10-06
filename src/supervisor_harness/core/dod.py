@@ -55,6 +55,7 @@ from ..models import (
     Severity,
     VerifyMethod,
 )
+from .baseline import git_baseline
 
 # Statements that assert a feeling rather than a fact. A criterion phrased this
 # way cannot fail, which means it cannot verify anything either.
@@ -209,6 +210,50 @@ _COVERS_LIVENESS = re.compile(
     """,
     re.VERBOSE | re.IGNORECASE,
 )
+
+
+# Tasks whose tests should pass both before and after, so a test that "fails
+# without the change" is the wrong demand: moving, renaming or splitting code,
+# documentation, and making the same behaviour faster. Matched on the task's
+# title and action. A miss in this direction adds a criterion the task cannot
+# meet, which fails it visibly; the opposite miss would leave a behaviour change
+# with nothing showing its tests detect it.
+_NO_BEHAVIOUR_CHANGE = re.compile(
+    r"""
+      \b(refactor\w*|renam\w*|reorganis\w*|reorganiz\w*|restructur\w*)\b
+    | \b(extract|extracts|extracting|inline|inlines|inlining)\b
+    | \b(split|splits|splitting)\s+(the\s+)?\w*\s*(module|file|class|function)
+    | \b(move|moves|moving)\b.*\b(into|to)\b.*\b(module|file|package|directory)\b
+    | \b(tidy|tidies|tidying|clean[\s-]?up)\b
+    | \bno\s+(functional\s+|behaviou?ral\s+)?(behaviou?r\s+)?changes?\b
+    | \bwithout\s+changing\s+(its\s+|the\s+)?behaviou?r\b
+    | \b(docs?|documentation|docstrings?|typos?|readme)\b
+    | \b(optimi[sz]\w*|performance|speed\s+up|faster)\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+FAILS_BEFORE_STATEMENT = (
+    "The tests this task adds or changes fail on the baseline commit, then pass "
+    "with the change"
+)
+
+# What a verifier agent is told to do when the harness could not run the check
+# itself. Written as a procedure, because the harness's own version is one.
+FAILS_BEFORE_RUBRIC = (
+    "If the harness has not already settled this: create a worktree at the "
+    "baseline commit named under Baseline (git worktree add --detach <dir> "
+    "<commit>), copy in the test files this task added or changed, and run those "
+    "test modules there and then in the working tree. Pass only if at least one "
+    "test that passes in the working tree fails or cannot be collected at the "
+    "baseline, and every one of them passes in the working tree. Quote both runs. "
+    "Remove the worktree afterwards."
+)
+
+
+def wants_fails_before(task: ExecutionTask) -> bool:
+    """Whether this task changes behaviour, so its tests should not pass without it."""
+    return not _NO_BEHAVIOUR_CHANGE.search(f"{task.title} {task.action}")
 
 
 # Flags that run a *subset* of a suite. A filter that selects nothing is not an
@@ -435,6 +480,11 @@ def validate_criteria(criteria: list[DoDCriterion], policy: Policy) -> list[Crit
                     Severity.LOW,
                 )
             )
+        if crit.method is VerifyMethod.FAILS_BEFORE and not crit.command.strip():
+            issues.append(
+                CriterionIssue(crit.id, "method=fails_before but no test command given",
+                               Severity.HIGH)
+            )
         if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST):
             if not crit.command.strip():
                 issues.append(
@@ -456,6 +506,19 @@ def validate_criteria(criteria: list[DoDCriterion], policy: Policy) -> list[Crit
                                Severity.MEDIUM)
             )
     return issues
+
+
+def pytest_argv(command: str) -> list[str] | None:
+    """``command`` tokenised, if it invokes pytest; otherwise ``None``."""
+    tokens = shell_split(command)
+    if not tokens:
+        return None
+    name = executable_name(tokens[0])
+    if name == "pytest":
+        return tokens
+    if name in ("python", "python3", "py") and tokens[1:3] == ["-m", "pytest"]:
+        return tokens
+    return None
 
 
 def touches_code(task: ExecutionTask) -> bool:
@@ -543,6 +606,29 @@ def apply_quality_bars(
                 mandatory=True,
             ),
         )
+
+    # A test that passes without the change does not test it. Proven by the
+    # harness running the task's tests on the baseline commit, which needs a
+    # git baseline to run them on and a runner whose per-test results it can
+    # read -- so only where both exist, and only for a change in behaviour.
+    # And only where the harness may run commands: handed to a verifier agent
+    # instead, it would be a model's account of the check again, which is the
+    # thing it exists to replace, at the cost of a worktree procedure per task.
+    if (policy.require_tests and policy.require_fails_before
+            and policy.allow_command_execution and workspace is not None):
+        command = detect_test_command(workspace)
+        if (pytest_argv(command) is not None and wants_fails_before(task)
+                and git_baseline(workspace)):
+            bar(
+                any(c.method is VerifyMethod.FAILS_BEFORE for c in task.dod),
+                DoDCriterion(
+                    statement=FAILS_BEFORE_STATEMENT,
+                    method=VerifyMethod.FAILS_BEFORE,
+                    command=command,
+                    rubric=FAILS_BEFORE_RUBRIC,
+                    mandatory=True,
+                ),
+            )
 
     # A guard is proven by the case it rejects, and by nothing else. Both tasks
     # that failed in a real run met every criterion they carried and then fell
@@ -752,7 +838,8 @@ def child_environment() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if not _CREDENTIAL_NAME.search(k)}
 
 
-def run_bounded(argv: list[str], cwd: Path | str, timeout: float
+def run_bounded(argv: list[str], cwd: Path | str, timeout: float,
+                extra_env: dict[str, str] | None = None,
                 ) -> subprocess.CompletedProcess[str]:
     """Run ``argv`` without a shell, and stop it -- all of it -- at ``timeout``.
 
@@ -763,18 +850,20 @@ def run_bounded(argv: list[str], cwd: Path | str, timeout: float
     the program finished. Measured: a 1-second timeout on a shim returned after
     7.1 seconds. The whole tree is killed instead -- ``taskkill /T`` on Windows,
     the process group elsewhere -- and ``TimeoutExpired`` is raised as before.
-    The command also runs without the user's credentials (`child_environment`).
+    The command also runs without the user's credentials (`child_environment`),
+    plus ``extra_env``: the harness's own additions, never a model's.
     """
+    env = {**child_environment(), **(extra_env or {})}
     if sys.platform == "win32":
         proc = subprocess.Popen(  # noqa: S603 - tokenised, no shell, allow-listed
             argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            errors="replace", env=child_environment(),
+            errors="replace", env=env,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
     else:
         proc = subprocess.Popen(  # noqa: S603 - tokenised, no shell, allow-listed
             argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            errors="replace", env=child_environment(), start_new_session=True,
+            errors="replace", env=env, start_new_session=True,
         )
     try:
         out, err = proc.communicate(timeout=timeout)

@@ -223,3 +223,42 @@ async def test_each_reopened_task_is_briefed_with_its_own_corrections(
     # A correction that names no task is everyone's.
     assert "state the file you changed" in limiter.action
     assert "state the file you changed" in audit.action
+
+
+async def test_a_criterion_the_harness_failed_is_checked_again_on_the_next_attempt(
+    supervisor: Supervisor, fake, workspace
+) -> None:
+    """A mechanical verdict belongs to the attempt it was proven on.
+
+    The harness proves inspection criteria itself, and a verifier agent may not
+    overturn what it proved. Both rules are right, but together, with nothing
+    reopening a criterion when its task is reopened, a criterion the harness
+    failed on attempt 1 was never looked at again. The second attempt fixed the
+    file, the verifier said so, and its verdict was discarded because "the
+    mechanical result stands": remediation could not succeed.
+    """
+    synthesis = fake._synthesis(None)
+    synthesis["tasks"][0]["dod"][1]["expect"] = "src/auth/login.py: RATE_LIMIT"
+    fake.overrides["synthesis"] = synthesis
+
+    def fix_the_file(request: Any) -> dict[str, Any]:
+        login = workspace / "src" / "auth" / "login.py"
+        login.write_text(login.read_text(encoding="utf-8") + "\nRATE_LIMIT = 10\n",
+                         encoding="utf-8")
+        return fake._execution(request)
+
+    fake.script("execution", fake._execution(None), fix_the_file)
+    fake.script("checkpoint", FAILING_CHECKPOINT)
+
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+    task = next(iter(state.tasks.values()))
+    inspection = next(c for c in task.dod if "RATE_LIMIT" in c.expect)
+
+    assert task.attempts >= 2, "the first attempt must fail for this to test anything"
+    assert "RATE_LIMIT" in (workspace / "src" / "auth" / "login.py").read_text(encoding="utf-8")
+    assert inspection.status.value == "pass", (
+        f"criterion ended {inspection.status} with evidence {inspection.evidence!r}; "
+        "the file was fixed on attempt 2 and the harness never looked again"
+    )
+    assert task.status is TaskStatus.VERIFIED

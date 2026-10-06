@@ -220,6 +220,15 @@ they like.
 *Changes the harness condition:* no. Report-mode behaviour is identical; one
 field is added.
 
+> **Done** in [#80](https://github.com/Lorkster/supervisor-harness/pull/80),
+> wider than planned in one place. The cause is recorded on *every* transition
+> that ends an agent, not only a stop: a fixed `EndCause` (`accept`, `stop`,
+> `escalate`, `reported`, `abandoned`, `refused`, `error`, `turn_budget`,
+> `remediation`) plus the reason given, shown in `status --json` as `ended`.
+> The plan's "the directive's rationale" covered only the directive paths, and
+> a refusal or an abandonment is exactly what a consumer most needs to tell
+> from a stop. Each mechanism was broken in turn: 9 of 9 turned a test red.
+
 ### Batch B — A verifier that is not a model
 
 The owner's own verification bar, made mechanical. Batches 1–8 kept finding
@@ -257,6 +266,29 @@ task cannot succeed. Reading only; the batch starts with a test that shows it.
 
 *Changes the harness condition:* no. Execute mode only.
 
+> **Done** in [#81](https://github.com/Lorkster/supervisor-harness/pull/81),
+> with three corrections to this plan.
+>
+> - **The suspected defect was real**, and a test showed it before the fix:
+>   remediation could not pass a criterion the harness had failed. Reopening a
+>   task now returns its verdicts to unverified. A second one turned up beside
+>   it: a verifier *agreeing* with a mechanical verdict re-attributed it to
+>   itself, so the trajectory exported the harness's proof as a model's claim.
+> - **The bar is not handed to a verifier agent.** The plan said that without
+>   `allow_command_execution` the criterion would go to the verifier with the
+>   procedure written out. Reviewed with the owner, that turns the check back
+>   into a model's claim, the thing it exists to replace, and adds a worktree
+>   procedure to every host-run task. It is added only where the harness can
+>   run it, which is also batch E's precondition.
+> - **A task that only adds tests** for behaviour that already exists would
+>   have been failed: its tests are meant to pass on the baseline. Such a task is
+>   judged by its tests passing, read from the tree as well as the agents'
+>   reports, so a missed report errs towards running the comparison.
+>
+> Also found while building it: the baseline side must be given its own
+> `PYTHONPATH`, or an editable install makes it test the changed code. This
+> repository's own conftest hides that. 19 mechanisms broken in turn, 19 red.
+
 ### Batch C — Escalations
 
 Today `DirectiveKind.ESCALATE` ends an agent as `blocked`, and nothing tells
@@ -272,6 +304,11 @@ anyone. This batch gives "needs the owner" a destination:
 
 *Changes the harness condition:* no. A blocked analysis agent ends exactly as
 before; the escalation is recorded beside it.
+
+> **Decided by the owner, 2026-10-06:** when an escalation is raised, the run
+> does everything else it can and then pauses at a new `awaiting_owner` phase,
+> shaped like `awaiting_approval`. Recording escalations without anywhere to
+> answer them was the alternative, declined.
 
 ### Batch D — A run on its own branch
 
