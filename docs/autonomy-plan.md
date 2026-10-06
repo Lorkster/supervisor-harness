@@ -406,6 +406,40 @@ PRs the owner would merge.
 
 *Changes the harness condition:* no. Execute mode only.
 
+> **Built**, and **not yet done** by this plan's own definition: the go-live
+> condition above is still open. Neither the #67 log nor three real runs can be
+> produced by a pull request; both are the owner's to run. Until then this is
+> the mechanism, tested, not a mode anyone should rely on overnight.
+>
+> What was built, and where it departs from the text above:
+>
+> - **Command line only** (`supervisor run --grant-envelope`), not a field on
+>   `supervisor_start`. Envelope mode needs batch D's branch, which only the
+>   autonomous backend has; a host-delegated run could not honour the grant.
+> - **The gate is four checks, each able only to send a task to the owner:** the
+>   envelope clamped its scope; its definition of done has a defect
+>   `validate_criteria` rates high; a mandatory check is one the harness will not
+>   run; the plan rated it high or critical risk. The fourth is not in the text
+>   above. The rating is the planning model's own, so the only thing a model can
+>   do with it is send its own task to the owner, which loses nothing.
+> - **The preconditions are wider than the text**: as well as command execution,
+>   a baseline commit and the run's branch, envelope mode needs `require_tests`
+>   and `require_fails_before`. Without them a code task could reach execution
+>   with nothing proving its tests detect the change.
+> - **A grant lets a parked task go ahead as it stands.** For a narrowed task
+>   that means narrowed: no approval widens the envelope, this one included.
+> - **What no person decided is recorded as no person deciding.** A harness
+>   approval carries `"by": "envelope"` and the trajectory exports it as policy,
+>   not as a person.
+> - **Everything refused goes straight to the owner**, rather than through an
+>   execute-verify-checkpoint cycle with nothing in it.
+>
+> The end-to-end test is the whole loop with nobody in it until the end:
+> granted at start, approved by the gate, executed on the run's branch, proven
+> by the project's own tests and `fails_before` run by the harness, committed,
+> and the owner's tree untouched. Fifteen mechanisms broken in turn, fifteen
+> red.
+
 ### Batch F — Does the model do what the harness asks?
 
 An eval in the shape of `turnstone-eval`, aimed at the harness's own directives

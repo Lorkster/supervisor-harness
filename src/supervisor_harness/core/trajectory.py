@@ -353,8 +353,14 @@ class _Builder:
         )
 
     def on_task_decided(self, event: Event, p: dict[str, Any]) -> None:
+        # Under envelope approval the harness decides, by a deterministic gate:
+        # recorded as policy, so a trajectory never shows a person approving
+        # what no person looked at.
+        by_policy = p.get("by") == "envelope"
         self.add(
-            event, "task_decided", source="person", decided_by=PERSON,
+            event, "task_decided",
+            source="supervisor" if by_policy else "person",
+            decided_by=POLICY if by_policy else PERSON,
             content=str(p.get("decision", "")),
             detail={"task_id": p.get("task_id", ""), "note": p.get("note", "")},
         )

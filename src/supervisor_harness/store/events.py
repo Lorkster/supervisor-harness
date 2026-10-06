@@ -22,6 +22,7 @@ from ..models import (
     CriterionStatus,
     Directive,
     DriftAssessment,
+    EnvelopeGrant,
     Escalation,
     ExecutionTask,
     Fact,
@@ -81,6 +82,8 @@ class EventType(StrEnum):
     #: An execute-mode run's own worktree and branch, and what it left there.
     WORKTREE_OPENED = "worktree_opened"
     WORKTREE_CLOSED = "worktree_closed"
+    #: The owner's consent to envelope approval, given when the run started.
+    ENVELOPE_GRANTED = "envelope_granted"
     RUN_ENDED = "run_ended"
     #: Never emitted: what a type this build does not define is read back as,
     #: so the log line survives the read. See :func:`event_from_dict`.
@@ -420,6 +423,10 @@ def _on_worktree_closed(state: RunState, event: Event) -> None:
     state.worktree.note = str(p.get("note", ""))
 
 
+def _on_envelope_granted(state: RunState, event: Event) -> None:
+    state.envelope_grant = from_jsonable(event.payload["grant"], EnvelopeGrant)
+
+
 def _on_run_ended(state: RunState, event: Event) -> None:
     p = event.payload
     state.phase = Phase(p.get("phase", Phase.COMPLETE))
@@ -453,6 +460,7 @@ _HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
     EventType.ESCALATION_RESOLVED: _on_escalation_resolved,
     EventType.WORKTREE_OPENED: _on_worktree_opened,
     EventType.WORKTREE_CLOSED: _on_worktree_closed,
+    EventType.ENVELOPE_GRANTED: _on_envelope_granted,
     EventType.DRIFT_ASSESSED: _on_drift_assessed,
     EventType.LESSONS_CONSOLIDATED: _on_lessons_consolidated,
     EventType.ASSISTS_RECORDED: _on_assists_recorded,

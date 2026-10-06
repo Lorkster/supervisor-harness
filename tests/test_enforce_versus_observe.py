@@ -64,7 +64,7 @@ PROMPT = "Add rate limiting to the public login endpoint so credential stuffing 
 #: The modules that decide whether something is allowed. An error inside one of
 #: these must refuse; there is no error here whose right answer is "go ahead".
 ENFORCING_MODULES = ("core/tools.py", "core/dod.py", "core/fails_before.py", "core/envelope.py",
-                     "core/facts.py")
+                     "core/facts.py", "core/autonomy.py")
 
 #: Where a broad `except Exception` or `suppress(Exception)` is allowed, and the
 #: observing surface each one protects. A new entry is a deliberate decision to

@@ -97,8 +97,8 @@ alone, and relaxes it to the workspace rather than to the machine.
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:321](../src/supervisor_harness/config.py:321)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:364](../src/supervisor_harness/config.py:364))
+([config.py:328](../src/supervisor_harness/config.py:328)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:373](../src/supervisor_harness/config.py:373))
 are the list of what it may not set: command execution, provider `base_url`, API
 keys, the AWS `region` and `profile` a Bedrock route would use, the store
 location. The principle is the same one in a different costume —
@@ -151,11 +151,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:582](../src/supervisor_harness/core/supervisor.py:582)), when an
+[supervisor.py:597](../src/supervisor_harness/core/supervisor.py:597)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:2058](../src/supervisor_harness/core/supervisor.py:2058)). It
+[supervisor.py:2132](../src/supervisor_harness/core/supervisor.py:2132)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -173,6 +173,14 @@ renews the *date*, never the paths.
   approved — which is not a bound. The cost is real and is not hidden: a plan
   that draws the envelope too narrowly cannot be widened from the approval
   prompt, only restarted with a wider one.
+- **So approval can be done by the envelope instead.** Since a per-task decision
+  can only narrow, what a person adds there is a judgement of quality, not of
+  authority. Under `policy.approval: "envelope"` (protected) and a grant given
+  when the run starts, a deterministic gate decides each task
+  (`core/autonomy.py`), and whatever it refuses goes to the owner as an
+  escalation. The mode will not start without a verifier that is not a model:
+  commands run by the harness, mandatory tests, `fails_before`, and the run's own
+  branch.
 - **`pattern_within` is sound, not complete.** `True` is a proof of containment;
   `False` means "not provably contained", and every caller narrows on `False`.
   It refuses two cases on purpose: wildcard-inside-wildcard, and containment in

@@ -28,6 +28,7 @@ from ..models import (
     Budget,
     Checkpoint,
     CriterionStatus,
+    EscalationReason,
     ExecutionTask,
     Finding,
     Lesson,
@@ -1139,7 +1140,9 @@ def _report_escalations(state: RunState) -> list[str]:
         answer = (f"**{esc.resolution}**" + (f": {esc.note}" if esc.note else "")
                   if esc.resolution else "**unanswered**")
         lines.append(f"- `{esc.id}` ({esc.reason}) on *{title}*: {answer}")
-        lines.append(f"    - the agent's account: {esc.detail}")
+        label = ("the agent's account" if esc.reason is EscalationReason.AGENT_BLOCKED
+                 else "why")
+        lines.append(f"    - {label}: {esc.detail}")
     deferred = [t for t in state.tasks.values()
                 if t.status is TaskStatus.DEFERRED and t.decision_note.startswith(
                     "deferred by the owner")]

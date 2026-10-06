@@ -511,6 +511,18 @@ class EscalationReason(StrEnum):
     #: An execution agent said it cannot go on without something it does not
     #: have. Its own words travel with the escalation as data.
     AGENT_BLOCKED = "agent_blocked"
+    # The four below are raised only under envelope approval, by the
+    # deterministic gate in `core/autonomy.py`; ``detail`` is the harness's own
+    # explanation. A grant lets the task go ahead *as it stands*: it never
+    # widens the envelope, which no approval can.
+    #: The task asked for more than the run may modify, and was narrowed.
+    NEEDS_WIDER_SCOPE = "needs_wider_scope"
+    #: Its definition of done has a defect that makes it unenforceable.
+    UNENFORCEABLE_DEFINITION_OF_DONE = "unenforceable_definition_of_done"
+    #: A mandatory check is one the harness will not run.
+    UNRUNNABLE_CRITERION = "unrunnable_criterion"
+    #: The plan rated it above the risk that goes ahead without its owner.
+    HIGH_RISK = "high_risk"
 
 
 class Resolution(StrEnum):
@@ -547,6 +559,22 @@ class Escalation:
     @property
     def open(self) -> bool:
         return self.resolution is None
+
+
+@dataclass
+class EnvelopeGrant:
+    """The owner's consent to have tasks approved within the envelope, not one by one.
+
+    Given when the run is started, against the envelope the owner's own
+    configuration draws -- the plan can only narrow that afterwards. Recorded so
+    a resumed run behaves as the run that was consented to, whatever the
+    configuration says by then. See `core/autonomy.py`.
+    """
+
+    by: str = ""
+    granted_at: str = field(default_factory=now_iso)
+    paths: list[str] = field(default_factory=list)
+    forbidden_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -682,6 +710,10 @@ class ExecutionTask:
     suggested_binding: ModelBinding | None = None
     depends_on: list[str] = field(default_factory=list)
     risk: Severity = Severity.LOW
+    # What the run's envelope cut from the scope this task asked for, as the
+    # clamp recorded it. Empty when the task fitted. Read by envelope approval,
+    # which sends a narrowed task to the owner rather than ahead.
+    clamped: list[str] = field(default_factory=list)
     effort: str = "medium"   # small | medium | large
     status: TaskStatus = TaskStatus.PROPOSED
     decision: Decision | None = None
@@ -896,6 +928,7 @@ class RunState:
     directives: list[Directive] = field(default_factory=list)
     escalations: dict[str, Escalation] = field(default_factory=dict)
     worktree: RunWorktree | None = None
+    envelope_grant: EnvelopeGrant | None = None
     drift: dict[str, DriftAssessment] = field(default_factory=dict)
     # What the harness had to repair before each answer could be used, by kind,
     # summed over the run. Counted because the repairs are otherwise invisible:
