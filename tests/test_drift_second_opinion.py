@@ -33,6 +33,7 @@ from supervisor_harness.core.drift import (
 )
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import (
+    AgentKind,
     AgentSpec,
     AgentStatus,
     AgentTurn,
@@ -40,6 +41,7 @@ from supervisor_harness.models import (
     DriftAssessment,
     DriftSignal,
     RunMode,
+    Scope,
     Severity,
     Usage,
 )
@@ -112,6 +114,42 @@ def test_a_second_opinion_cannot_talk_the_harness_out_of_a_scope_violation() -> 
 
     assert merged.score == 0.85
     assert not merged.on_task
+
+
+def _reading(kind: AgentKind) -> DriftAssessment:
+    """The measured turn: a UX lens reading the two documents the request named."""
+    agent = AgentSpec(kind=kind, objectives=["Specify the offline states"],
+                      scope=Scope(paths=["src/", "tests/"]))
+    turn = AgentTurn(output="UX-PRINCIPLES section 7 says to name the state plainly.",
+                     files_touched=["docs/UX-PRINCIPLES.md", "docs/ARCHITECTURE.md",
+                                    "src/i18n/en.json"])
+    return assess_heuristically(TurnContext(
+        agent=agent, turn=turn, previous_turns=[], brief="", task_prompt=PROMPT,
+        turn_index=0,
+    ))
+
+
+def test_a_lens_reading_outside_its_scope_is_judged_not_floored() -> None:
+    """Measured: the drift model called it "correctly performing the required
+    analysis", and the lens was stopped anyway -- a scope signal is a floor."""
+    heuristic = _reading(AgentKind.ANALYSIS)
+    assert [s.kind for s in heuristic.signals] == ["reads_outside_scope"]
+
+    merged = merge_assessments(heuristic, DriftAssessment(on_task=True, score=0.1))
+    assert merged.score < 0.45 and merged.on_task
+
+    agent = AgentSpec(objectives=["x"], scope=Scope(paths=["src/"]))
+    directive = decide_directive(heuristic, agent, AgentTurn(output="x"), Policy(), turns_used=1)
+    assert directive.kind is DirectiveKind.NARROW, "unconfirmed, it is still a narrow"
+    assert any("Read outside it only what your objectives need" in c
+               for c in directive.corrections)
+
+
+def test_an_implementer_writing_outside_its_scope_is_still_floored() -> None:
+    heuristic = _reading(AgentKind.EXECUTION)
+    assert [s.kind for s in heuristic.signals] == ["scope_paths"]
+    merged = merge_assessments(heuristic, DriftAssessment(on_task=True, score=0.0))
+    assert merged.score == heuristic.score and not merged.on_task
 
 
 def test_a_second_opinion_can_lower_a_score_the_heuristics_are_unsure_of() -> None:

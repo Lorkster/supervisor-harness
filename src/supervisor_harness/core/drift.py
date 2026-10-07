@@ -157,8 +157,17 @@ def _check_scope_paths(ctx: TurnContext) -> DriftSignal | None:
     if not outside:
         return None
     ratio = len(outside) / len(touched)
+    # The same for the scope itself. Outside it, an execution agent has written
+    # where it may not: a violation no second opinion can talk down. Any other
+    # agent has read there -- which nothing fences, and which may be exactly
+    # what its task said to do. A real run stopped a UX lens for reading the
+    # two documents the request named, with the drift model saying it was
+    # "correctly performing the required analysis": the scope signal is a floor
+    # the model cannot lower. Read outside its scope, it is a signal like any
+    # other, and the model's judgement counts.
+    wrote = ctx.agent.kind is AgentKind.EXECUTION
     return DriftSignal(
-        kind="scope_paths",
+        kind="scope_paths" if wrote else "reads_outside_scope",
         severity=Severity.HIGH if ratio > 0.5 else Severity.MEDIUM,
         detail=(
             f"{len(outside)} of {len(touched)} files are outside the declared scope: "
@@ -282,6 +291,11 @@ def _check_brief_echo(ctx: TurnContext) -> DriftSignal | None:
 #: A second opinion may lower a drift score, but never below what these alone
 #: say: the heuristics cannot be talked out of a scope violation.
 SCOPE_SIGNALS = frozenset({"scope_paths", "forbidden_paths", "out_of_scope_topic"})
+
+#: The signals a "narrow" answers: the scope signals, and a lens reading
+#: outside its scope -- which is about where it worked too, but is not a
+#: violation, so it sets the directive without setting a floor.
+NARROWING_SIGNALS = SCOPE_SIGNALS | {"reads_outside_scope"}
 
 
 def _check_no_progress(ctx: TurnContext) -> DriftSignal | None:
@@ -434,6 +448,10 @@ def _corrections_from(signals: list[DriftSignal], agent: AgentSpec) -> list[str]
     if "scope_paths" in kinds:
         allowed = ", ".join(f"`{p}`" for p in agent.scope.paths) or "your assigned files"
         out.append(f"Work only within {allowed}. Report anything outside it as a message instead.")
+    if "reads_outside_scope" in kinds:
+        allowed = ", ".join(f"`{p}`" for p in agent.scope.paths) or "your assigned files"
+        out.append(f"Your scope is {allowed}. Read outside it only what your objectives "
+                   "need, and say what each such file told you.")
     if "out_of_scope_topic" in kinds:
         excluded = ", ".join(agent.scope.out_of_scope[:3])
         out.append(f"Drop the excluded topics ({excluded}) entirely and return to your objectives.")
@@ -534,7 +552,7 @@ def decide_directive(
     if assessment.score >= policy.drift_threshold:
         kind = (
             DirectiveKind.NARROW
-            if any(s.kind in SCOPE_SIGNALS for s in assessment.signals)
+            if any(s.kind in NARROWING_SIGNALS for s in assessment.signals)
             else DirectiveKind.REFOCUS
         )
         return Directive(

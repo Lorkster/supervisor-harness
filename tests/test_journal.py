@@ -133,7 +133,7 @@ async def test_an_episode_carries_the_turn_its_assessment_and_its_directive(
     assert episode.assessments and episode.assessments[0].signals
     assert episode.directive.rationale
     # The evidence and the decision are the same object, not two lookups.
-    assert any(s.kind == "scope_paths" for s in episode.assessments[0].signals)
+    assert any(s.kind == "reads_outside_scope" for s in episode.assessments[0].signals)
 
 
 async def test_a_model_escalation_is_a_second_assessment_on_the_same_turn(
@@ -335,7 +335,7 @@ async def test_the_rendered_journal_names_the_evidence_behind_a_correction(
 
     text = render_journal(_journal(supervisor, run_id))
     assert "DIRECTIVE NARROW" in text
-    assert "scope_paths" in text          # the signal
+    assert "reads_outside_scope" in text  # the signal
     assert "docs/billing.md" in text      # the evidence
     assert "because" in text              # the rationale
     assert "envelope" in text

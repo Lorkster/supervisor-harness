@@ -189,9 +189,9 @@ def test_absolute_paths_are_not_mistaken_for_a_scope_violation() -> None:
     assert [s.kind for s in assessment.signals] == []
     assert assessment.on_task
 
-    # A genuine violation is still caught.
+    # A genuine read outside the scope is still caught (a lens: it read there).
     turn.files_touched = ["C:/repo/infra/waf.tf"]
-    assert any(s.kind == "scope_paths" for s in assess_heuristically(ctx).signals)
+    assert any(s.kind == "reads_outside_scope" for s in assess_heuristically(ctx).signals)
 
 
 def test_a_mismatched_workspace_is_not_read_as_a_scope_violation() -> None:
@@ -225,8 +225,8 @@ def test_a_mismatched_workspace_is_not_read_as_a_scope_violation() -> None:
     ctx = TurnContext(agent=agent, turn=turn, previous_turns=[], brief="Find weaknesses.",
                       task_prompt=PROMPT, turn_index=0, workspace="C:/repo")
     signals = {s.kind: s for s in assess_heuristically(ctx).signals}
-    assert "scope_paths" in signals
-    assert "1 of 1 files" in signals["scope_paths"].detail
+    assert "reads_outside_scope" in signals
+    assert "1 of 1 files" in signals["reads_outside_scope"].detail
 
 
 def test_the_turn_context_is_built_from_the_workspace_recorded_on_the_run() -> None:
