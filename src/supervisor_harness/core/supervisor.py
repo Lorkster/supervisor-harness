@@ -106,7 +106,15 @@ from .conversation import (
 )
 from .conversation import ROLE as CONVERSATION_ROLES
 from .dod import VerificationOutcome, fill_suite_commands, verify_criterion
-from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
+from .envelope import (
+    Ceiling,
+    attenuate,
+    effective,
+    establish,
+    render,
+    stale_reason,
+    widen_within,
+)
 from .fails_before import (
     changed_since,
     is_test_module,
@@ -118,7 +126,7 @@ from .fails_before import (
 from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
-from .paths import globs_may_overlap, relative_patterns
+from .paths import globs_may_overlap, globs_within, relative_patterns
 from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
@@ -704,6 +712,12 @@ class Supervisor:
         for task in tasks:
             task.scope.paths, placed = placed_in_tree(task.scope.paths, self.workspace)
             declared = bool(task.scope.paths)
+            # What the task asks for beyond the plan's envelope but inside the
+            # owner's grant, it gets, before the envelope narrows it.
+            run_paths = effective(state.envelope).paths
+            self._widen_within_grant(session, task, [
+                p for p in task.scope.paths
+                if run_paths and not globs_within([p], run_paths)])
             task.scope, clamped = attenuate(
                 task.scope, [Ceiling.of("run envelope", effective(state.envelope))]
             )
@@ -725,9 +739,15 @@ class Supervisor:
             for task_id, entries in extra.items():
                 notes.setdefault(task_id, []).extend(entries)
         for task in tasks:
-            for path in named_outside_scope(task, self.workspace):
-                gap = (f"the task names `{path}`, which its scope does not cover; "
-                       "its agent could not change it")
+            granted, refused = self._widen_within_grant(
+                session, task, named_outside_scope(task, self.workspace))
+            for path in granted:
+                task.scope.paths.append(path)
+                notes[task.id].append(f"the task names `{path}`, which its scope left out "
+                                      "and the owner's grant covers; added to its scope")
+            for path in refused:
+                gap = (f"the task names `{path}`, which its scope does not cover and the "
+                       "owner's grant does not either; its agent could not change it")
                 task.clamped.append(gap)
                 notes[task.id].append(gap)
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
@@ -2337,6 +2357,36 @@ class Supervisor:
         if any(n.text == already for n in state.notes):
             return
         session.note(already)
+
+    def _widen_within_grant(
+        self, session: RunSession, task: ExecutionTask, wanted: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Widen the run's envelope by what a task needs that the owner granted.
+
+        The owner's ceiling is their grant, recorded against the configured
+        envelope when the run started, or the configured envelope itself.
+        Returns the paths the task may now have and the paths refused
+        (`widen_within`).
+        """
+        state = session.state
+        grant = state.envelope_grant
+        ceiling = (Ceiling("owner's grant", list(grant.paths), list(grant.forbidden_paths))
+                   if grant is not None
+                   else Ceiling("configured envelope", list(self._configured_envelope().paths),
+                                list(self._configured_envelope().forbidden_paths)))
+        current = effective(state.envelope)
+        envelope, granted, refused = widen_within(current, ceiling, wanted)
+        widened = [p for p in envelope.paths if p not in current.paths]
+        if widened:
+            # Its own event, as every change to the envelope is; the grant's
+            # date is the grant's, so it is kept, not renewed.
+            suffix = ", widened within the owner's grant"
+            source = current.source if current.source.endswith(suffix) else current.source + suffix
+            session.emit(EventType.ENVELOPE_SET,
+                         {"envelope": to_jsonable(replace(envelope, source=source))})
+            session.note(f"run envelope widened within the owner's grant for "
+                         f"{task.title!r}: {render(widened)}")
+        return granted, refused
 
     def _configured_envelope(self) -> ScopeEnvelope:
         """The envelope the user's configuration grants, before any model speaks."""

@@ -53,6 +53,12 @@ def _two_tasks(fake: FakeProvider, first: list[str], second: list[str]) -> dict[
     two = copy.deepcopy(one)
     two["title"] = "Add the limiter's metrics"
     two["scope_paths"] = second
+    # Its own files only: a criterion inspecting the first task's file would
+    # bring that file into its scope (`_widen_within_grant`), and the two meet.
+    two["action"] = "Add tests for the limiter's metrics"
+    two["dod"] = [{"statement": "the metrics are tested", "method": "test",
+                   "command": "pytest tests/test_metrics.py -q", "expect": "0",
+                   "mandatory": True}]
     synthesis["tasks"] = [one, two]
     return synthesis
 

@@ -147,21 +147,21 @@ nothing may widen it (`establish`,
 [envelope.py:83](../src/supervisor_harness/core/envelope.py:83)).
 
 **Every scope below it is attenuated to every ceiling above it.** `attenuate`
-([envelope.py:122](../src/supervisor_harness/core/envelope.py:122)) narrows a
+([envelope.py:154](../src/supervisor_harness/core/envelope.py:154)) narrows a
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:705](../src/supervisor_harness/core/supervisor.py:705)), when an
+[supervisor.py:721](../src/supervisor_harness/core/supervisor.py:721)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:2399](../src/supervisor_harness/core/supervisor.py:2399)). It
+[supervisor.py:2500](../src/supervisor_harness/core/supervisor.py:2500)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
 **The grant has a shelf life.** An envelope carries a date, and a stale one is
 re-asked rather than silently honoured (`stale_reason`,
-[envelope.py:162](../src/supervisor_harness/core/envelope.py:162)). Renewal
+[envelope.py:194](../src/supervisor_harness/core/envelope.py:194)). Renewal
 renews the *date*, never the paths.
 
 **Two decisions worth not re-deriving:**

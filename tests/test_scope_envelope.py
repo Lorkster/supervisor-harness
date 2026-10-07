@@ -297,7 +297,12 @@ async def test_an_analysis_lens_scoped_outside_the_envelope_is_narrowed_at_spawn
 async def test_a_task_proposed_outside_the_envelope_runs_against_the_intersection(
     supervisor: Supervisor, fake,
 ) -> None:
-    """The definition-of-done case, end to end and visible to the user."""
+    """The definition-of-done case, end to end and visible to the user.
+
+    Outside the owner's own envelope too: within it, a task gets what the plan
+    left out (`test_a_task_gets_what_the_plan_left_out_within_the_owners_grant`).
+    """
+    supervisor.config.policy.scope_envelope = ["src/**"]
     _plan_with_envelope(fake, ["src/auth/**"])
 
     response = await _reach_approval(supervisor)
@@ -315,6 +320,29 @@ async def test_a_task_proposed_outside_the_envelope_runs_against_the_intersectio
     assert state.tasks[task["id"]].scope.paths == ["src/auth/**"]
 
 
+async def test_a_task_gets_what_the_plan_left_out_within_the_owners_grant(
+    supervisor: Supervisor, fake,
+) -> None:
+    """The plan narrows the owner's envelope, and guesses short.
+
+    Measured in four go-live runs: a Playwright task went to the owner because
+    the plan's envelope left out `e2e/`, though the owner had granted the whole
+    workspace. Within the grant the run widens, and says so; beyond it, it
+    does not (`test_a_task_proposed_outside_the_envelope_runs_against_the_intersection`).
+    """
+    _plan_with_envelope(fake, ["src/auth/**"])
+
+    response = await _reach_approval(supervisor)
+    task = response.tasks[0]
+    state = supervisor.store.load_state(response.run_id)
+
+    assert task["scope"]["paths"] == ["src/auth/**", "tests/**"]
+    assert state.envelope is not None and state.envelope.paths == ["src/auth/**", "tests/**"]
+    assert state.envelope.source.endswith("widened within the owner's grant")
+    assert any("widened within the owner's grant" in n.text and "tests/**" in n.text
+               for n in state.notes)
+
+
 async def test_approval_cannot_widen_the_envelope(supervisor: Supervisor, fake) -> None:
     """The recorded answer to the fourth question, enforced.
 
@@ -322,6 +350,7 @@ async def test_approval_cannot_widen_the_envelope(supervisor: Supervisor, fake) 
     a run-level bound would make the bound only as strong as the most
     permissive task anyone approved.
     """
+    supervisor.config.policy.scope_envelope = ["src/**"]
     _plan_with_envelope(fake, ["src/auth/**"])
 
     response = await _reach_approval(supervisor)
@@ -396,3 +425,28 @@ async def test_an_absolute_path_at_approval_means_the_same_file_relative(
 
     state = supervisor.store.load_state(response.run_id)
     assert state.tasks[task_id].scope.paths == ["src/auth/login.py"]
+
+
+def test_widening_stays_inside_the_owners_grant_and_its_forbidden_paths() -> None:
+    from supervisor_harness.core.envelope import Ceiling, widen_within
+    from supervisor_harness.models import ScopeEnvelope
+
+    run = ScopeEnvelope(paths=["src/auth/**"], forbidden_paths=["docs/adr/**"])
+    grant = Ceiling("owner's grant", ["src/**", "e2e/**", "docs/**"], ["src/secrets/**"])
+
+    envelope, granted, refused = widen_within(run, grant, [
+        "e2e/offline.spec.ts",      # left out by the plan, inside the grant: widened
+        "src/auth/login.py",        # already inside: granted, nothing to widen
+        "infra/waf.tf",             # beyond the grant
+        "src/secrets/key.py",       # the grant forbids it
+        "docs/adr/0001.md",         # the plan forbids it
+    ])
+
+    assert granted == ["e2e/offline.spec.ts", "src/auth/login.py"]
+    assert refused == ["infra/waf.tf", "src/secrets/key.py", "docs/adr/0001.md"]
+    assert envelope.paths == ["src/auth/**", "e2e/offline.spec.ts"]
+    assert envelope.forbidden_paths == ["docs/adr/**"], "nothing forbidden is lifted"
+
+    whole = ScopeEnvelope(paths=[])
+    assert widen_within(whole, Ceiling("grant", [], []), ["any/file.py"])[0].paths == [], (
+        "an envelope of the whole workspace has nothing to widen")

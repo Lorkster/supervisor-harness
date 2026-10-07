@@ -35,6 +35,7 @@ from supervisor_harness.models import (
     TaskStatus,
     VerifyMethod,
 )
+from supervisor_harness.providers.base import CompletionRequest
 from supervisor_harness.providers.router import ModelRouter
 from supervisor_harness.store.runstore import RunStore
 
@@ -217,17 +218,30 @@ async def test_everything_refused_goes_straight_to_the_owner(repo: Path) -> None
     assert not state.checkpoints, "and nothing was judged: there was nothing to judge"
 
 
-async def test_a_task_the_envelope_narrows_is_sent_to_the_owner(repo: Path) -> None:
-    """The planner draws the run's envelope narrower than the task asked for."""
+async def test_a_task_beyond_the_owners_grant_is_sent_to_the_owner(repo: Path) -> None:
+    """The task needs a file the owner's own envelope does not cover."""
     fake = Fixing([_task("Fix the addition bug")])
     fake._planning = lambda request: {  # type: ignore[method-assign]
         **FakeProvider._planning(fake, request), "envelope_paths": ["tests/**"]}
-    sup = _supervisor(repo, _config(), fake)
+    sup = _supervisor(repo, _config(scope_envelope=["tests/**"]), fake)
     paused = await sup.run(PROMPT, mode=RunMode.EXECUTE, grant_envelope=GRANT)
     (escalation,) = sup.store.load_state(paused.run_id).escalations.values()
 
     assert escalation.reason is EscalationReason.NEEDS_WIDER_SCOPE
     assert "calc.py" in escalation.detail
+
+
+async def test_a_task_the_plan_narrowed_within_the_grant_goes_ahead(repo: Path) -> None:
+    """The planner drew the envelope short; the owner had granted the workspace."""
+    fake = Fixing([_task("Fix the addition bug")])
+    fake._planning = lambda request: {  # type: ignore[method-assign]
+        **FakeProvider._planning(fake, request), "envelope_paths": ["tests/**"]}
+    sup = _supervisor(repo, _config(), fake)
+    response = await sup.run(PROMPT, mode=RunMode.EXECUTE, grant_envelope=GRANT)
+    state = sup.store.load_state(response.run_id)
+
+    assert not state.escalations
+    assert state.envelope is not None and "calc.py" in state.envelope.paths
 
 
 # -- what has to hold before the run starts ------------------------------------
@@ -327,3 +341,23 @@ def test_a_check_the_harness_will_not_run_needs_the_owner() -> None:
 @pytest.mark.parametrize("risk", [Severity.HIGH, Severity.CRITICAL])
 def test_high_risk_needs_the_owner(risk: Severity) -> None:
     assert _gated(risk=risk) == [EscalationReason.HIGH_RISK]
+
+
+async def test_the_grant_made_at_launch_is_the_ceiling_not_a_later_configuration(
+    repo: Path,
+) -> None:
+    """Widening is bounded by what the owner granted when the run started."""
+    fake = Fixing([_task("Fix the addition bug")])
+    sup = _supervisor(repo, _config(scope_envelope=["tests/**"]), fake)
+
+    def planning(request: CompletionRequest) -> dict[str, Any]:
+        # After the grant is recorded, before any task is proposed: the
+        # configuration is widened in between.
+        sup.config.policy.scope_envelope = []
+        return {**FakeProvider._planning(fake, request), "envelope_paths": ["tests/**"]}
+
+    fake._planning = planning  # type: ignore[method-assign]
+    paused = await sup.run(PROMPT, mode=RunMode.EXECUTE, grant_envelope=GRANT)
+
+    (escalation,) = sup.store.load_state(paused.run_id).escalations.values()
+    assert escalation.reason is EscalationReason.NEEDS_WIDER_SCOPE

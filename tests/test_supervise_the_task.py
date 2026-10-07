@@ -234,6 +234,8 @@ def test_a_file_the_task_only_reads_or_could_not_create_is_not_named(tmp_path: P
 async def test_such_a_task_is_marked_as_needing_a_wider_scope(
     supervisor: Supervisor, fake: FakeProvider,
 ) -> None:
+    """When the owner's own envelope does not cover the file either."""
+    supervisor.config.policy.scope_envelope = ["src/auth/**", "tests/**"]
     plan = fake._synthesis(None)  # type: ignore[arg-type]
     plan["tasks"][0]["action"] = "Add middleware in src/auth/login.py and in src/cache.py"
     fake.overrides["synthesis"] = plan
@@ -242,6 +244,20 @@ async def test_such_a_task_is_marked_as_needing_a_wider_scope(
     (task,) = supervisor.store.load_state(response.run_id).tasks.values()
 
     assert any("`src/cache.py`, which its scope does not cover" in c for c in task.clamped)
+
+
+async def test_within_the_owners_grant_the_named_file_joins_the_scope(
+    supervisor: Supervisor, fake: FakeProvider,
+) -> None:
+    plan = fake._synthesis(None)  # type: ignore[arg-type]
+    plan["tasks"][0]["action"] = "Add middleware in src/auth/login.py and in src/cache.py"
+    fake.overrides["synthesis"] = plan
+
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE)
+    (task,) = supervisor.store.load_state(response.run_id).tasks.values()
+
+    assert not task.clamped
+    assert "src/cache.py" in task.scope.paths
 
 
 # -- a check does not inherit the harness's settings -----------------------------
