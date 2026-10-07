@@ -601,11 +601,16 @@ PRs the owner would merge.
 > Fixed after them: `edit_file`, which replaces one exact passage and keeps the
 > file's line endings; `write_file` refuses to replace most of an existing file,
 > and says to use it; and the bars are added after each task's scope is
-> settled. Still open, and the strongest case yet for batch G: a test criterion
-> is proven by running the test, and nothing checks that the test is about what
-> the criterion says. And a regression the harness could attribute -- which
-> failing tests pass on the baseline -- reaches the agents and the judge as the
-> implementer's account of it.
+> settled. Two more, from the pattern across runs 5-9 rather than one run:
+> tasks whose scopes may meet are executed one at a time in the plan's order,
+> so a task that builds on another starts on a tree with its code in it
+> (`max_parallel_agents` had started every task at once, and implementers in
+> three runs stalled on "peer must land X first"); and a failed test or command
+> check is run again on the baseline commit, and its evidence says whether the
+> failures are this run's -- which is what run 8's judge needed instead of the
+> implementer's "pre-existing". Still open, and the strongest case yet for batch
+> G: a test criterion is proven by running the test, and nothing checks that
+> the test is about what the criterion says.
 
 ### Batch F — Does the model do what the harness asks?
 

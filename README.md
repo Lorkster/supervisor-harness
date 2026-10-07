@@ -985,6 +985,7 @@ src/supervisor_harness/
     drift.py       heuristics, escalation, the directive ladder
     dod.py         criteria validation, quality bars, verification
     fails_before.py a task's tests run on the baseline commit: they must fail there
+    attribution.py whether a failed check also fails on the baseline commit
     envelope.py    the run's scope grant, and attenuation down the delegation chain
     facts.py       whether a fact one agent established is still true when another reads it
     blackboard.py  shared context, message routing, contradiction detection
