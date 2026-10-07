@@ -44,7 +44,7 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..config import Policy
 from ..ids import now_iso
@@ -318,6 +318,9 @@ VERIFY_EXECUTABLES = frozenset({
     "npm", "npx", "pnpm", "yarn", "node", "jest", "vitest", "eslint", "tsc",
     "go", "cargo", "rustc", "dotnet", "mvn", "gradle", "make", "cmake", "ctest",
     "rake", "rspec", "bundle", "phpunit", "swift",
+    # A project's own verification script, as `npm run` and `make` run a
+    # project's own targets -- and held to a script file (`powershell_refusal`).
+    "pwsh", "powershell",
 })
 
 # Characters that hand the rest of a command to a shell. They only matter
@@ -941,6 +944,53 @@ _INLINE_SOURCE: dict[str, _Interpreter] = {
 }
 
 
+_POWERSHELL = frozenset({"pwsh", "powershell"})
+
+#: The only options a PowerShell check may carry before its script. Anything
+#: else -- `-Command`, `-c`, `-EncodedCommand`, `-CommandWithArgs` -- runs code
+#: written into the command line, and is refused by name or by omission.
+_POWERSHELL_FLAGS = frozenset({"-noprofile", "-nologo", "-noninteractive", "-file"})
+_POWERSHELL_VALUED = frozenset({"-executionpolicy"})
+
+
+def powershell_refusal(tokens: list[str]) -> str | None:
+    """Why this PowerShell invocation may not run as a check; ``None`` if it may.
+
+    A project's verification script -- `pwsh scripts/verify.ps1`, which one
+    project's workflow requires and a go-live run's root task named, stalling
+    six tasks that depended on it -- is the same trust as `npm run check`: code
+    the repository holds. A command line is not. Windows PowerShell reads a
+    bare argument as a command, not a file, so this is a positive rule: a
+    `.ps1` file must be named, with only the options above before it.
+    """
+    skip = False
+    for token in tokens[1:]:
+        if skip:
+            skip = False
+            continue
+        flag = token.lower()
+        if flag in _POWERSHELL_VALUED:
+            skip = True
+            continue
+        if flag in _POWERSHELL_FLAGS:
+            continue
+        if flag.startswith("-"):
+            return (f"it passes {token!r} to PowerShell; a check may only run a .ps1 "
+                    "script the repository holds")
+        if flag.endswith(".ps1"):
+            # POSIX rules on every machine, so a path is judged here as it is on
+            # CI, and the drive-letter test below is what catches `C:/...`.
+            script = PurePosixPath(token.replace("\\", "/"))
+            if (script.is_absolute() or ".." in script.parts or token[:1] in "/\\"
+                    or re.match(r"[A-Za-z]:", token)):
+                return (f"{token!r} is outside the repository; a check may only run a "
+                        "script the repository holds, named relative to it")
+            return None  # the script's own arguments follow, and are its business.
+        return (f"{token!r} is not a .ps1 script; PowerShell would run it as a "
+                "command, and a check may only run a script the repository holds")
+    return "it names no .ps1 script for PowerShell to run"
+
+
 def inline_source_flag(tokens: list[str]) -> str | None:
     """The flag by which this command carries its own source, or ``None``.
 
@@ -1105,6 +1155,8 @@ def unsafe_command(command: str) -> str | None:
             f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Verify this by review, or by "
             "a command the user chooses to run themselves"
         )
+    if executable in _POWERSHELL:
+        return powershell_refusal(tokens)
     # The rule an agent's shell already had. Without it here, a criterion --
     # model output -- could carry any program at all as `python -c "..."`.
     inline = inline_source_flag(tokens)
@@ -1151,6 +1203,14 @@ def verify_command(
     # below, so the evidence says the runner is missing.
     argv = shell_split(command)
     executable = shutil.which(argv[0])
+    substituted = ""
+    if executable is None and executable_name(argv[0]) == "pwsh":
+        # A project whose script is written for Windows PowerShell may name
+        # `pwsh` in its workflow; on a machine with only `powershell`, that is
+        # the one that runs it. Said in the evidence, not done quietly.
+        executable = shutil.which("powershell")
+        substituted = ("\n[supervisor] `pwsh` is not on PATH; the script was run with "
+                       "Windows PowerShell (`powershell`) instead.")
     if executable is None:
         return VerificationOutcome(
             CriterionStatus.BLOCKED,
@@ -1169,7 +1229,7 @@ def verify_command(
 
     output = (completed.stdout + completed.stderr).strip()
     tail = output[-1500:]
-    evidence = f"$ {command}\nexit={completed.returncode}\n{tail}"
+    evidence = f"$ {command}\nexit={completed.returncode}\n{tail}{substituted}"
 
     expect = criterion.expect.strip()
     if not expect:

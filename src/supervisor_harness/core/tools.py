@@ -84,6 +84,7 @@ from .dod import (
     VERIFY_EXECUTABLES,
     executable_name,
     inline_source_flag,
+    powershell_refusal,
     run_bounded,
     shell_split,
     unquoted_metacharacter,
@@ -749,6 +750,10 @@ class Toolbox:
                 f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Use write_file to change "
                 "a file in your scope, or report the command for the host to run"
             )
+
+        powershell = powershell_refusal(tokens) if executable in ("pwsh", "powershell") else None
+        if powershell is not None:
+            return f"an agent may not run this: {powershell}"
 
         inline = inline_source_flag(tokens)
         if inline is not None:
