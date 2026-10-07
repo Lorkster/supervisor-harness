@@ -656,7 +656,10 @@ anywhere in the workspace and approval was per-task with nothing above it.
 
 Each run now has an envelope: the union of what that run may modify, fixed
 before any task exists. `policy.scope_envelope` sets it (empty means the whole
-workspace) and the plan may narrow it further; nothing widens it. Every agent's
+workspace) and the plan may narrow it further. Only the owner widens it: under
+envelope approval a task's scope may grow to what the owner's grant covers when
+tasks are proposed, and at a write within the run's envelope as it stands, never
+into a task held for the owner. Every agent's
 scope is attenuated at spawn to the envelope, to its task's scope, and to its
 spawner's where there is one -- so a verifier cannot be handed a wider fence than
 the work it is judging. A scope that exceeds its ceiling is narrowed to the

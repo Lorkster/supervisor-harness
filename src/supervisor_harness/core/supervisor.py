@@ -398,9 +398,16 @@ class Supervisor:
         # smaller than the shipped defaults require, and a fully-remediated run
         # was marked FAILED after doing all of its work.
         limit = 12 + 6 * max(1, self.config.policy.max_checkpoint_iterations)
-        guard = 0
-        while guard < limit:
-            guard += 1
+        # The guard is for a machine that is stuck, so it counts steps that
+        # changed nothing. Counting every step ended a go-live run (6 tasks, 3
+        # checkpoint cycles, 1h53m of work) as FAILED part-way through its last
+        # verification. A far larger ceiling on all steps stays as a backstop
+        # for a loop that records something every time round.
+        ceiling = limit * 25
+        stalled = steps = 0
+        seen = session.state.last_seq
+        while stalled < limit and steps < ceiling:
+            steps += 1
             state = session.state
             phase = state.phase
 
@@ -428,10 +435,14 @@ class Supervisor:
             if response is not None:
                 session.sync_index()
                 return response
+            if session.state.last_seq > seen:
+                seen, stalled = session.state.last_seq, 0
+            else:
+                stalled += 1
+        stuck =(f"made no progress in {limit} steps" if stalled >= limit
+                 else f"did not settle after {steps} steps")
         return self.reporting._error(
-            session,
-            f"phase machine did not settle after {limit} steps; last phase "
-            f"{session.state.phase.value}",
+            session, f"phase machine {stuck}; last phase {session.state.phase.value}",
         )
 
     def _transition(self, session: RunSession, phase: Phase, **payload: Any) -> None:
@@ -2298,17 +2309,25 @@ class Supervisor:
     async def _widen_for_write(
         self, session: RunSession, agent: AgentSpec, toolbox: Toolbox, raw: str
     ) -> None:
-        """Let an implementer write where its task needs, within the owner's grant.
+        """Let an implementer write where its task needs, within the run's plan.
 
         Measured in a go-live run: the plan's envelope named `reporting/` -- a
         directory that does not exist -- for a task whose whole job was a
         change to `core/reporting.py`. Its implementer found the right line,
         was refused by its scope, and escalated, correctly, with nothing
-        written. Within the owner's grant, the scope widens at the moment of
-        the write, and the record says so. Not where another running
-        implementer's scope could meet the path: keeping two writers apart is
-        what task scopes are for. Anything else is refused by the toolbox as
-        before.
+        written. Within the run's envelope, the scope widens at the moment of
+        the write, and the record says so.
+
+        The envelope itself does not widen here. Widening up to the owner's
+        grant happens when tasks are proposed (`_widen_within_grant`); at a
+        write, the grant from `--grant-envelope` is the whole workspace, and in
+        a go-live run that let an implementer add twenty `scripts/tmp-*.mjs`
+        patch scripts to the envelope, one at a time. Not where another running
+        implementer's scope could meet the path -- keeping two writers apart is
+        what task scopes are for -- and not into a task held for the owner: a
+        vetoed or escalated change is the owner's to decide, and in the same
+        run a peer made the very change the reviewer had vetoed. Anything else
+        is refused by the toolbox as before.
         """
         state = session.state
         task = state.tasks.get(agent.task_id or "")
@@ -2321,11 +2340,23 @@ class Supervisor:
                and globs_may_overlap([rel], other.scope.paths)
                for other in state.agents.values()):
             return
-        granted, _ = self._widen_within_grant(session, task, [rel])
+        held = {e.task_id for e in state.open_escalations()} - {task.id}
+        holder = next((t for t in state.tasks.values()
+                       if t.id in held and globs_may_overlap([rel], t.scope.paths)), None)
+        if holder is not None:
+            await session.anote(f"scope not widened to {rel}: it is in the scope of "
+                                f"{holder.title!r}, which is held for the owner",
+                                actor=agent.id, task_id=task.id)
+            return
+        current = effective(state.envelope)
+        grant = state.envelope_grant
+        plan = Ceiling("the run's plan", list(current.paths),
+                       [*current.forbidden_paths, *(grant.forbidden_paths if grant else [])])
+        _, granted, _ = widen_within(current, plan, [rel])
         if granted:
             await session.aemit(EventType.SCOPE_WIDENED, {
                 "agent_id": agent.id, "task_id": task.id, "paths": granted})
-            await session.anote(f"scope widened within the owner's grant so "
+            await session.anote(f"scope widened within the run's envelope so "
                                 f"{agent.id} could change {rel}", actor=agent.id)
 
     async def _agent_call_failed(

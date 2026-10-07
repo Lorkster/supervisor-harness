@@ -273,6 +273,50 @@ def tree_wide_git(command: str) -> str | None:
     return None
 
 
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def match_ignoring_indent(text: str, old: str, new: str) -> tuple[int, str] | None:
+    """``text`` with ``old`` replaced by ``new`` where only indentation kept them apart.
+
+    Returns the line the change starts on and the edited text, or ``None``
+    unless the lines of ``old``, stripped of their leading and trailing
+    whitespace, match exactly one run of lines in ``text``. ``new`` is shifted
+    by the difference between the indentation ``old`` was written with and the
+    file's, so a change copied with the wrong indentation lands with the right
+    one. The file's line endings are kept.
+    """
+    crlf = "\r\n" in text
+    body = text.replace("\r\n", "\n")
+    old_lines = old.replace("\r\n", "\n").strip("\n").split("\n")
+    new_lines = new.replace("\r\n", "\n").strip("\n").split("\n") if new.strip() else []
+    keys = [line.strip() for line in old_lines]
+    if not any(keys):
+        return None
+    lines = body.split("\n")
+    starts = [i for i in range(len(lines) - len(keys) + 1)
+              if all(lines[i + k].strip() == key for k, key in enumerate(keys))]
+    if len(starts) != 1:
+        return None
+    at = starts[0]
+    first = next(k for k, key in enumerate(keys) if key)
+    theirs, mine = _indent(lines[at + first]), _indent(old_lines[first])
+
+    def shifted(line: str) -> str:
+        if not line.strip():
+            return ""
+        own = _indent(line)
+        if own.startswith(mine):
+            return theirs + line[len(mine):]
+        cut = max(0, len(theirs) - (len(mine) - len(own)))
+        return theirs[:cut] + line.lstrip()
+
+    lines[at:at + len(keys)] = [shifted(line) for line in new_lines]
+    edited = "\n".join(lines)
+    return at + 1, edited.replace("\n", "\r\n") if crlf else edited
+
+
 class Toolbox:
     """The tools an autonomous agent may use, sandboxed to one workspace."""
 
@@ -458,7 +502,10 @@ class Toolbox:
         numbered: list[str] = []
         size = 0
         for n, line in enumerate(lines[start - 1 : start - 1 + limit], start):
-            text = f"{n:>5}  {line}"
+            # A tab, as `cat -n` has it: with spaces after the number, a model
+            # copying a line for edit_file could not tell the padding from the
+            # indentation -- 147 edit_file misses in one go-live run.
+            text = f"{n:>6}\t{line}"
             if numbered and size + len(text) + 1 > max_chars:
                 break
             numbered.append(text)
@@ -627,19 +674,25 @@ class Toolbox:
         if "\r\n" in text:
             old, new = (s.replace("\r\n", "\n").replace("\n", "\r\n") for s in (old, new))
         count = text.count(old)
-        if count != 1:
+        matched = ""
+        if count == 1:
+            line = text[:text.index(old)].count("\n") + 1
+            edited = text.replace(old, new, 1)
+        elif count == 0 and (loose := match_ignoring_indent(text, old, new)) is not None:
+            line, edited = loose
+            matched = " (matched ignoring indentation; `new` re-indented to the file's)"
+        else:
             return ToolResult("edit_file", False, (
                 f"`old` does not occur in {rel} as written; read the file and copy the "
                 "text exactly" if count == 0 else
                 f"`old` occurs {count} times in {rel}; include enough of the "
                 "surrounding lines to pick out one"))
-        line = text[:text.index(old)].count("\n") + 1
         try:
             with target.open("w", encoding="utf-8", newline="") as handle:
-                handle.write(text.replace(old, new, 1))
+                handle.write(edited)
         except OSError as exc:
             return ToolResult("edit_file", False, f"could not write {rel}: {exc}")
-        return ToolResult("edit_file", True, f"edited {rel} at line {line}")
+        return ToolResult("edit_file", True, f"edited {rel} at line {line}{matched}")
 
     def _path_candidates(self, tokens: list[str]) -> list[str]:
         """The arguments of a command that could name a file.

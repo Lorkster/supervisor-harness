@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from supervisor_harness.core.conversation import (
     CHECKPOINT_CALLS,
@@ -27,7 +28,7 @@ from supervisor_harness.core.conversation import (
     stint_payload,
 )
 from supervisor_harness.core.supervisor import Supervisor
-from supervisor_harness.models import AgentKind, AgentSpec, RunMode, Usage
+from supervisor_harness.models import AgentKind, AgentSpec, Resolution, RunMode, Usage
 from supervisor_harness.providers.base import (
     ChatMessage,
     CompletionRequest,
@@ -281,7 +282,7 @@ async def test_a_write_the_task_needs_widens_its_scope_within_the_grant(
 
     assert (workspace / "src/cache.py").read_text(encoding="utf-8") == "LIMIT = 10\n"
     assert "src/cache.py" in task.scope.paths, "replayed from the log, not only in memory"
-    assert any("scope widened within the owner's grant" in n.text for n in state.notes)
+    assert any("scope widened within the run's envelope" in n.text for n in state.notes)
 
 
 async def test_beyond_the_grant_the_write_is_refused_as_before(
@@ -326,3 +327,73 @@ def test_no_scope_is_widened_onto_the_floor(tmp_path: Path) -> None:
     assert box.writable_path(".git/hooks/pre-commit") is None
     assert box.writable_path("../outside.py") is None
     assert box.writable_path("src/cache.py") == "src/cache.py"
+
+
+def _writer(supervisor: Supervisor, run_id: str) -> tuple[Any, AgentSpec]:
+    """A run whose plan's envelope is src/ and tests/, granted the whole workspace."""
+    from supervisor_harness.models import (
+        AgentStatus,
+        EnvelopeGrant,
+        ExecutionTask,
+        RunState,
+        Scope,
+        ScopeEnvelope,
+    )
+
+    session = supervisor.store.create(RunState(id=run_id, prompt="p"))
+    session.state.envelope = ScopeEnvelope(paths=["src/", "tests/"], source="run plan")
+    session.state.envelope_grant = EnvelopeGrant(by="the owner")
+    task = ExecutionTask(title="mine", scope=Scope(paths=["src/auth/**"]))
+    me = AgentSpec(id="agt_me", kind=AgentKind.EXECUTION, task_id=task.id,
+                   scope=Scope(paths=["src/auth/**"]), status=AgentStatus.RUNNING)
+    session.state.tasks[task.id] = task
+    session.state.agents[me.id] = me
+    return session, me
+
+
+async def test_at_a_write_the_scope_widens_only_within_the_runs_envelope(
+    supervisor: Supervisor,
+) -> None:
+    """Measured (go-live run 16): with the whole workspace granted, an implementer
+    added twenty `scripts/tmp-*.mjs` patch scripts to the envelope, one write at a
+    time."""
+    from supervisor_harness.core.tools import Toolbox
+
+    session, me = _writer(supervisor, "run_E")
+    box = Toolbox(supervisor.workspace, supervisor.config.policy)
+    await supervisor._widen_for_write(session, me, box, "scripts/tmp-patch.mjs")
+    await supervisor._widen_for_write(session, me, box, "src/cache.py")
+
+    assert me.scope.paths == ["src/auth/**", "src/cache.py"], "inside the plan, not beyond"
+    assert session.state.envelope is not None
+    assert session.state.envelope.paths == ["src/", "tests/"], "the envelope never grows here"
+
+
+async def test_not_into_a_task_held_for_the_owner(supervisor: Supervisor) -> None:
+    """Measured (go-live run 16): the reviewer vetoed adding the e2e suite to `npm
+    run check`, and a peer made that very change in package.json."""
+    from supervisor_harness.core.tools import Toolbox
+    from supervisor_harness.models import (
+        Escalation,
+        EscalationReason,
+        ExecutionTask,
+        Scope,
+        TaskStatus,
+    )
+
+    session, me = _writer(supervisor, "run_H")
+    session.state.envelope.paths.append("package.json")  # type: ignore[union-attr]
+    vetoed = ExecutionTask(title="Wire e2e into check", scope=Scope(paths=["package.json"]),
+                           status=TaskStatus.BLOCKED)
+    session.state.tasks[vetoed.id] = vetoed
+    escalation = Escalation(reason=EscalationReason.REVIEW_VETO, task_id=vetoed.id)
+    session.state.escalations[escalation.id] = escalation
+    box = Toolbox(supervisor.workspace, supervisor.config.policy)
+
+    await supervisor._widen_for_write(session, me, box, "package.json")
+    assert me.scope.paths == ["src/auth/**"]
+    assert any("held for the owner" in n.text for n in session.state.notes)
+
+    escalation.resolution = Resolution.DECLINE
+    await supervisor._widen_for_write(session, me, box, "package.json")
+    assert "package.json" in me.scope.paths, "once the owner has answered, it is not held"

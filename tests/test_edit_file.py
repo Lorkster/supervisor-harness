@@ -163,3 +163,46 @@ def test_delete_is_offered_to_an_implementer_only() -> None:
 
     assert "delete_file" in names(AgentKind.EXECUTION)
     assert "delete_file" not in names(AgentKind.ANALYSIS)
+
+
+# Go-live run 16 (plantsandclimate P3-18): 147 edit_file calls missed, and the
+# model fell back to writing node scripts that patched the files. read_file put
+# two spaces after a right-aligned line number, so a copied line's indentation
+# was a guess; the misses were indentation.
+
+TSX = ("export function Card() {\n  try {\n    load();\n  } catch {\n"
+       "    setFailed(true);\n  }\n}\n")
+
+
+def test_read_file_puts_a_tab_between_the_number_and_the_line(tree: Path) -> None:
+    (tree / "src" / "card.tsx").write_text(TSX, encoding="utf-8")
+    shown = _call(tree, "read_file", path="src/card.tsx").output.splitlines()
+
+    assert shown[5] == "     5\t    setFailed(true);", "the line exactly as it is, after a tab"
+
+
+def test_an_edit_off_only_in_indentation_lands_re_indented(tree: Path) -> None:
+    card = tree / "src" / "card.tsx"
+    card.write_bytes(TSX.replace("\n", "\r\n").encode())
+    result = _call(tree, "edit_file", path="src/card.tsx",
+                   old="} catch {\n  setFailed(true);\n}",
+                   new="} catch (err) {\n  setError(err);\n  if (err) {\n    log(err);\n  }\n}")
+
+    assert result.ok, result.output
+    assert "line 4" in result.output and "ignoring indentation" in result.output
+    assert card.read_bytes().decode() == (
+        "export function Card() {\r\n  try {\r\n    load();\r\n  } catch (err) {\r\n"
+        "    setError(err);\r\n    if (err) {\r\n      log(err);\r\n    }\r\n  }\r\n}\r\n"
+    ), "shifted to the file's indentation, line endings kept"
+
+
+def test_indentation_never_lets_an_edit_land_in_two_places_or_on_a_fragment(
+    tree: Path,
+) -> None:
+    (tree / "src" / "twice.py").write_text("def a():\n    x = 1\n\ndef b():\n  x = 1\n",
+                                           encoding="utf-8")
+    twice = _call(tree, "edit_file", path="src/twice.py", old="\tx = 1", new="x = 2")
+    fragment = _call(tree, "edit_file", path="src/twice.py", old="  def a(", new="def c(")
+
+    assert not twice.ok and not fragment.ok
+    assert (tree / "src/twice.py").read_text(encoding="utf-8").count("x = 1") == 2

@@ -743,9 +743,9 @@ owner would merge. Measured against runs 4-9.
 > "npm run typecheck passes with the new data-layer types".
 >
 > After them, on the owner's decision: a task's scope widens within the owner's
-> grant -- at proposal, and at the moment of a write the task needs, where no
-> running peer's scope could meet the path -- and only what the grant does not
-> cover goes to the owner. And: bare file names are read when one file in the
+> grant at proposal, and at the moment of a write the task needs it widens
+> within the run's envelope (after run 16, below), where no running peer's
+> scope could meet the path -- and only what is not covered goes to the owner. And: bare file names are read when one file in the
 > tree has the name; a finished task is checked before the next writer starts;
 > and a command named in a criterion's statement is its command.
 
@@ -757,6 +757,29 @@ owner would merge. Measured against runs 4-9.
 > between it and a merge: a scratch spec its implementer could not delete
 > (there was no tool; `delete_file` now), and the `npm run check` change again
 > -- which batch G now vetoes.
+
+> **Run 16** (P3-18, 1h53m, with `delete_file` and G). The branch passes every
+> check the project has -- 892 unit tests, all 25 Playwright journeys among
+> them a new offline one, `verify.ps1` -- and its scratch files were deleted.
+> G vetoed the CI-breaking task, citing `ci.yml` line 31. Yet the harness
+> verified none of six tasks and failed the run, for four reasons of its own:
+>
+> - every inspection criterion came with no `expect`; that was a medium
+>   warning, so nothing sent it back, and verification blocked it three times
+>   per task. Now it is unenforceable (sent back), and one kept through the
+>   send-back becomes a mandatory review that must cite the lines;
+> - the phase machine's guard counted every step and stopped the run during
+>   its last verification. Now it counts steps that recorded nothing;
+> - 147 `edit_file` calls missed: `read_file` put two spaces after the line
+>   number, so a copied line's indentation was a guess, and the model wrote
+>   twenty `scripts/tmp-*.mjs` patch scripts instead. Now a tab, as `cat -n`
+>   has it, and an edit off only in indentation lands, re-indented, when it
+>   matches one place;
+> - every task's scope was the whole plan, so a peer made the vetoed change.
+>   Now every implementer's brief lists the changes held for the owner, and no
+>   scope widens into a task held for the owner. And at a write a scope widens
+>   only within the run's envelope: the grant from `--grant-envelope` is the
+>   whole workspace, which is how the twenty scripts got in.
 
 ---
 

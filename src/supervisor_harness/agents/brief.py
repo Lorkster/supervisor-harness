@@ -19,6 +19,7 @@ from ..models import (
     CriterionStatus,
     Directive,
     DoDCriterion,
+    EscalationReason,
     ExecutionTask,
     Lesson,
     Message,
@@ -463,6 +464,7 @@ def build_implementer_brief(
         _section("Findings behind it", findings),
         _section("Done means", _dod_block(task.dod)),
         _section("Scope", scope),
+        _section("Held for the owner", _vetoed_changes(run, task)),
         _section(
             "Baseline",
             (f"The run started from commit {baseline}. " if baseline else "")
@@ -472,6 +474,29 @@ def build_implementer_brief(
         _section("Context", f"This task is one part of the request: {run.prompt}"),
     ]
     return "\n".join(p for p in parts if p).strip()
+
+
+def _vetoed_changes(run: RunState, task: ExecutionTask) -> str:
+    """The changes a reviewer vetoed that the owner has not decided on yet.
+
+    A veto parks one task, not the change it proposed: in a go-live run the
+    reviewer vetoed adding the e2e suite to `npm run check` (it breaks CI), and
+    a peer whose scope also held `package.json` made the same change anyway.
+    Every implementer is told what is held, and why.
+    """
+    held: list[str] = []
+    for escalation in run.open_escalations():
+        vetoed = run.tasks.get(escalation.task_id)
+        if (escalation.reason is not EscalationReason.REVIEW_VETO or vetoed is None
+                or vetoed.id == task.id):
+            continue
+        detail = escalation.detail.removeprefix("review_veto: ")
+        held.append(f"{vetoed.title}: {vetoed.action or vetoed.title} -- vetoed: {detail}")
+    if not held:
+        return ""
+    return ("A reviewer vetoed these changes and the owner has not decided on them. Do "
+            "not make them, in any file, as part of your task; if your task cannot be "
+            "done without one, say so in your report.\n" + _bullets(held))
 
 
 def build_verifier_brief(run: RunState, task: ExecutionTask, change_summary: str = "") -> str:

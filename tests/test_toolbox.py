@@ -122,8 +122,8 @@ def test_read_file_numbers_lines_from_the_requested_start(tree: Path) -> None:
     assert result.ok
     body = result.output.splitlines()
     assert body[0] == "many.txt"
-    assert body[1].strip().startswith("10  line 10")
-    assert body[3].strip().startswith("12  line 12")
+    assert body[1].strip().startswith("10	line 10")
+    assert body[3].strip().startswith("12	line 12")
     assert "... (18 more lines; continue with read_file start=13)" in result.output
 
 
@@ -143,7 +143,7 @@ def test_read_file_clamps_a_hostile_window(tree: Path) -> None:
     box = _box(tree)
 
     first = box.read_file("many.txt", start=0, limit=1).output.splitlines()[1]
-    assert first.strip().startswith("1 "), "start=0 should clamp to the first line"
+    assert first.strip().startswith("1	"), "start=0 should clamp to the first line"
     assert box.read_file("many.txt", start=-5, limit=1).ok
     assert len(
         box.read_file("many.txt", limit=MAX_READ_LINES * 10).output.splitlines()
@@ -365,7 +365,7 @@ def test_call_coerces_the_arguments_a_model_actually_sends(tree: Path) -> None:
                       _agent(AgentKind.ANALYSIS))
 
     assert result.ok
-    assert result.output.splitlines()[1].strip().startswith("5  5")
+    assert result.output.splitlines()[1].strip().startswith("5	5")
 
 
 def test_an_unknown_tool_is_named_in_its_own_refusal(tree: Path) -> None:

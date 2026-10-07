@@ -160,3 +160,31 @@ async def test_the_review_can_be_turned_off_only_where_policy_allows(
         session.state.tasks[task.id] = task
         await supervisor._approve_within_envelope(session, [task])
         assert (task.id in called) is on, "asked when on, and only then"
+
+
+def test_every_implementer_is_told_what_is_held_for_the_owner() -> None:
+    """Measured (go-live run 16): the veto parked the task, and a peer whose scope
+    also held package.json made the vetoed change anyway."""
+    from supervisor_harness.agents.brief import build_implementer_brief
+    from supervisor_harness.models import AgentKind, AgentSpec, Escalation, Resolution
+
+    run = RunState(prompt="Do P3-18")
+    vetoed = ExecutionTask(title=TASK.title, action=TASK.action, scope=TASK.scope)
+    peer = ExecutionTask(title="Create the offline e2e test", scope=Scope(paths=["e2e/"]))
+    run.tasks.update({vetoed.id: vetoed, peer.id: peer})
+    escalation = Escalation(reason=EscalationReason.REVIEW_VETO, task_id=vetoed.id,
+                            detail="review_veto: breaks_the_project: ci.yml:31 runs "
+                                   "check before playwright install")
+    run.escalations[escalation.id] = escalation
+    agent = AgentSpec(kind=AgentKind.EXECUTION, task_id=peer.id, scope=peer.scope)
+
+    brief = build_implementer_brief(run, agent, peer)
+    assert "## Held for the owner" in brief
+    assert "Add npm run test:e2e to the check script" in brief and "ci.yml:31" in brief
+    assert "Do not make them, in any file" in brief
+    assert "Held for the owner" not in build_implementer_brief(run, agent, vetoed), (
+        "not its own task's")
+
+    escalation.resolution = Resolution.GRANT
+    assert "Held for the owner" not in build_implementer_brief(run, agent, peer), (
+        "answered, it is no longer held")

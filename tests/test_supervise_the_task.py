@@ -372,3 +372,42 @@ def test_after_preparation_such_a_task_carries_the_test_bar(tmp_path: Path) -> N
 
     assert VerifyMethod.REVIEW in methods and VerifyMethod.TEST in methods
     assert not any("no command given" in n for n in notes[task.id])
+
+
+# -- an inspection with nothing to look for ---------------------------------------
+# Go-live run 16: every inspection criterion of six tasks came with no `expect`.
+# It was a medium warning, so it was neither sent back nor stopped by the gate,
+# and verification BLOCKED it on each of three attempts: no task could be verified.
+
+
+def _inspect(statement: str, expect: str = "") -> DoDCriterion:
+    return DoDCriterion(statement=statement, method=VerifyMethod.INSPECTION, expect=expect,
+                        mandatory=True)
+
+
+def test_an_inspection_with_nothing_to_look_for_is_sent_back() -> None:
+    from supervisor_harness.core.phases import unenforceable_criteria
+
+    empty = _inspect("src/i18n/en.json contains keys offline.plant.needsConnection")
+    no_file = _inspect("the catch block stores the DataError", expect="DataError")
+    good = _inspect("en.json has the key", expect="src/i18n/en.json: offline.plant")
+    weak = unenforceable_criteria([_task(empty, no_file, good)], Policy())
+
+    assert len(weak) == 2 and all("path/to/file: text that must be present" in w
+                                  for w in weak)
+
+
+def test_kept_through_the_send_back_it_is_judged_not_blocked(tmp_path: Path) -> None:
+    from supervisor_harness.core.dod import verify_inspection
+
+    empty = _inspect("ResultsSection.tsx stores the DataError, not a boolean")
+    good = _inspect("en.json has the key", expect="src/i18n/en.json: offline.plant")
+    assert verify_inspection(empty, tmp_path).status.value == "blocked", "as it was"
+    task = _task(empty, good)
+    _, notes = prepare_tasks([task], Policy(require_tests=False), None)
+
+    assert empty.method is VerifyMethod.REVIEW and empty.mandatory
+    assert "ResultsSection.tsx stores the DataError" in empty.rubric
+    assert "Cite the file and line" in empty.rubric
+    assert good.method is VerifyMethod.INSPECTION, "one it can check stays a check"
+    assert any("named no file and text" in n for n in notes[task.id])

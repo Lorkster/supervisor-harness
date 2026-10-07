@@ -51,6 +51,7 @@ from .blackboard import (
 from .dod import (
     apply_quality_bars,
     fill_suite_commands,
+    review_what_cannot_inspect,
     review_what_cannot_run,
     summarise,
     unsafe_command,
@@ -462,6 +463,7 @@ def prepare_tasks(
     for task in tasks:
         entries: list[str] = fill_suite_commands(task, workspace)
         entries += review_what_cannot_run(task, policy)
+        entries += review_what_cannot_inspect(task)
         added = apply_quality_bars(task, policy, workspace)
         for crit in added:
             entries.append(f"harness added mandatory criterion: {crit.statement}")

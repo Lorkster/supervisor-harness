@@ -503,10 +503,14 @@ def validate_criteria(criteria: list[DoDCriterion], policy: Policy) -> list[Crit
                 CriterionIssue(crit.id, "review criterion has no rubric to judge against",
                                Severity.MEDIUM)
             )
-        if crit.method is VerifyMethod.INSPECTION and not crit.expect.strip():
+        if crit.method is VerifyMethod.INSPECTION and not inspectable(crit.expect):
+            # HIGH, because the harness cannot check it at all: in a go-live
+            # run every inspection criterion of six tasks came with no
+            # `expect`, passed as a medium warning, and was BLOCKED at
+            # verification three times over -- no task could be verified.
             issues.append(
-                CriterionIssue(crit.id, "inspection criterion does not say what proves it",
-                               Severity.MEDIUM)
+                CriterionIssue(crit.id, "inspection criterion does not say what proves it: "
+                               f"its expect must read {INSPECTION_FORM!r}", Severity.HIGH)
             )
     return issues
 
@@ -670,6 +674,38 @@ def review_what_cannot_run(task: ExecutionTask, policy: Policy) -> list[str]:
             crit.expect = ""
             lines.append(f"criterion {crit.statement!r} named no command it could be run by; "
                          "the verifier judges it against the code and its tests")
+    return lines
+
+
+#: The one shape of `expect` an inspection criterion can be checked by.
+INSPECTION_FORM = "path/to/file: text that must be present"
+
+
+def inspectable(expect: str) -> bool:
+    """Whether ``expect`` names a file, and optionally text, the harness can look for."""
+    path, colon, _ = expect.strip().partition(":")
+    return bool(colon and path.strip())
+
+
+def review_what_cannot_inspect(task: ExecutionTask) -> list[str]:
+    """A file-state claim with no file to look in, judged by the verifier instead.
+
+    The last resort, after the synthesis has been sent back once for it. Left
+    as it was, `verify_inspection` blocks it on every attempt and the task can
+    never be verified; "ResultsSection.tsx stores the DataError, not a boolean"
+    is a statement about the code a reader can judge. So it becomes a mandatory
+    `review` with the statement as its rubric, and the verifier must cite the
+    lines.
+    """
+    lines: list[str] = []
+    for crit in task.dod:
+        if crit.method is VerifyMethod.INSPECTION and not inspectable(crit.expect):
+            crit.method = VerifyMethod.REVIEW
+            crit.rubric = (f"Pass only if the code shows this: {crit.statement}. Cite the "
+                           "file and line that show it. A claim you cannot point to fails.")
+            crit.expect = ""
+            lines.append(f"criterion {crit.statement!r} named no file and text to look for; "
+                         "the verifier judges it against the code")
     return lines
 
 
@@ -1275,10 +1311,9 @@ def verify_command(
 def verify_inspection(criterion: DoDCriterion, workspace: Path) -> VerificationOutcome:
     """Check a file-state expectation of the form ``path: substring``."""
     expect = criterion.expect.strip()
-    if ":" not in expect:
+    if not inspectable(expect):
         return VerificationOutcome(
-            CriterionStatus.BLOCKED,
-            "inspection expectation must read 'path/to/file: text that must be present'",
+            CriterionStatus.BLOCKED, f"inspection expectation must read {INSPECTION_FORM!r}",
         )
     raw_path, _, needle = expect.partition(":")
     path = (workspace / raw_path.strip()).resolve()

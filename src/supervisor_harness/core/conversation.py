@@ -179,7 +179,8 @@ def native_tool_specs(agent: AgentSpec, policy: Policy) -> list[dict[str, Any]]:
               ["pattern"]),
         _spec("list_files", "List files in the workspace matching a glob.",
               {"pattern": {"type": "string", "description": "Default **/*"}}, []),
-        _spec("read_file", "Read a file, whole, with line numbers. Read a file before "
+        _spec("read_file", "Read a file, whole. Each line is shown as its number, a "
+              "tab, then the line exactly as it is in the file. Read a file before "
               "you change it. Reading changes nothing: after reading, make the change "
               "with edit_file.",
               {"path": {"type": "string"},
@@ -190,9 +191,10 @@ def native_tool_specs(agent: AgentSpec, policy: Policy) -> list[dict[str, Any]]:
     if agent.kind.value in WRITE_KINDS:
         specs += [
             _spec("edit_file", "Change part of an existing file: replace the one place "
-                  "`old` appears with `new`. Copy `old` exactly from read_file, without "
-                  "the line numbers. If it appears more than once, include more of the "
-                  "lines around it. Use this for every change to a file that exists.",
+                  "`old` appears with `new`. Copy `old` exactly from read_file: what "
+                  "comes after the tab, indentation included. If it appears more than "
+                  "once, include more of the lines around it. Use this for every change "
+                  "to a file that exists.",
                   {"path": {"type": "string"}, "old": {"type": "string"},
                    "new": {"type": "string"}},
                   ["path", "old", "new"]),
