@@ -614,7 +614,7 @@ full text back in the packet for a host that cannot read files.
 
 **Autonomous.** The harness drives models directly through a
 workspace-sandboxed toolset (`list_files`, `read_file`, `search`, and
-`edit_file` and `write_file` for execution agents). Reads cannot escape the
+`edit_file`, `write_file` and `delete_file` for execution agents). Reads cannot escape the
 workspace; writes are additionally confined to the agent's declared scope.
 `edit_file` replaces one exact occurrence of a passage, and `write_file` will
 not replace most of an existing file: a model writing back the part of a long

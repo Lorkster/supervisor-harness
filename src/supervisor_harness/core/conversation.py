@@ -200,6 +200,10 @@ def native_tool_specs(agent: AgentSpec, policy: Policy) -> list[dict[str, Any]]:
                   "you leave out is deleted: to change a file that exists, use edit_file.",
                   {"path": {"type": "string"}, "content": {"type": "string"}},
                   ["path", "content"]),
+            _spec("delete_file", "Delete one file in your scope -- a scratch or debug file "
+                  "you made and no longer need. Leave nothing behind you did not mean "
+                  "to ship.",
+                  {"path": {"type": "string"}}, ["path"]),
         ]
     if policy.allow_command_execution and agent.kind.value in COMMAND_KINDS:
         specs.append(_spec(
@@ -230,7 +234,7 @@ class Stint:
         target = str(call.arguments.get("path") or call.arguments.get("command")
                      or call.arguments.get("pattern") or "")
         self.actions.append(f"{call.name} {target}".strip() + ("" if ok else " (refused)"))
-        if ok and call.name in ("edit_file", "write_file") and target:
+        if ok and call.name in ("edit_file", "write_file", "delete_file") and target:
             if target not in self.written:
                 self.written.append(target)
         elif ok and path and path not in self.read:

@@ -574,6 +574,31 @@ class Toolbox:
                 "edit_file(path, old, new); to see all of it, read on from where "
                 "read_file said to continue.")
 
+    def delete_file(self, path: str, scope: Scope | None = None) -> ToolResult:
+        """Delete one file, behind exactly the fences a write is behind.
+
+        Measured in a go-live run: an implementer left a scratch spec it had
+        used while writing a Playwright test, could not remove it -- there was
+        no tool for it -- and the verifier rightly failed the task's
+        conventions criterion over the dead file. One file at a time, never a
+        directory: a scratch file is what this is for.
+        """
+        target = self._resolve(path)
+        if target is None:
+            return ToolResult("delete_file", False, f"{path!r} is outside the workspace")
+        rel = target.relative_to(self.workspace).as_posix()
+        refusal = self._write_refusal(rel, scope)
+        if refusal is not None:
+            return ToolResult("delete_file", False, refusal)
+        if not target.is_file():
+            return ToolResult("delete_file", False,
+                              f"{rel} is not a file; only single files are deleted")
+        try:
+            target.unlink()
+        except OSError as exc:
+            return ToolResult("delete_file", False, f"could not delete {rel}: {exc}")
+        return ToolResult("delete_file", True, f"deleted {rel}")
+
     def edit_file(self, path: str, old: str, new: str, scope: Scope | None = None) -> ToolResult:
         """Replace the one occurrence of ``old`` in an existing file with ``new``.
 
@@ -876,6 +901,14 @@ class Toolbox:
             return self.write_file(
                 str(args.get("path", "")), str(args.get("content", "")), agent.scope
             )
+        if name == "delete_file":
+            if not writable:
+                return ToolResult(
+                    "delete_file", False,
+                    f"a {agent.kind.value} agent may not modify files; report what "
+                    "should change instead",
+                )
+            return self.delete_file(str(args.get("path", "")), agent.scope)
         if name == "edit_file":
             if not writable:
                 return ToolResult(
@@ -911,6 +944,9 @@ def available_tools(agent: AgentSpec, policy: Policy) -> list[dict[str, str]]:
          "does": "search file contents, returning path:line matches"},
     ]
     if agent.kind.value in WRITE_KINDS:
+        tools.append({"name": "delete_file", "args": "path",
+                      "does": "delete one file within your scope -- a scratch file you "
+                              "made and no longer need"})
         tools.append({"name": "edit_file", "args": "path, old, new",
                       "does": "change part of an existing file: replace the one place "
                               "`old` appears, copied exactly from read_file, with `new`. "

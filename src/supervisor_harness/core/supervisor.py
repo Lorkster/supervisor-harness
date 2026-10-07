@@ -2228,7 +2228,7 @@ class Supervisor:
                 if call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
                 else:
-                    if call.name in ("edit_file", "write_file"):
+                    if call.name in ("edit_file", "write_file", "delete_file"):
                         await self._widen_for_write(session, agent, toolbox,
                                                     str(call.arguments.get("path", "")))
                     result = toolbox.call(call.name, call.arguments, agent, whole_files=True)

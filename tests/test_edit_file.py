@@ -130,3 +130,36 @@ def test_a_new_file_a_short_file_and_a_full_rewrite_are_written(tree: Path) -> N
     assert _call(tree, "write_file", path="src/new.ts", content="export {}\n").ok
     assert _call(tree, "write_file", path="src/short.ts", content="one line\n").ok
     assert _call(tree, "write_file", path="src/i18n/en.json", content=whole).ok
+
+
+# -- delete_file -------------------------------------------------------------------
+
+
+def test_a_scratch_file_can_be_deleted_and_nothing_else(tree: Path) -> None:
+    """Measured: a scratch spec left behind, with no tool to remove it, failed a task."""
+    (tree / "src" / "debug.spec.ts").write_text("// scratch\n", encoding="utf-8")
+    (tree / ".git").mkdir()
+    (tree / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+
+    deleted = _call(tree, "delete_file", path="src/debug.spec.ts")
+    outside = _call(tree, "delete_file", path="infra/waf.tf")
+    floor = _call(tree, "delete_file", _implementer(Scope()), path=".git/config")
+    directory = _call(tree, "delete_file", path="src/i18n")
+    escape = _call(tree, "delete_file", path="../elsewhere.txt")
+    lens = _call(tree, "delete_file", AgentSpec(kind=AgentKind.ANALYSIS, scope=Scope()),
+                 path="src/i18n/en.json")
+
+    assert deleted.ok and not (tree / "src" / "debug.spec.ts").exists()
+    assert not outside.ok and (tree / "infra/waf.tf").exists()
+    assert not floor.ok and (tree / ".git" / "config").exists()
+    assert not directory.ok and (tree / "src" / "i18n").is_dir()
+    assert not escape.ok
+    assert not lens.ok and "may not modify files" in lens.output
+
+
+def test_delete_is_offered_to_an_implementer_only() -> None:
+    def names(kind: AgentKind) -> list[str]:
+        return [t["name"] for t in available_tools(AgentSpec(kind=kind), Policy())]
+
+    assert "delete_file" in names(AgentKind.EXECUTION)
+    assert "delete_file" not in names(AgentKind.ANALYSIS)
