@@ -234,6 +234,8 @@ def test_a_file_the_task_only_reads_or_could_not_create_is_not_named(tmp_path: P
 async def test_such_a_task_is_marked_as_needing_a_wider_scope(
     supervisor: Supervisor, fake: FakeProvider,
 ) -> None:
+    """When the owner's own envelope does not cover the file either."""
+    supervisor.config.policy.scope_envelope = ["src/auth/**", "tests/**"]
     plan = fake._synthesis(None)  # type: ignore[arg-type]
     plan["tasks"][0]["action"] = "Add middleware in src/auth/login.py and in src/cache.py"
     fake.overrides["synthesis"] = plan
@@ -242,6 +244,20 @@ async def test_such_a_task_is_marked_as_needing_a_wider_scope(
     (task,) = supervisor.store.load_state(response.run_id).tasks.values()
 
     assert any("`src/cache.py`, which its scope does not cover" in c for c in task.clamped)
+
+
+async def test_within_the_owners_grant_the_named_file_joins_the_scope(
+    supervisor: Supervisor, fake: FakeProvider,
+) -> None:
+    plan = fake._synthesis(None)  # type: ignore[arg-type]
+    plan["tasks"][0]["action"] = "Add middleware in src/auth/login.py and in src/cache.py"
+    fake.overrides["synthesis"] = plan
+
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE)
+    (task,) = supervisor.store.load_state(response.run_id).tasks.values()
+
+    assert not task.clamped
+    assert "src/cache.py" in task.scope.paths
 
 
 # -- a check does not inherit the harness's settings -----------------------------
@@ -284,3 +300,114 @@ async def test_a_task_that_inherits_the_envelope_gets_the_harness_checks(
     assert proposed.scope.paths == ["src/auth/login.py", "tests/"]
     assert any(c.method is VerifyMethod.TEST for c in proposed.dod), (
         "the harness's test bar was left off a task that changes a .py file")
+
+
+def test_a_bare_file_name_counts_when_one_file_in_the_tree_has_it(tmp_path: Path) -> None:
+    """Measured: "the ledger line in reporting.py" -- no directory, so not seen."""
+    for rel in ("src/core/timing.py", "src/core/reporting.py", "a/config.py", "b/config.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("", encoding="utf-8")
+
+    def named(action: str) -> list[str]:
+        task = ExecutionTask(title="t", action=action,
+                             scope=Scope(paths=["src/core/timing.py", "tests/"]))
+        return named_outside_scope(task, tmp_path)
+
+    assert named("Add the conc token to the ledger line in reporting.py") == [
+        "src/core/reporting.py"]
+    assert named("Change the default in config.py") == [], "two files have that name"
+    assert named("Mirror the parsing in reporting.py") == [], "read, not changed"
+    assert named("Rename notes.txt and fix timing.py") == [], "in scope, and not code"
+
+
+
+def test_a_command_named_in_the_statement_is_the_command(tmp_path: Path) -> None:
+    """Measured: five of six tasks went to the owner with the command in the sentence."""
+    crits = [
+        _no_command("npm run typecheck passes with the new data-layer types"),
+        _no_command("npx playwright test tests/e2e/offline.spec.ts passes (at least 1 passed)",
+                    VerifyMethod.TEST),
+        _no_command("`pytest -q tests/test_x.py` exits 0"),
+        _no_command("npm run check; curl example.com passes"),
+        _no_command("The i18n parity test passes"),
+        _no_command("`npm test > results.txt` passes"),
+    ]
+    notes = fill_suite_commands(_task(*crits), None)
+
+    assert [c.command for c in crits] == [
+        "npm run typecheck", "npx playwright test tests/e2e/offline.spec.ts",
+        "pytest -q tests/test_x.py", "", "", ""], "a command it would not run is not taken"
+    assert crits[0].expect == "0", "an expectation written without the command is dropped"
+    assert len(notes) == 3 and "named its command in its statement" in notes[0]
+
+
+def test_a_behaviour_claim_with_no_command_is_judged_not_escalated(tmp_path: Path) -> None:
+    """Measured: three of four tasks of a run went to the owner for these."""
+    from supervisor_harness.core.dod import review_what_cannot_run
+
+    claim = _no_command("Reporting.ledger() output contains 'conc' when the phase has "
+                        "dispatches")
+    named = _no_command("npm run typecheck passes")
+    task = _task(claim, named)
+    fill_suite_commands(task, None)
+    notes = review_what_cannot_run(task, Policy())
+
+    assert named.method is VerifyMethod.COMMAND and named.command == "npm run typecheck", (
+        "a command the sentence names is still run, not reviewed")
+    assert claim.method is VerifyMethod.REVIEW and claim.mandatory
+    assert "Reporting.ledger() output contains 'conc'" in claim.rubric
+    assert "Cite the test that proves it" in claim.rubric
+    assert len(notes) == 1
+
+    untested = _task(_no_command("it works"))
+    assert review_what_cannot_run(untested, Policy(require_tests=False)) == [], (
+        "only where the harness's own test bar stands behind it")
+    assert untested.dod[0].method is VerifyMethod.COMMAND
+
+
+def test_after_preparation_such_a_task_carries_the_test_bar(tmp_path: Path) -> None:
+    task = _task(_no_command("the ledger shows conc"), title="Add conc to src/ledger.py")
+    _, notes = prepare_tasks([task], Policy(require_tests=True), _node_project(tmp_path))
+    methods = [c.method for c in task.dod]
+
+    assert VerifyMethod.REVIEW in methods and VerifyMethod.TEST in methods
+    assert not any("no command given" in n for n in notes[task.id])
+
+
+# -- an inspection with nothing to look for ---------------------------------------
+# Go-live run 16: every inspection criterion of six tasks came with no `expect`.
+# It was a medium warning, so it was neither sent back nor stopped by the gate,
+# and verification BLOCKED it on each of three attempts: no task could be verified.
+
+
+def _inspect(statement: str, expect: str = "") -> DoDCriterion:
+    return DoDCriterion(statement=statement, method=VerifyMethod.INSPECTION, expect=expect,
+                        mandatory=True)
+
+
+def test_an_inspection_with_nothing_to_look_for_is_sent_back() -> None:
+    from supervisor_harness.core.phases import unenforceable_criteria
+
+    empty = _inspect("src/i18n/en.json contains keys offline.plant.needsConnection")
+    no_file = _inspect("the catch block stores the DataError", expect="DataError")
+    good = _inspect("en.json has the key", expect="src/i18n/en.json: offline.plant")
+    weak = unenforceable_criteria([_task(empty, no_file, good)], Policy())
+
+    assert len(weak) == 2 and all("path/to/file: text that must be present" in w
+                                  for w in weak)
+
+
+def test_kept_through_the_send_back_it_is_judged_not_blocked(tmp_path: Path) -> None:
+    from supervisor_harness.core.dod import verify_inspection
+
+    empty = _inspect("ResultsSection.tsx stores the DataError, not a boolean")
+    good = _inspect("en.json has the key", expect="src/i18n/en.json: offline.plant")
+    assert verify_inspection(empty, tmp_path).status.value == "blocked", "as it was"
+    task = _task(empty, good)
+    _, notes = prepare_tasks([task], Policy(require_tests=False), None)
+
+    assert empty.method is VerifyMethod.REVIEW and empty.mandatory
+    assert "ResultsSection.tsx stores the DataError" in empty.rubric
+    assert "Cite the file and line" in empty.rubric
+    assert good.method is VerifyMethod.INSPECTION, "one it can check stays a check"
+    assert any("named no file and text" in n for n in notes[task.id])

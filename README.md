@@ -614,7 +614,7 @@ full text back in the packet for a host that cannot read files.
 
 **Autonomous.** The harness drives models directly through a
 workspace-sandboxed toolset (`list_files`, `read_file`, `search`, and
-`edit_file` and `write_file` for execution agents). Reads cannot escape the
+`edit_file`, `write_file` and `delete_file` for execution agents). Reads cannot escape the
 workspace; writes are additionally confined to the agent's declared scope.
 `edit_file` replaces one exact occurrence of a passage, and `write_file` will
 not replace most of an existing file: a model writing back the part of a long
@@ -656,7 +656,10 @@ anywhere in the workspace and approval was per-task with nothing above it.
 
 Each run now has an envelope: the union of what that run may modify, fixed
 before any task exists. `policy.scope_envelope` sets it (empty means the whole
-workspace) and the plan may narrow it further; nothing widens it. Every agent's
+workspace) and the plan may narrow it further. Only the owner widens it: under
+envelope approval a task's scope may grow to what the owner's grant covers when
+tasks are proposed, and at a write within the run's envelope as it stands, never
+into a task held for the owner. Every agent's
 scope is attenuated at spawn to the envelope, to its task's scope, and to its
 spawner's where there is one -- so a verifier cannot be handed a wider fence than
 the work it is judging. A scope that exceeds its ceiling is narrowed to the
@@ -992,6 +995,8 @@ src/supervisor_harness/
     consolidate.py keeping the lessons library worth reading: merge, decay, retire
     journal.py     the decision journal `supervisor explain` renders
     tools.py       sandboxed workspace tools for autonomous agents
+    conversation.py an implementer driven as one conversation, through native tool calls
+    review.py      batch G: a second reading of each task, which can only veto
     paths.py       path normalisation and scope matching
     placement.py   a model's paths placed in the tree, when they name no file
     baseline.py    the commit a run measures its whole-repository checks against

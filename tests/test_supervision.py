@@ -1286,3 +1286,52 @@ async def test_an_answer_never_displaces_a_correction(workspace: Path, config, f
 
     assert directive.kind is DirectiveKind.STOP, "the answer displaced the correction"
     assert any("On your question" in c for c in directive.corrections), directive.corrections
+
+
+# --------------------------------------------------------------------------
+# The phase machine's guard
+# --------------------------------------------------------------------------
+
+
+async def test_a_long_run_that_keeps_making_progress_is_not_failed(
+    supervisor: Supervisor,
+) -> None:
+    """Measured: go-live run 16 (6 tasks, 3 checkpoint cycles) was failed for "not
+    settling" part-way through its last verification -- every step had done work."""
+    from supervisor_harness.models import Phase
+
+    session = supervisor.store.create(RunState(id="run_Long", prompt="p"))
+    session.state.phase = Phase.VERIFYING
+    limit = 12 + 6 * max(1, supervisor.config.policy.max_checkpoint_iterations)
+    steps: list[int] = []
+
+    async def verifying(session: object) -> object:
+        steps.append(1)
+        if len(steps) < limit * 3:
+            session.note(f"verified something, step {len(steps)}")  # type: ignore[attr-defined]
+            return None
+        return supervisor.reporting._final_response(session)  # type: ignore[arg-type]
+
+    supervisor._continue_verification = verifying  # type: ignore[method-assign,assignment]
+    response = await supervisor._advance(session)
+
+    assert len(steps) == limit * 3 and "did not settle" not in response.message
+    assert "no progress" not in response.message
+
+
+async def test_a_machine_that_is_stuck_is_still_stopped(supervisor: Supervisor) -> None:
+    from supervisor_harness.models import Phase
+
+    session = supervisor.store.create(RunState(id="run_Stuck", prompt="p"))
+    session.state.phase = Phase.VERIFYING
+    steps: list[int] = []
+
+    async def verifying(session: object) -> None:
+        steps.append(1)
+
+    supervisor._continue_verification = verifying  # type: ignore[method-assign,assignment]
+    response = await supervisor._advance(session)
+    limit = 12 + 6 * max(1, supervisor.config.policy.max_checkpoint_iterations)
+
+    assert response.action == "failed" and len(steps) == limit
+    assert f"made no progress in {limit} steps" in response.message

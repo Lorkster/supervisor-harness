@@ -84,6 +84,10 @@ class EventType(StrEnum):
     WORKTREE_CLOSED = "worktree_closed"
     #: The owner's consent to envelope approval, given when the run started.
     ENVELOPE_GRANTED = "envelope_granted"
+    #: An implementer's scope, and its task's, widened within the owner's grant
+    #: so it could make a change its task needed. See
+    #: `Supervisor._widen_for_write`.
+    SCOPE_WIDENED = "scope_widened"
     RUN_ENDED = "run_ended"
     #: Never emitted: what a type this build does not define is read back as,
     #: so the log line survives the read. See :func:`event_from_dict`.
@@ -427,6 +431,16 @@ def _on_envelope_granted(state: RunState, event: Event) -> None:
     state.envelope_grant = from_jsonable(event.payload["grant"], EnvelopeGrant)
 
 
+def _on_scope_widened(state: RunState, event: Event) -> None:
+    p = event.payload
+    paths = [str(x) for x in p.get("paths") or []]
+    agent = state.agents.get(str(p.get("agent_id", "")))
+    task = state.tasks.get(str(p.get("task_id", "")))
+    for scope in (agent.scope if agent else None, task.scope if task else None):
+        if scope is not None and scope.paths:
+            scope.paths.extend(x for x in paths if x not in scope.paths)
+
+
 def _on_run_ended(state: RunState, event: Event) -> None:
     p = event.payload
     state.phase = Phase(p.get("phase", Phase.COMPLETE))
@@ -461,6 +475,7 @@ _HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
     EventType.WORKTREE_OPENED: _on_worktree_opened,
     EventType.WORKTREE_CLOSED: _on_worktree_closed,
     EventType.ENVELOPE_GRANTED: _on_envelope_granted,
+    EventType.SCOPE_WIDENED: _on_scope_widened,
     EventType.DRIFT_ASSESSED: _on_drift_assessed,
     EventType.LESSONS_CONSOLIDATED: _on_lessons_consolidated,
     EventType.ASSISTS_RECORDED: _on_assists_recorded,

@@ -50,7 +50,7 @@ from dataclasses import dataclass, replace
 
 from ..ids import age_days, older_than
 from ..models import Scope, ScopeEnvelope
-from .paths import NOTHING, globs_within, narrow_globs
+from .paths import NOTHING, globs_within, matches_any, narrow_globs
 
 
 @dataclass(frozen=True)
@@ -117,6 +117,38 @@ def establish(
             f"is bounded by {render(paths)}"
         )
     return ScopeEnvelope(paths=paths, forbidden_paths=forbidden, source=source), notes
+
+
+def widen_within(
+    envelope: ScopeEnvelope, ceiling: Ceiling, wanted: list[str]
+) -> tuple[ScopeEnvelope, list[str], list[str]]:
+    """The run envelope widened by those of ``wanted`` the owner's own grant covers.
+
+    Returns the envelope, the paths a task may now have -- already inside the
+    envelope, or added to it -- and the paths refused.
+
+    The plan narrows the owner's grant to what it expects the work to need,
+    and it guesses short: in four go-live runs a Playwright task was sent to
+    the owner because the plan's envelope left out `e2e/`, though the owner had
+    granted the whole workspace. Only the owner widens -- beyond their grant.
+    Within it, the plan's narrowing was a model's guess about itself, and a
+    task that needs more of what the owner granted gets it. A path the grant
+    does not cover, or that the grant or the plan forbids, is refused: those
+    still go to the owner.
+    """
+    allowed = list(envelope.paths)
+    granted: list[str] = []
+    refused: list[str] = []
+    for path in dict.fromkeys(p for p in wanted if p.strip()):
+        if (matches_any(path, ceiling.forbidden_paths)
+                or matches_any(path, envelope.forbidden_paths)
+                or (ceiling.paths and not globs_within([path], ceiling.paths))):
+            refused.append(path)
+            continue
+        if allowed and not globs_within([path], allowed):
+            allowed.append(path)
+        granted.append(path)
+    return replace(envelope, paths=allowed), granted, refused
 
 
 def attenuate(scope: Scope, ceilings: list[Ceiling | None]) -> tuple[Scope, list[str]]:

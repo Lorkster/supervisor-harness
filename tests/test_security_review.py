@@ -11,6 +11,7 @@ showed no files at all.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,6 +23,7 @@ from supervisor_harness.config import Policy
 from supervisor_harness.core import tools as tools_module
 from supervisor_harness.core.dod import child_environment, run_bounded, unsafe_command
 from supervisor_harness.core.tools import Toolbox
+from supervisor_harness.models import AgentKind, AgentSpec, Scope
 from supervisor_harness.store.runstore import RunStore, checked_run_id
 
 # -- run ids -----------------------------------------------------------------
@@ -163,3 +165,65 @@ def test_a_cmd_shim_is_stopped_at_its_timeout(tmp_path: Path) -> None:
     with pytest.raises(subprocess.TimeoutExpired):
         run_bounded([str(shim)], tmp_path, timeout=1)
     assert time.monotonic() - started < 8
+
+
+# -- a project's PowerShell verification script ----------------------------------
+
+
+@pytest.mark.parametrize("command", [
+    "pwsh scripts/verify.ps1",
+    "pwsh -NoProfile -File scripts/verify.ps1 -Strict",
+    "powershell -NonInteractive -ExecutionPolicy Bypass -File scripts\verify.ps1",
+])
+def test_a_projects_verification_script_may_be_run(command: str) -> None:
+    """Measured: a root task named `pwsh scripts/verify.ps1` -- the project's own
+    workflow requires it -- was refused, and six tasks that depended on it stalled."""
+    assert unsafe_command(command) is None
+
+
+@pytest.mark.parametrize(("command", "why"), [
+    ('pwsh -c "Remove-Item src -Recurse"', "-c"),
+    ("pwsh -Command Get-Process", "-Command"),
+    ("pwsh -EncodedCommand ZQBjAGgAbwA=", "-EncodedCommand"),
+    ("pwsh -e ZQBjAGgAbwA=", "-e"),
+    ("pwsh -CommandWithArgs x", "-CommandWithArgs"),
+    ("powershell Get-Process", "not a .ps1 script"),
+    ("pwsh", "names no .ps1 script"),
+    ("pwsh C:/Users/x/evil.ps1", "outside the repository"),
+    ("pwsh /tmp/evil.ps1", "outside the repository"),
+    ("pwsh ../elsewhere/evil.ps1", "outside the repository"),
+])
+def test_powershell_carrying_its_own_code_is_refused(command: str, why: str) -> None:
+    refusal = unsafe_command(command)
+    assert refusal is not None and why in refusal
+
+
+def test_the_agent_shell_holds_powershell_to_the_same_rule(tmp_path: Path) -> None:
+    box = Toolbox(tmp_path, Policy(allow_command_execution=True))
+    agent = AgentSpec(kind=AgentKind.EXECUTION, scope=Scope())
+
+    refused = box.call("run_command", {"command": 'pwsh -c "Remove-Item src"'}, agent)
+    # Not "is not on PATH": refused before anything is looked up, so a machine
+    # with PowerShell installed refuses it too.
+    assert not refused.ok and "may not run this" in refused.output
+
+
+@pytest.mark.skipif(shutil.which("powershell") is None, reason="needs Windows PowerShell")
+def test_a_pwsh_script_runs_under_windows_powershell_when_pwsh_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from supervisor_harness.core.dod import verify_command
+    from supervisor_harness.models import CriterionStatus, DoDCriterion, VerifyMethod
+
+    (tmp_path / "verify.ps1").write_text("Write-Output 'all checks green'\nexit 0\n",
+                                         encoding="utf-8")
+    real_which = shutil.which
+    monkeypatch.setattr("supervisor_harness.core.dod.shutil.which",
+                        lambda name, *a, **k: None if name == "pwsh" else real_which(name))
+
+    outcome = verify_command(DoDCriterion(statement="verify passes", method=VerifyMethod.COMMAND,
+                                          command="pwsh -NoProfile -File verify.ps1",
+                                          expect="0"), tmp_path, timeout=120)
+
+    assert outcome.status is CriterionStatus.PASS, outcome.evidence
+    assert "run with Windows PowerShell" in outcome.evidence

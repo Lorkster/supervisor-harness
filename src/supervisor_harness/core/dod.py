@@ -44,7 +44,7 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..config import Policy
 from ..ids import now_iso
@@ -318,6 +318,9 @@ VERIFY_EXECUTABLES = frozenset({
     "npm", "npx", "pnpm", "yarn", "node", "jest", "vitest", "eslint", "tsc",
     "go", "cargo", "rustc", "dotnet", "mvn", "gradle", "make", "cmake", "ctest",
     "rake", "rspec", "bundle", "phpunit", "swift",
+    # A project's own verification script, as `npm run` and `make` run a
+    # project's own targets -- and held to a script file (`powershell_refusal`).
+    "pwsh", "powershell",
 })
 
 # Characters that hand the rest of a command to a shell. They only matter
@@ -500,10 +503,14 @@ def validate_criteria(criteria: list[DoDCriterion], policy: Policy) -> list[Crit
                 CriterionIssue(crit.id, "review criterion has no rubric to judge against",
                                Severity.MEDIUM)
             )
-        if crit.method is VerifyMethod.INSPECTION and not crit.expect.strip():
+        if crit.method is VerifyMethod.INSPECTION and not inspectable(crit.expect):
+            # HIGH, because the harness cannot check it at all: in a go-live
+            # run every inspection criterion of six tasks came with no
+            # `expect`, passed as a medium warning, and was BLOCKED at
+            # verification three times over -- no task could be verified.
             issues.append(
-                CriterionIssue(crit.id, "inspection criterion does not say what proves it",
-                               Severity.MEDIUM)
+                CriterionIssue(crit.id, "inspection criterion does not say what proves it: "
+                               f"its expect must read {INSPECTION_FORM!r}", Severity.HIGH)
             )
     return issues
 
@@ -615,8 +622,17 @@ def fill_suite_commands(task: ExecutionTask, workspace: Path | None) -> list[str
 
     Returns a line per criterion filled, for the task's notes.
     """
+    lines: list[str] = []
+    for crit in task.dod:
+        if crit.method not in (VerifyMethod.COMMAND, VerifyMethod.TEST) or crit.command.strip():
+            continue
+        named = command_named_in(crit.statement)
+        if named:
+            crit.command, crit.expect = named, _exit_code_or_zero(crit.expect)
+            lines.append(f"criterion {crit.statement!r} named its command in its statement; "
+                         f"it runs `{named}`")
     if workspace is None:
-        return []
+        return lines
     candidates = [
         c for c in task.dod
         if c.method in (VerifyMethod.COMMAND, VerifyMethod.TEST)
@@ -624,11 +640,118 @@ def fill_suite_commands(task: ExecutionTask, workspace: Path | None) -> list[str
     ]
     command = detect_test_command(workspace) if candidates else ""
     if not command:
-        return []
+        return lines
     for crit in candidates:
         crit.command, crit.expect = command, "0"
-    return [f"criterion {c.statement!r} named no command; it runs the project's "
-            f"test suite, `{command}`" for c in candidates]
+    return lines + [f"criterion {c.statement!r} named no command; it runs the project's "
+                    f"test suite, `{command}`" for c in candidates]
+
+
+def review_what_cannot_run(task: ExecutionTask, policy: Policy) -> list[str]:
+    """A behaviour claim with no command, judged by the verifier instead of escalated.
+
+    The last resort, after the synthesis has been sent back once and a command
+    named in the sentence or a whole-suite claim has been filled in. Measured
+    on a local model: "Reporting.ledger() output contains 'conc' when the phase
+    has dispatches" as a `command` criterion with no command, kept through the
+    send-back -- three of four tasks of a run went to the owner for it, and
+    under envelope approval nothing more happened to them. A person reading it
+    would say what it is: a statement about the code and its tests, to be
+    judged. So it becomes a mandatory `review`, judged by the independent
+    verifier with the statement as its rubric -- only where the harness's own
+    test bar is on the task, so tests that run, and that fail without the
+    change, still stand behind it.
+    """
+    if not policy.require_tests:
+        return []
+    lines: list[str] = []
+    for crit in task.dod:
+        if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST) and not crit.command.strip():
+            crit.method = VerifyMethod.REVIEW
+            crit.rubric = (f"Pass only if the code and its tests show this: {crit.statement}. "
+                           "Cite the test that proves it, by file and line, and the code it "
+                           "exercises. A claim with no test behind it fails.")
+            crit.expect = ""
+            lines.append(f"criterion {crit.statement!r} named no command it could be run by; "
+                         "the verifier judges it against the code and its tests")
+    return lines
+
+
+#: The one shape of `expect` an inspection criterion can be checked by.
+INSPECTION_FORM = "path/to/file: text that must be present"
+
+
+def inspectable(expect: str) -> bool:
+    """Whether ``expect`` names a file, and optionally text, the harness can look for."""
+    path, colon, _ = expect.strip().partition(":")
+    return bool(colon and path.strip())
+
+
+def review_what_cannot_inspect(task: ExecutionTask) -> list[str]:
+    """A file-state claim with no file to look in, judged by the verifier instead.
+
+    The last resort, after the synthesis has been sent back once for it. Left
+    as it was, `verify_inspection` blocks it on every attempt and the task can
+    never be verified; "ResultsSection.tsx stores the DataError, not a boolean"
+    is a statement about the code a reader can judge. So it becomes a mandatory
+    `review` with the statement as its rubric, and the verifier must cite the
+    lines.
+    """
+    lines: list[str] = []
+    for crit in task.dod:
+        if crit.method is VerifyMethod.INSPECTION and not inspectable(crit.expect):
+            crit.method = VerifyMethod.REVIEW
+            crit.rubric = (f"Pass only if the code shows this: {crit.statement}. Cite the "
+                           "file and line that show it. A claim you cannot point to fails.")
+            crit.expect = ""
+            lines.append(f"criterion {crit.statement!r} named no file and text to look for; "
+                         "the verifier judges it against the code")
+    return lines
+
+
+#: A check runner's command at the start of a statement, or anywhere in
+#: backticks: "npm run typecheck passes after the change", "`pytest -q tests/x.py`
+#: exits 0". Only runners the harness would run anyway; the result still goes
+#: through `unsafe_command`.
+_NAMED_COMMAND = re.compile(
+    r"`((?:npm|npx|pnpm|yarn|pytest|python -m pytest|go test|cargo test|make)\b[^`]*)`"
+    r"|^((?:npm|npx|pnpm|yarn|pytest|python -m pytest|go test|cargo test|make)\b.*?)"
+    r"(?=\s+(?:passes|pass|succeeds|exits|completes|runs|returns|is green|still)\b"
+    r"|\s*[(,;:]|$)",
+    re.IGNORECASE,
+)
+
+
+def command_named_in(statement: str) -> str:
+    """The command a criterion's statement names, when it names exactly one.
+
+    Measured on a local model: "npm run typecheck passes with the new
+    data-layer types", "npx playwright test tests/e2e/offline.spec.ts passes"
+    -- `command` criteria with the command in the sentence and the field
+    empty, and five of six tasks sent to the owner for it. The sentence said
+    what to run.
+    """
+    # A sentence that chains commands is not read as naming one: taking the
+    # first link alone would quietly check less than the sentence says.
+    if any(op in statement for op in (";", "&&", "||", "|")):
+        return ""
+    match = _NAMED_COMMAND.search(statement.strip())
+    if match is None:
+        return ""
+    command = (match.group(1) or match.group(2) or "").strip()
+    return command if command and unsafe_command(command) is None else ""
+
+
+def _exit_code_or_zero(expect: str) -> str:
+    """Keep an expectation that is an exit code; otherwise the command's own verdict.
+
+    The model's expectation was written without the command in front of it --
+    "at least 1 passed" read as a substring would fail a suite that printed
+    "3 passed" -- so only an exit code survives.
+    """
+    exit_code = re.fullmatch(r"(?:exit\s*(?:code)?\s*[= ]\s*)?(\d+)", expect.strip(),
+                             re.IGNORECASE)
+    return exit_code.group(1) if exit_code else "0"
 
 
 def apply_quality_bars(
@@ -857,6 +980,53 @@ _INLINE_SOURCE: dict[str, _Interpreter] = {
 }
 
 
+_POWERSHELL = frozenset({"pwsh", "powershell"})
+
+#: The only options a PowerShell check may carry before its script. Anything
+#: else -- `-Command`, `-c`, `-EncodedCommand`, `-CommandWithArgs` -- runs code
+#: written into the command line, and is refused by name or by omission.
+_POWERSHELL_FLAGS = frozenset({"-noprofile", "-nologo", "-noninteractive", "-file"})
+_POWERSHELL_VALUED = frozenset({"-executionpolicy"})
+
+
+def powershell_refusal(tokens: list[str]) -> str | None:
+    """Why this PowerShell invocation may not run as a check; ``None`` if it may.
+
+    A project's verification script -- `pwsh scripts/verify.ps1`, which one
+    project's workflow requires and a go-live run's root task named, stalling
+    six tasks that depended on it -- is the same trust as `npm run check`: code
+    the repository holds. A command line is not. Windows PowerShell reads a
+    bare argument as a command, not a file, so this is a positive rule: a
+    `.ps1` file must be named, with only the options above before it.
+    """
+    skip = False
+    for token in tokens[1:]:
+        if skip:
+            skip = False
+            continue
+        flag = token.lower()
+        if flag in _POWERSHELL_VALUED:
+            skip = True
+            continue
+        if flag in _POWERSHELL_FLAGS:
+            continue
+        if flag.startswith("-"):
+            return (f"it passes {token!r} to PowerShell; a check may only run a .ps1 "
+                    "script the repository holds")
+        if flag.endswith(".ps1"):
+            # POSIX rules on every machine, so a path is judged here as it is on
+            # CI, and the drive-letter test below is what catches `C:/...`.
+            script = PurePosixPath(token.replace("\\", "/"))
+            if (script.is_absolute() or ".." in script.parts or token[:1] in "/\\"
+                    or re.match(r"[A-Za-z]:", token)):
+                return (f"{token!r} is outside the repository; a check may only run a "
+                        "script the repository holds, named relative to it")
+            return None  # the script's own arguments follow, and are its business.
+        return (f"{token!r} is not a .ps1 script; PowerShell would run it as a "
+                "command, and a check may only run a script the repository holds")
+    return "it names no .ps1 script for PowerShell to run"
+
+
 def inline_source_flag(tokens: list[str]) -> str | None:
     """The flag by which this command carries its own source, or ``None``.
 
@@ -1021,6 +1191,8 @@ def unsafe_command(command: str) -> str | None:
             f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Verify this by review, or by "
             "a command the user chooses to run themselves"
         )
+    if executable in _POWERSHELL:
+        return powershell_refusal(tokens)
     # The rule an agent's shell already had. Without it here, a criterion --
     # model output -- could carry any program at all as `python -c "..."`.
     inline = inline_source_flag(tokens)
@@ -1067,6 +1239,14 @@ def verify_command(
     # below, so the evidence says the runner is missing.
     argv = shell_split(command)
     executable = shutil.which(argv[0])
+    substituted = ""
+    if executable is None and executable_name(argv[0]) == "pwsh":
+        # A project whose script is written for Windows PowerShell may name
+        # `pwsh` in its workflow; on a machine with only `powershell`, that is
+        # the one that runs it. Said in the evidence, not done quietly.
+        executable = shutil.which("powershell")
+        substituted = ("\n[supervisor] `pwsh` is not on PATH; the script was run with "
+                       "Windows PowerShell (`powershell`) instead.")
     if executable is None:
         return VerificationOutcome(
             CriterionStatus.BLOCKED,
@@ -1085,7 +1265,7 @@ def verify_command(
 
     output = (completed.stdout + completed.stderr).strip()
     tail = output[-1500:]
-    evidence = f"$ {command}\nexit={completed.returncode}\n{tail}"
+    evidence = f"$ {command}\nexit={completed.returncode}\n{tail}{substituted}"
 
     expect = criterion.expect.strip()
     if not expect:
@@ -1131,10 +1311,9 @@ def verify_command(
 def verify_inspection(criterion: DoDCriterion, workspace: Path) -> VerificationOutcome:
     """Check a file-state expectation of the form ``path: substring``."""
     expect = criterion.expect.strip()
-    if ":" not in expect:
+    if not inspectable(expect):
         return VerificationOutcome(
-            CriterionStatus.BLOCKED,
-            "inspection expectation must read 'path/to/file: text that must be present'",
+            CriterionStatus.BLOCKED, f"inspection expectation must read {INSPECTION_FORM!r}",
         )
     raw_path, _, needle = expect.partition(":")
     path = (workspace / raw_path.strip()).resolve()

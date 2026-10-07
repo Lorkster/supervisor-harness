@@ -645,6 +645,21 @@ Built only if batch E's runs show tasks reaching execution that a person would
 have rejected. A judge that is never needed is cost and attack surface. Pairs
 with nine-batch 9b, which is the other half of plan quality.
 
+> **Built, 2026-10-07** (`core/review.py`), on the owner's go-ahead: the
+> condition was met three times, by one task -- add the Playwright suite to
+> `npm run check` -- that the gate passed and every check verified in runs 4,
+> 6 and 15, though plantsandclimate's CI runs `npm run check` before it
+> installs Playwright's browser. Under envelope approval, each task the gate
+> passes is read by a reviewer with read-only tools, routed to the `review`
+> stage, which rules `proceed` or vetoes from the menu above plus a fifth,
+> `breaks_the_project` -- the measured case. A veto is a `review_veto`
+> escalation; no ruling, a failed call or a review model without native tools
+> is noted and the gate's decision stands. `policy.veto_review`, protected.
+> "A different model" is a routing choice: with one local model, it is the
+> same model in a different role. Probed on the local model against run 15's
+> real tasks: the CI-breaking task vetoed in 35 seconds, citing `ci.yml` line
+> 31 against line 40; the i18n task let through.
+
 ### Batch H — A stuck signal *(conditional)*
 
 Turnstone's `RepeatDetector`: three identical tool calls in a row is the cheapest
@@ -653,6 +668,118 @@ real run, shows looping that the existing signals miss.
 
 *Changes the harness condition:* **yes**. It is a drift signal, and report mode
 is supervised. Flag it to security-eval before merging.
+
+### Batch I — An implementer loop a local model can work in
+
+*Added 2026-10-07, after go-live runs 4-9.* The owner's reading, which the
+runs bear out: people run Turnstone on the same model to good results, so the
+gap is the harness's. Read side by side, the two loops differ where the runs
+failed -- in the long, tool-heavy work of an implementer, not in the
+single-shot judgements of planning and analysis, which have held since #88.
+
+What the harness did to an implementer that Turnstone does not:
+
+1. **Forgot what it read at every turn.** After each supervised turn the
+   conversation was reset to the brief, the agent's last answer and the
+   directive; every tool result was dropped. Each turn began again with six
+   tool rounds. Behind the read/search loops stopped for "100% repetition"
+   (runs 7, 9), "tool rounds consumed by repeated identical calls" (run 5), and
+   a translation file written back from the first page seen (run 8).
+2. **Bypassed the model's tool calling.** Every step was one JSON object under a
+   grammar, tool calls inside it; writing a file meant its whole contents as an
+   escaped string. `qwen3.8-code` has native tool calling, and Turnstone uses it.
+3. **Turned the model's thinking off** on every structured call.
+4. **Sampled at 0.2** against the model's tuned 0.6; low-temperature decoding is
+   a known cause of repetition in this model family. A likely contributor, not
+   a proven one.
+5. **Buried the task.** A measured implementer brief was 28,000 characters, of
+   which "what to do" was 53: the run's shared context, every lesson, the other
+   agents and a JSON output contract came first. NOOA's warning that context is
+   eager, in one number.
+
+The batch: on a provider that takes tools natively, with
+`policy.implementer_loop = "conversation"`, an implementer is one conversation
+(`core/conversation.py`). What it reads stays, compacted only near its context
+limit. It acts through native tool calls with Turnstone-style workflow guidance
+in the descriptions, reads files whole, and ends a stretch of work by calling
+`report`. Supervision looks in at each report and every fifteen tool calls; the
+directive is appended to the conversation, not swapped in for it. Thinking is
+left on and the model's own sampling used. The opening message is the task and
+little else (`build_implementer_brief`).
+
+Unchanged: what an implementer may do -- the toolbox, its fences, the floor --
+and how its work is checked. Lenses and verifiers keep the turn contract.
+
+*Done when:* P3-18 and 9a, on the same local model, end with branches the
+owner would merge. Measured against runs 4-9.
+
+*Changes the harness condition:* no. Report mode spawns no implementer.
+
+> **Go-live run 10, 2026-10-07** (P3-18, the conversation loop, 41 minutes).
+> The first run whose work passes the project's own gate: on the run's branch
+> `npm run check`'s typecheck, lint, 897 unit tests (the baseline's 889 and
+> eight new) and build all pass. One task verified 7/7 -- the results list
+> made per-plant, a shard that cannot be reached stranding only its own plants
+> as "needs connection", offline told apart from other failures -- in the
+> repository's own style, and every edit surgical: `en.json` gained one key and
+> lost one it no longer used, where run 8 had cut it from 483 lines to 142.
+> Of the rest, a task with correct keys and passing checks failed because its
+> **verifier**, still on the turn contract, returned an empty answer on all
+> three attempts -- the same defect one role along, so verifiers are now
+> conversations that end in a `verdict` and see only the criteria still open.
+> Three tasks went to the owner: one for a test filter that cannot be pinned,
+> two because the plan's envelope left out `e2e/` and the CI workflow.
+
+> **Runs 11 and 12** (9a, 49 minutes; P3-18, 17). The conversational verifier
+> works: its review verdicts quote the code they judge, by file and line. Implementers
+> now escalate with exact, correct accounts -- "Scope guard refuses to let me
+> edit src/supervisor_harness/core/reporting.py, which is the one the task
+> requires" -- and baseline attribution read a failure right. What stopped them
+> was the harness: the plan's envelope named `reporting/`, a directory that does
+> not exist; a task titled "... in reporting.py" was not read as naming a file;
+> a finished task's full suite failed on a test the task after it had written,
+> because tasks were checked only at the end; and in run 12 five of six tasks
+> went to the owner for `command` criteria whose command was in the sentence --
+> "npm run typecheck passes with the new data-layer types".
+>
+> After them, on the owner's decision: a task's scope widens within the owner's
+> grant at proposal, and at the moment of a write the task needs it widens
+> within the run's envelope (after run 16, below), where no running peer's
+> scope could meet the path -- and only what is not covered goes to the owner. And: bare file names are read when one file in the
+> tree has the name; a finished task is checked before the next writer starts;
+> and a command named in a criterion's statement is its command.
+
+> **Run 15** (P3-18, 64 minutes). Three of four tasks verified, and the branch
+> passes every check the project has: typecheck, lint, 902 unit tests (889 on
+> the baseline), the build, all 25 Playwright journeys -- among them the new
+> one, "a saved garden works offline: cached plants keep their verdict, the
+> uncached say needs connection" -- and `scripts/verify.ps1`. Two things stood
+> between it and a merge: a scratch spec its implementer could not delete
+> (there was no tool; `delete_file` now), and the `npm run check` change again
+> -- which batch G now vetoes.
+
+> **Run 16** (P3-18, 1h53m, with `delete_file` and G). The branch passes every
+> check the project has -- 892 unit tests, all 25 Playwright journeys among
+> them a new offline one, `verify.ps1` -- and its scratch files were deleted.
+> G vetoed the CI-breaking task, citing `ci.yml` line 31. Yet the harness
+> verified none of six tasks and failed the run, for four reasons of its own:
+>
+> - every inspection criterion came with no `expect`; that was a medium
+>   warning, so nothing sent it back, and verification blocked it three times
+>   per task. Now it is unenforceable (sent back), and one kept through the
+>   send-back becomes a mandatory review that must cite the lines;
+> - the phase machine's guard counted every step and stopped the run during
+>   its last verification. Now it counts steps that recorded nothing;
+> - 147 `edit_file` calls missed: `read_file` put two spaces after the line
+>   number, so a copied line's indentation was a guess, and the model wrote
+>   twenty `scripts/tmp-*.mjs` patch scripts instead. Now a tab, as `cat -n`
+>   has it, and an edit off only in indentation lands, re-indented, when it
+>   matches one place;
+> - every task's scope was the whole plan, so a peer made the vetoed change.
+>   Now every implementer's brief lists the changes held for the owner, and no
+>   scope widens into a task held for the owner. And at a write a scope widens
+>   only within the run's envelope: the grant from `--grant-envelope` is the
+>   whole workspace, which is how the twenty scripts got in.
 
 ---
 

@@ -97,8 +97,8 @@ alone, and relaxes it to the workspace rather than to the machine.
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:328](../src/supervisor_harness/config.py:328)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:373](../src/supervisor_harness/config.py:373))
+([config.py:344](../src/supervisor_harness/config.py:344)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:390](../src/supervisor_harness/config.py:390))
 are the list of what it may not set: command execution, provider `base_url`, API
 keys, the AWS `region` and `profile` a Bedrock route would use, the store
 location. The principle is the same one in a different costume —
@@ -108,7 +108,7 @@ about work done on it.
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:1036](../src/supervisor_harness/core/dod.py:1036)) holds a runner to
+([core/dod.py:1208](../src/supervisor_harness/core/dod.py:1208)) holds a runner to
 an allow-list. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.
@@ -147,21 +147,21 @@ nothing may widen it (`establish`,
 [envelope.py:83](../src/supervisor_harness/core/envelope.py:83)).
 
 **Every scope below it is attenuated to every ceiling above it.** `attenuate`
-([envelope.py:122](../src/supervisor_harness/core/envelope.py:122)) narrows a
+([envelope.py:154](../src/supervisor_harness/core/envelope.py:154)) narrows a
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:694](../src/supervisor_harness/core/supervisor.py:694)), when an
+[supervisor.py:737](../src/supervisor_harness/core/supervisor.py:737)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:2285](../src/supervisor_harness/core/supervisor.py:2285)). It
+[supervisor.py:2630](../src/supervisor_harness/core/supervisor.py:2630)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
 **The grant has a shelf life.** An envelope carries a date, and a stale one is
 re-asked rather than silently honoured (`stale_reason`,
-[envelope.py:162](../src/supervisor_harness/core/envelope.py:162)). Renewal
+[envelope.py:194](../src/supervisor_harness/core/envelope.py:194)). Renewal
 renews the *date*, never the paths.
 
 **Two decisions worth not re-deriving:**

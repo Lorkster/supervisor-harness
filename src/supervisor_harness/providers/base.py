@@ -64,9 +64,23 @@ class DelegationRequired(Exception):
 
 
 @dataclass
+class ToolCall:
+    """One call a model made through its provider's native tool interface."""
+
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    id: str = ""
+
+
+@dataclass
 class ChatMessage:
-    role: str  # "system" | "user" | "assistant"
+    role: str  # "system" | "user" | "assistant" | "tool"
     content: str
+    #: On an assistant message: the native tool calls it made.
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    #: On a tool message: which tool's result this is, and the call it answers.
+    tool_name: str = ""
+    tool_call_id: str = ""
 
 
 #: The sampling temperature the OpenAI-compatible and Ollama providers use when
@@ -99,6 +113,14 @@ class CompletionRequest:
     #: tool rounds and turns -- so caching its prefix pays. One-shot calls leave
     #: it off: a cache write costs more than plain input and would never be read.
     cache: bool = False
+    #: Tools offered through the provider's native interface, as JSON-schema
+    #: function specs (``{"name", "description", "parameters"}``). Only for a
+    #: provider whose ``native_tools`` is true; the others never see it.
+    tools: list[dict[str, Any]] | None = None
+    #: Sample with the model's own tuned settings rather than the harness's
+    #: default temperature. A local model ships with the sampling its makers
+    #: tested; 0.2 is what induced repetition loops in one.
+    model_sampling: bool = False
 
 
 @dataclass
@@ -110,6 +132,8 @@ class CompletionResponse:
     usage: Usage = field(default_factory=Usage)
     finish_reason: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    #: Native tool calls, when the request offered tools and the model used them.
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
     def json(self, *, required: bool = True) -> dict[str, Any]:
         """Parse the response as JSON, tolerating fences and surrounding prose."""
@@ -126,6 +150,10 @@ class Provider(abc.ABC):
     """Minimal surface: one non-streaming completion, plus a health check."""
 
     name: str = "provider"
+    #: Whether ``complete`` honours ``CompletionRequest.tools`` and returns
+    #: ``CompletionResponse.tool_calls``. An agent on a provider without it is
+    #: driven through the JSON turn contract instead.
+    native_tools: bool = False
 
     @abc.abstractmethod
     async def complete(self, request: CompletionRequest) -> CompletionResponse:

@@ -84,6 +84,7 @@ from .dod import (
     VERIFY_EXECUTABLES,
     executable_name,
     inline_source_flag,
+    powershell_refusal,
     run_bounded,
     shell_split,
     unquoted_metacharacter,
@@ -176,6 +177,11 @@ MAX_READ_LINES = 400
 #: alone did not bound it: 400 lines of dense code is 16,000 characters, more
 #: than a round's results could carry, and the excess was lost without a word.
 MAX_READ_CHARS = 10_000
+#: What a read returns to an agent whose conversation keeps it (see
+#: ``Toolbox.call``): enough for the 483-line translation file whose first page
+#: was all one implementer saw, and wrote back.
+WHOLE_FILE_LINES = 3_000
+WHOLE_FILE_CHARS = 80_000
 MAX_MATCHES = 60
 MAX_LIST = 200
 #: Files larger than this are not read whole: a read refuses them, a search
@@ -267,6 +273,50 @@ def tree_wide_git(command: str) -> str | None:
     return None
 
 
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def match_ignoring_indent(text: str, old: str, new: str) -> tuple[int, str] | None:
+    """``text`` with ``old`` replaced by ``new`` where only indentation kept them apart.
+
+    Returns the line the change starts on and the edited text, or ``None``
+    unless the lines of ``old``, stripped of their leading and trailing
+    whitespace, match exactly one run of lines in ``text``. ``new`` is shifted
+    by the difference between the indentation ``old`` was written with and the
+    file's, so a change copied with the wrong indentation lands with the right
+    one. The file's line endings are kept.
+    """
+    crlf = "\r\n" in text
+    body = text.replace("\r\n", "\n")
+    old_lines = old.replace("\r\n", "\n").strip("\n").split("\n")
+    new_lines = new.replace("\r\n", "\n").strip("\n").split("\n") if new.strip() else []
+    keys = [line.strip() for line in old_lines]
+    if not any(keys):
+        return None
+    lines = body.split("\n")
+    starts = [i for i in range(len(lines) - len(keys) + 1)
+              if all(lines[i + k].strip() == key for k, key in enumerate(keys))]
+    if len(starts) != 1:
+        return None
+    at = starts[0]
+    first = next(k for k, key in enumerate(keys) if key)
+    theirs, mine = _indent(lines[at + first]), _indent(old_lines[first])
+
+    def shifted(line: str) -> str:
+        if not line.strip():
+            return ""
+        own = _indent(line)
+        if own.startswith(mine):
+            return theirs + line[len(mine):]
+        cut = max(0, len(theirs) - (len(mine) - len(own)))
+        return theirs[:cut] + line.lstrip()
+
+    lines[at:at + len(keys)] = [shifted(line) for line in new_lines]
+    edited = "\n".join(lines)
+    return at + 1, edited.replace("\n", "\r\n") if crlf else edited
+
+
 class Toolbox:
     """The tools an autonomous agent may use, sandboxed to one workspace."""
 
@@ -345,6 +395,16 @@ class Toolbox:
             return None
         return candidate
 
+    def writable_path(self, raw: str) -> str | None:
+        """``raw`` as the workspace-relative path a write would land on, if the
+        floor allows one there at all; ``None`` for a path outside the
+        workspace or under the floor. Scope is the caller's question."""
+        target = self._resolve(raw)
+        if target is None:
+            return None
+        rel = target.relative_to(self.workspace).as_posix()
+        return None if self._floor_refusal(rel) is not None else rel
+
     def _walk(self) -> list[Path]:
         """Every readable file genuinely inside the workspace.
 
@@ -421,7 +481,8 @@ class Toolbox:
             body += f"\n... and {len(matches) - MAX_LIST} more"
         return ToolResult("list_files", True, body)
 
-    def read_file(self, path: str, start: int = 1, limit: int = MAX_READ_LINES) -> ToolResult:
+    def read_file(self, path: str, start: int = 1, limit: int = MAX_READ_LINES, *,
+                  max_lines: int = MAX_READ_LINES, max_chars: int = MAX_READ_CHARS) -> ToolResult:
         target = self._resolve(path)
         if target is None:
             return ToolResult("read_file", False, f"{path!r} is outside the workspace")
@@ -437,12 +498,15 @@ class Toolbox:
             return ToolResult("read_file", False, f"could not read {path!r}: {exc}")
 
         start = max(1, int(start or 1))
-        limit = max(1, min(int(limit or MAX_READ_LINES), MAX_READ_LINES))
+        limit = max(1, min(int(limit or max_lines), max_lines))
         numbered: list[str] = []
         size = 0
         for n, line in enumerate(lines[start - 1 : start - 1 + limit], start):
-            text = f"{n:>5}  {line}"
-            if numbered and size + len(text) + 1 > MAX_READ_CHARS:
+            # A tab, as `cat -n` has it: with spaces after the number, a model
+            # copying a line for edit_file could not tell the padding from the
+            # indentation -- 147 edit_file misses in one go-live run.
+            text = f"{n:>6}\t{line}"
+            if numbered and size + len(text) + 1 > max_chars:
                 break
             numbered.append(text)
             size += len(text) + 1
@@ -557,6 +621,31 @@ class Toolbox:
                 "edit_file(path, old, new); to see all of it, read on from where "
                 "read_file said to continue.")
 
+    def delete_file(self, path: str, scope: Scope | None = None) -> ToolResult:
+        """Delete one file, behind exactly the fences a write is behind.
+
+        Measured in a go-live run: an implementer left a scratch spec it had
+        used while writing a Playwright test, could not remove it -- there was
+        no tool for it -- and the verifier rightly failed the task's
+        conventions criterion over the dead file. One file at a time, never a
+        directory: a scratch file is what this is for.
+        """
+        target = self._resolve(path)
+        if target is None:
+            return ToolResult("delete_file", False, f"{path!r} is outside the workspace")
+        rel = target.relative_to(self.workspace).as_posix()
+        refusal = self._write_refusal(rel, scope)
+        if refusal is not None:
+            return ToolResult("delete_file", False, refusal)
+        if not target.is_file():
+            return ToolResult("delete_file", False,
+                              f"{rel} is not a file; only single files are deleted")
+        try:
+            target.unlink()
+        except OSError as exc:
+            return ToolResult("delete_file", False, f"could not delete {rel}: {exc}")
+        return ToolResult("delete_file", True, f"deleted {rel}")
+
     def edit_file(self, path: str, old: str, new: str, scope: Scope | None = None) -> ToolResult:
         """Replace the one occurrence of ``old`` in an existing file with ``new``.
 
@@ -585,19 +674,25 @@ class Toolbox:
         if "\r\n" in text:
             old, new = (s.replace("\r\n", "\n").replace("\n", "\r\n") for s in (old, new))
         count = text.count(old)
-        if count != 1:
+        matched = ""
+        if count == 1:
+            line = text[:text.index(old)].count("\n") + 1
+            edited = text.replace(old, new, 1)
+        elif count == 0 and (loose := match_ignoring_indent(text, old, new)) is not None:
+            line, edited = loose
+            matched = " (matched ignoring indentation; `new` re-indented to the file's)"
+        else:
             return ToolResult("edit_file", False, (
                 f"`old` does not occur in {rel} as written; read the file and copy the "
                 "text exactly" if count == 0 else
                 f"`old` occurs {count} times in {rel}; include enough of the "
                 "surrounding lines to pick out one"))
-        line = text[:text.index(old)].count("\n") + 1
         try:
             with target.open("w", encoding="utf-8", newline="") as handle:
-                handle.write(text.replace(old, new, 1))
+                handle.write(edited)
         except OSError as exc:
             return ToolResult("edit_file", False, f"could not write {rel}: {exc}")
-        return ToolResult("edit_file", True, f"edited {rel} at line {line}")
+        return ToolResult("edit_file", True, f"edited {rel} at line {line}{matched}")
 
     def _path_candidates(self, tokens: list[str]) -> list[str]:
         """The arguments of a command that could name a file.
@@ -734,6 +829,10 @@ class Toolbox:
                 "a file in your scope, or report the command for the host to run"
             )
 
+        powershell = powershell_refusal(tokens) if executable in ("pwsh", "powershell") else None
+        if powershell is not None:
+            return f"an agent may not run this: {powershell}"
+
         inline = inline_source_flag(tokens)
         if inline is not None:
             return (
@@ -820,8 +919,14 @@ class Toolbox:
 
     # -- dispatch ----------------------------------------------------------
 
-    def call(self, name: str, args: dict[str, Any], agent: AgentSpec) -> ToolResult:
-        """Run one requested tool, enforcing what this agent is allowed to do."""
+    def call(self, name: str, args: dict[str, Any], agent: AgentSpec, *,
+             whole_files: bool = False) -> ToolResult:
+        """Run one requested tool, enforcing what this agent is allowed to do.
+
+        ``whole_files`` is for an agent whose conversation keeps what it read:
+        a read then returns a file whole, up to a far larger bound, because a
+        model that saw only the first page of a file writes back only that.
+        """
         name = (name or "").strip()
         writable = agent.kind.value in WRITE_KINDS
         may_run = agent.kind.value in COMMAND_KINDS
@@ -829,10 +934,13 @@ class Toolbox:
         if name == "list_files":
             return self.list_files(str(args.get("pattern", "**/*")))
         if name == "read_file":
+            lines, chars = ((WHOLE_FILE_LINES, WHOLE_FILE_CHARS) if whole_files
+                            else (MAX_READ_LINES, MAX_READ_CHARS))
             return self.read_file(
                 str(args.get("path", "")),
                 int(args.get("start", 1) or 1),
-                int(args.get("limit", MAX_READ_LINES) or MAX_READ_LINES),
+                int(args.get("limit", lines) or lines),
+                max_lines=lines, max_chars=chars,
             )
         if name == "search":
             return self.search(str(args.get("pattern", "")), str(args.get("glob", "**/*")))
@@ -846,6 +954,14 @@ class Toolbox:
             return self.write_file(
                 str(args.get("path", "")), str(args.get("content", "")), agent.scope
             )
+        if name == "delete_file":
+            if not writable:
+                return ToolResult(
+                    "delete_file", False,
+                    f"a {agent.kind.value} agent may not modify files; report what "
+                    "should change instead",
+                )
+            return self.delete_file(str(args.get("path", "")), agent.scope)
         if name == "edit_file":
             if not writable:
                 return ToolResult(
@@ -881,6 +997,9 @@ def available_tools(agent: AgentSpec, policy: Policy) -> list[dict[str, str]]:
          "does": "search file contents, returning path:line matches"},
     ]
     if agent.kind.value in WRITE_KINDS:
+        tools.append({"name": "delete_file", "args": "path",
+                      "does": "delete one file within your scope -- a scratch file you "
+                              "made and no longer need"})
         tools.append({"name": "edit_file", "args": "path, old, new",
                       "does": "change part of an existing file: replace the one place "
                               "`old` appears, copied exactly from read_file, with `new`. "

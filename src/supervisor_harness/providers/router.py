@@ -100,6 +100,17 @@ class ModelRouter:
     def binding(self, stage: str) -> ModelBinding:
         return self.config.binding_for(stage)
 
+    def native_tools(self, binding: ModelBinding) -> bool:
+        """Whether this binding's provider takes tools natively.
+
+        Its fallbacks are not consulted: a conversation started in native tool
+        calls cannot be carried on by a provider that has none.
+        """
+        try:
+            return self.provider(binding.provider).native_tools and not binding.fallbacks
+        except ValueError:
+            return False
+
     def is_host(self, stage: str) -> bool:
         return self.binding(stage).provider == "host"
 
@@ -210,6 +221,8 @@ def _with_model(
         timeout=timeout,
         extra=extra,
         cache=request.cache,
+        tools=request.tools,
+        model_sampling=request.model_sampling,
     )
 
 

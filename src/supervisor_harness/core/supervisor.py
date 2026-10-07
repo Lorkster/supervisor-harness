@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from ..agents.brief import (
+    build_implementer_brief,
+    build_verifier_brief,
     render_directive,
 )
 from ..agents.registry import AgentRegistry
@@ -71,12 +73,14 @@ from ..models import (
     EndCause,
     EnvelopeGrant,
     Escalation,
+    EscalationReason,
     ExecutionTask,
     Phase,
     Resolution,
     RunMode,
     RunState,
     RunWorktree,
+    Scope,
     ScopeEnvelope,
     TaskDecision,
     TaskStatus,
@@ -92,8 +96,27 @@ from . import autonomy, phases, worktree
 from .attribution import baseline_verdict
 from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
+from .conversation import (
+    CHECKPOINT_CALLS,
+    MAX_IDLE_ANSWERS,
+    VERDICT_NOW,
+    VERDICT_STINTS,
+    Stint,
+    compact,
+    native_tool_specs,
+    stint_payload,
+)
+from .conversation import ROLE as CONVERSATION_ROLES
 from .dod import VerificationOutcome, fill_suite_commands, verify_criterion
-from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
+from .envelope import (
+    Ceiling,
+    attenuate,
+    effective,
+    establish,
+    render,
+    stale_reason,
+    widen_within,
+)
 from .fails_before import (
     changed_since,
     is_test_module,
@@ -105,10 +128,13 @@ from .fails_before import (
 from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
-from .paths import globs_may_overlap, relative_patterns
+from .paths import globs_may_overlap, globs_within, matches_any, relative_patterns
 from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
+from .review import NOW as REVIEW_NOW
+from .review import ROLE as REVIEW_ROLE
+from .review import RULING_TOOL, parse_ruling, review_brief
 
 #: Re-exported for the callers that have always imported it from here --
 #: the CLI, the MCP server and the tests. It lives in `core/responses.py`
@@ -372,9 +398,16 @@ class Supervisor:
         # smaller than the shipped defaults require, and a fully-remediated run
         # was marked FAILED after doing all of its work.
         limit = 12 + 6 * max(1, self.config.policy.max_checkpoint_iterations)
-        guard = 0
-        while guard < limit:
-            guard += 1
+        # The guard is for a machine that is stuck, so it counts steps that
+        # changed nothing. Counting every step ended a go-live run (6 tasks, 3
+        # checkpoint cycles, 1h53m of work) as FAILED part-way through its last
+        # verification. A far larger ceiling on all steps stays as a backstop
+        # for a loop that records something every time round.
+        ceiling = limit * 25
+        stalled = steps = 0
+        seen = session.state.last_seq
+        while stalled < limit and steps < ceiling:
+            steps += 1
             state = session.state
             phase = state.phase
 
@@ -385,7 +418,7 @@ class Supervisor:
             elif phase is Phase.SYNTHESIZING:
                 response = await self._run_synthesis(session)
             elif phase is Phase.AWAITING_APPROVAL:
-                response = self._await_approval(session)
+                response = await self._await_approval(session)
             elif phase is Phase.EXECUTING:
                 response = await self._continue_execution(session)
             elif phase is Phase.VERIFYING:
@@ -402,10 +435,14 @@ class Supervisor:
             if response is not None:
                 session.sync_index()
                 return response
+            if session.state.last_seq > seen:
+                seen, stalled = session.state.last_seq, 0
+            else:
+                stalled += 1
+        stuck =(f"made no progress in {limit} steps" if stalled >= limit
+                 else f"did not settle after {steps} steps")
         return self.reporting._error(
-            session,
-            f"phase machine did not settle after {limit} steps; last phase "
-            f"{session.state.phase.value}",
+            session, f"phase machine {stuck}; last phase {session.state.phase.value}",
         )
 
     def _transition(self, session: RunSession, phase: Phase, **payload: Any) -> None:
@@ -691,6 +728,12 @@ class Supervisor:
         for task in tasks:
             task.scope.paths, placed = placed_in_tree(task.scope.paths, self.workspace)
             declared = bool(task.scope.paths)
+            # What the task asks for beyond the plan's envelope but inside the
+            # owner's grant, it gets, before the envelope narrows it.
+            run_paths = effective(state.envelope).paths
+            self._widen_within_grant(session, task, [
+                p for p in task.scope.paths
+                if run_paths and not globs_within([p], run_paths)])
             task.scope, clamped = attenuate(
                 task.scope, [Ceiling.of("run envelope", effective(state.envelope))]
             )
@@ -712,9 +755,15 @@ class Supervisor:
             for task_id, entries in extra.items():
                 notes.setdefault(task_id, []).extend(entries)
         for task in tasks:
-            for path in named_outside_scope(task, self.workspace):
-                gap = (f"the task names `{path}`, which its scope does not cover; "
-                       "its agent could not change it")
+            granted, refused = self._widen_within_grant(
+                session, task, named_outside_scope(task, self.workspace))
+            for path in granted:
+                task.scope.paths.append(path)
+                notes[task.id].append(f"the task names `{path}`, which its scope left out "
+                                      "and the owner's grant covers; added to its scope")
+            for path in refused:
+                gap = (f"the task names `{path}`, which its scope does not cover and the "
+                       "owner's grant does not either; its agent could not change it")
                 task.clamped.append(gap)
                 notes[task.id].append(gap)
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
@@ -722,14 +771,14 @@ class Supervisor:
         session.emit(EventType.NOTE, {"text": "tasks proposed", "notes": notes})
         self._transition(session, Phase.AWAITING_APPROVAL)
 
-    def _await_approval(self, session: RunSession) -> SupervisorResponse | None:
+    async def _await_approval(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
         proposed = [t for t in state.tasks.values() if t.status is TaskStatus.PROPOSED]
         if not proposed:
             self._transition(session, Phase.EXECUTING)
             return None
         if state.envelope_grant is not None:
-            self._approve_within_envelope(session, proposed)
+            await self._approve_within_envelope(session, proposed)
             return None
 
         notes = {t.id: list(state.task_notes[t.id]) for t in proposed if t.id in state.task_notes}
@@ -748,7 +797,7 @@ class Supervisor:
             detail={"envelope": to_jsonable(effective(state.envelope))},
         )
 
-    def _approve_within_envelope(
+    async def _approve_within_envelope(
         self, session: RunSession, proposed: list[ExecutionTask]
     ) -> None:
         """Decide each proposed task by the deterministic gate, not by a person.
@@ -761,24 +810,28 @@ class Supervisor:
         approved = 0
         for task in proposed:
             reasons = autonomy.gate(task, self.config.policy)
+            if not reasons and self.config.policy.veto_review:
+                veto = await self._review_task(session, task)
+                if veto is not None:
+                    reasons = [(EscalationReason.REVIEW_VETO, f"{veto[0]}: {veto[1]}")]
             if not reasons:
                 task.decision = Decision.APPROVE
                 task.decision_note = "approved by the harness within the granted envelope"
                 task.status = TaskStatus.APPROVED
                 task.updated_at = now_iso()
-                session.emit(EventType.TASK_DECIDED, {"task": to_jsonable(task),
-                                                      "by": "envelope"})
+                await session.aemit(EventType.TASK_DECIDED, {"task": to_jsonable(task),
+                                                             "by": "envelope"})
                 approved += 1
                 continue
             escalation = Escalation(
                 run_id=session.state.id, reason=reasons[0][0], task_id=task.id,
                 detail=" | ".join(f"{reason}: {why}" for reason, why in reasons),
             )
-            session.emit(EventType.ESCALATION_RAISED, {"escalation": to_jsonable(escalation)},
-                         actor="harness")
+            await session.aemit(EventType.ESCALATION_RAISED,
+                                {"escalation": to_jsonable(escalation)}, actor="harness")
             task.status = TaskStatus.BLOCKED
             task.updated_at = now_iso()
-            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
 
         if approved:
             self._transition(session, Phase.EXECUTING)
@@ -842,6 +895,15 @@ class Supervisor:
                 return self.reporting._error(session, refused)
 
         if not active:
+            # Before the next writer starts: the harness's own checks on the
+            # tasks just finished, on a tree that holds their change and none
+            # that comes after. Measured: verified at the end instead, a task's
+            # full-suite check failed on a test a later task had written, and
+            # the evidence -- "introduced by this run's changes" -- was true of
+            # the run and not of the task.
+            if any(t.status is TaskStatus.AWAITING_VERIFICATION
+                   for t in state.tasks.values()):
+                self._verify_mechanically(session)
             registry = self.packets._registry_for(session, None)
             fresh: list[AgentSpec] = []
             started: list[ExecutionTask] = []
@@ -1897,6 +1959,10 @@ class Supervisor:
         piece of work, not three. The outer one is the supervised loop: each real
         answer is recorded, assessed for drift, and answered with a directive.
         """
+        if self._conversational(agent):
+            await (self._converse_verifier if agent.kind is AgentKind.VERIFICATION
+                   else self._converse)(session, agent)
+            return
         packet = self.packets._agent_packet(session, agent)
         history: list[ChatMessage] = [ChatMessage("user", packet.brief)]
 
@@ -1944,26 +2010,8 @@ class Supervisor:
                         ),
                         binding=agent.binding,
                     )
-                except ProviderRefusal as exc:
-                    # A refusal is a result, not a failure to retry: recorded
-                    # with its own fields so a reader -- or an evaluation
-                    # scoring this run -- can tell it from an agent that broke.
-                    await session.anote(
-                        "agent refused by the model", actor=agent.id, refusal=True,
-                        provider=exc.provider, model=exc.model, category=exc.category,
-                        explanation=exc.explanation,
-                    )
-                    await self.lifecycle._set_status(
-                        session, agent, AgentStatus.FAILED, cause=EndCause.REFUSED,
-                        reason=exc.category or "refused",
-                    )
-                    return
                 except Exception as exc:  # noqa: BLE001 - one agent must not kill the run
-                    await session.anote(f"agent failed: {exc}", actor=agent.id)
-                    await self.lifecycle._set_status(
-                        session, agent, AgentStatus.FAILED, cause=EndCause.ERROR,
-                        reason=f"{type(exc).__name__}: {exc}",
-                    )
+                    await self._agent_call_failed(session, agent, exc)
                     return
 
                 turn_usage = turn_usage.add(response.usage)
@@ -2052,11 +2100,21 @@ class Supervisor:
                 ChatMessage("user", render_directive(directive, agent)),
             ]
 
-        # Falling out of the loop means the supervised turns ran out without a
-        # terminal directive: every turn drew a continuation, or the budget
-        # allowed none. Without a terminal status the agent stayed in
-        # ACTIVE_AGENT_STATUSES, so the phase drove it again from turn one until
-        # the run was failed for not settling.
+        await self._out_of_turns(session, agent)
+
+    def _conversational(self, agent: AgentSpec) -> bool:
+        """Whether this agent is driven as a conversation (`core/conversation.py`)."""
+        return (agent.kind in (AgentKind.EXECUTION, AgentKind.VERIFICATION)
+                and self.config.policy.implementer_loop == "conversation"
+                and self.router.native_tools(agent.binding))
+
+    async def _out_of_turns(self, session: RunSession, agent: AgentSpec) -> None:
+        """End an agent whose supervised turns ran out without a terminal directive.
+
+        Every turn drew a continuation, or the budget allowed none. Without a
+        terminal status the agent stayed in ACTIVE_AGENT_STATUSES, so the phase
+        drove it again from turn one until the run was failed for not settling.
+        """
         turns_used = session.state.turn_counts.get(agent.id, 0)
         await session.anote(
             f"agent `{agent.id}` stopped: turn budget exhausted "
@@ -2066,6 +2124,263 @@ class Supervisor:
         await self.lifecycle._set_status(
             session, agent, AgentStatus.STOPPED, cause=EndCause.TURN_BUDGET,
             reason=f"turn budget exhausted ({turns_used}/{agent.budget.max_turns})",
+        )
+
+    async def _converse(self, session: RunSession, agent: AgentSpec) -> None:
+        """Drive an implementer as one conversation through native tool calls.
+
+        See `core/conversation.py`. The supervised loop is the same one -- a
+        stretch of work becomes a turn, which is assessed and answered -- but
+        the conversation carries on through it: what the agent read is still
+        there after the directive, which is appended rather than swapped in.
+        """
+        state = session.state
+        task = state.tasks.get(agent.task_id or "") or ExecutionTask(
+            run_id=state.id, title=agent.title)
+        brief = state.briefs.get(agent.id)
+        if brief is None:
+            findings = [f"[{f.severity.value}] {f.title}: {f.detail}"
+                        for f in state.findings if f.id in task.rationale_refs]
+            brief = build_implementer_brief(state, agent, task, findings)
+            await session.aemit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
+        messages = [ChatMessage("user", brief)]
+        tools = native_tool_specs(agent, self.config.policy)
+
+        for _ in range(agent.budget.max_turns):
+            stint = Stint()
+            report = await self._work_a_stint(session, agent, messages, tools, stint)
+            if stint.failed:
+                return
+            payload = stint_payload(stint, report)
+            payload["usage"] = {**to_jsonable(stint.usage), "tool_calls": stint.tool_calls}
+            turn = await self.supervision._record_turn(session, agent, payload)
+            await self._flush_assists(session, agent)
+            directive = await self.supervision._supervise(session, agent, turn)
+            if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP,
+                                  DirectiveKind.ESCALATE):
+                self._mark_task_awaiting_verification(session, agent, payload)
+                return
+            messages.append(ChatMessage("user", render_directive(directive, agent)))
+        await self._out_of_turns(session, agent)
+
+    async def _converse_verifier(self, session: RunSession, agent: AgentSpec) -> None:
+        """Drive a verifier as a conversation that ends in a ``verdict``.
+
+        On the turn contract a verifier on a local model had one turn, and in a
+        measured run returned an empty answer on all three attempts: the review
+        criteria of a correct task were never judged, and the task was failed.
+        It is shown only the criteria still open -- the harness has proved the
+        mechanical ones itself -- and is asked once more for a verdict if a
+        stretch of reading ends without one.
+        """
+        state = session.state
+        task = state.tasks.get(agent.task_id or "") or ExecutionTask(
+            run_id=state.id, title=agent.title)
+        brief = state.briefs.get(agent.id)
+        if brief is None:
+            brief = build_verifier_brief(state, task, self.packets._change_summary(session, task))
+            await session.aemit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
+        messages = [ChatMessage("user", brief)]
+        tools = native_tool_specs(agent, self.config.policy)
+        stint = Stint()
+        verdict: dict[str, Any] | None = None
+        for _ in range(VERDICT_STINTS):
+            verdict = await self._work_a_stint(session, agent, messages, tools, stint)
+            if stint.failed:
+                return
+            if verdict is not None:
+                break
+            messages.append(ChatMessage("user", VERDICT_NOW))
+        verdict = verdict or {}
+        payload = {
+            "output": str(verdict.get("summary", "")) or "; ".join(stint.actions[-20:]),
+            "results": [r for r in (verdict.get("results") or []) if isinstance(r, dict)],
+            "status": "done", "files_read": stint.read,
+            "usage": {**to_jsonable(stint.usage), "tool_calls": stint.tool_calls},
+        }
+        turn = await self.supervision._record_turn(session, agent, payload)
+        await self._flush_assists(session, agent)
+        await self.supervision._assess_drift(session, agent, turn)
+        await self._report_verification(session, agent, payload)
+
+    async def _review_task(
+        self, session: RunSession, task: ExecutionTask
+    ) -> tuple[str, str] | None:
+        """The second reading of a task the gate passed: a veto, or None.
+
+        See `core/review.py`. Read-only tools, two stretches of reading at
+        most, and a ruling. No ruling, a failed call, or a review model with no
+        native tools is noted, and the gate's decision stands.
+        """
+        reader = AgentSpec(id=f"review_{task.id}", kind=AgentKind.ANALYSIS, role="reviewer",
+                           title=f"Review of {task.title!r}", scope=Scope(),
+                           binding=self.config.binding_for("review"))
+        if not self.router.native_tools(reader.binding):
+            await session.anote("veto review skipped: the review model takes no tools "
+                                "natively", task_id=task.id)
+            return None
+        messages = [ChatMessage("user", review_brief(session.state, task))]
+        tools = [t for t in native_tool_specs(reader, self.config.policy)
+                 if t["name"] != "report"] + [RULING_TOOL]
+        stint = Stint()
+        ruling: dict[str, Any] | None = None
+        for _ in range(2):
+            ruling = await self._work_a_stint(session, reader, messages, tools, stint,
+                                              role=REVIEW_ROLE, stage="review")
+            if ruling is not None or stint.failed:
+                break
+            messages.append(ChatMessage("user", REVIEW_NOW))
+        veto = parse_ruling(ruling)
+        if veto is not None:
+            outcome = f"vetoed ({veto[0]}): {veto[1]}"
+        elif ruling is not None:
+            outcome = "proceed"
+        else:
+            outcome = "no ruling; the gate's decision stands"
+        await session.anote(f"veto review of {task.title!r}: {outcome}",
+                            task_id=task.id, read=stint.read, tool_calls=stint.tool_calls)
+        return veto
+
+    async def _work_a_stint(
+        self, session: RunSession, agent: AgentSpec, messages: list[ChatMessage],
+        tools: list[dict[str, Any]], stint: Stint, *,
+        role: tuple[str, str, str] | None = None, stage: str = "",
+    ) -> dict[str, Any] | None:
+        """Let the agent work until it finishes, goes quiet, or a checkpoint is due.
+
+        Returns what it finished with -- an implementer's ``report``, a
+        verifier's ``verdict`` -- or None at a checkpoint. A failed model call
+        ends the agent here, and says so on ``stint.failed``. ``role`` and
+        ``stage`` are for a reader that is not one of the run's agents (the
+        veto review); it is not ended on a failure, only stopped.
+        """
+        toolbox = self._toolbox_for(session.state)
+        in_run = role is None
+        stage = stage or self.lifecycle._stage_for(agent)
+        system, finish, nudge = role or CONVERSATION_ROLES[agent.kind.value]
+        report: dict[str, Any] | None = None
+        idle = 0
+        while report is None and stint.tool_calls < CHECKPOINT_CALLS and idle < MAX_IDLE_ANSWERS:
+            if compact(messages):
+                await session.anote("conversation compacted: the oldest tool results "
+                                    "were removed", actor=agent.id)
+            try:
+                # A copy: the conversation grows after the call, and a request
+                # is what was asked, not what the conversation later became.
+                response = await self.router.complete(stage, CompletionRequest(
+                    messages=list(messages), system=system, tools=tools,
+                    model_sampling=True, cache=True, timeout=600.0,
+                ), binding=agent.binding)
+            except Exception as exc:  # noqa: BLE001 - one agent must not kill the run
+                if in_run:
+                    await self._agent_call_failed(session, agent, exc)
+                else:
+                    await session.anote(f"{agent.title}: the model call failed: {exc}")
+                stint.failed = True
+                return None
+            stint.usage = stint.usage.add(response.usage)
+            stint.reasoning = response.reasoning or stint.reasoning
+            stint.text.append(response.text)
+            messages.append(ChatMessage("assistant", response.text,
+                                        tool_calls=response.tool_calls))
+            if not response.tool_calls:
+                idle += 1
+                messages.append(ChatMessage("user", nudge))
+                continue
+            idle = 0
+            failures: list[str] = []
+            for call in response.tool_calls:
+                if call.name == finish:
+                    report, text = call.arguments, "Received; the supervisor will answer."
+                else:
+                    if call.name in ("edit_file", "write_file", "delete_file"):
+                        await self._widen_for_write(session, agent, toolbox,
+                                                    str(call.arguments.get("path", "")))
+                    result = toolbox.call(call.name, call.arguments, agent, whole_files=True)
+                    stint.record(call, result.ok, result.path)
+                    failures += [] if result.ok else [call.name]
+                    text = render_results([result], limit=TOOL_RESULT_CHARS)
+                messages.append(ChatMessage("tool", text, tool_name=call.name,
+                                            tool_call_id=call.id))
+            await session.anote("tools called", actor=agent.id,
+                                tools=[c.name for c in response.tool_calls], failures=failures)
+        return report
+
+    async def _widen_for_write(
+        self, session: RunSession, agent: AgentSpec, toolbox: Toolbox, raw: str
+    ) -> None:
+        """Let an implementer write where its task needs, within the run's plan.
+
+        Measured in a go-live run: the plan's envelope named `reporting/` -- a
+        directory that does not exist -- for a task whose whole job was a
+        change to `core/reporting.py`. Its implementer found the right line,
+        was refused by its scope, and escalated, correctly, with nothing
+        written. Within the run's envelope, the scope widens at the moment of
+        the write, and the record says so.
+
+        The envelope itself does not widen here. Widening up to the owner's
+        grant happens when tasks are proposed (`_widen_within_grant`); at a
+        write, the grant from `--grant-envelope` is the whole workspace, and in
+        a go-live run that let an implementer add twenty `scripts/tmp-*.mjs`
+        patch scripts to the envelope, one at a time. Not where another running
+        implementer's scope could meet the path -- keeping two writers apart is
+        what task scopes are for -- and not into a task held for the owner: a
+        vetoed or escalated change is the owner's to decide, and in the same
+        run a peer made the very change the reviewer had vetoed. Anything else
+        is refused by the toolbox as before.
+        """
+        state = session.state
+        task = state.tasks.get(agent.task_id or "")
+        rel = toolbox.writable_path(raw)
+        if (task is None or rel is None or not agent.scope.paths
+                or matches_any(rel, agent.scope.paths)):
+            return
+        if any(other.id != agent.id and other.kind is AgentKind.EXECUTION
+               and other.status in ACTIVE_AGENT_STATUSES
+               and globs_may_overlap([rel], other.scope.paths)
+               for other in state.agents.values()):
+            return
+        held = {e.task_id for e in state.open_escalations()} - {task.id}
+        holder = next((t for t in state.tasks.values()
+                       if t.id in held and globs_may_overlap([rel], t.scope.paths)), None)
+        if holder is not None:
+            await session.anote(f"scope not widened to {rel}: it is in the scope of "
+                                f"{holder.title!r}, which is held for the owner",
+                                actor=agent.id, task_id=task.id)
+            return
+        current = effective(state.envelope)
+        grant = state.envelope_grant
+        plan = Ceiling("the run's plan", list(current.paths),
+                       [*current.forbidden_paths, *(grant.forbidden_paths if grant else [])])
+        _, granted, _ = widen_within(current, plan, [rel])
+        if granted:
+            await session.aemit(EventType.SCOPE_WIDENED, {
+                "agent_id": agent.id, "task_id": task.id, "paths": granted})
+            await session.anote(f"scope widened within the run's envelope so "
+                                f"{agent.id} could change {rel}", actor=agent.id)
+
+    async def _agent_call_failed(
+        self, session: RunSession, agent: AgentSpec, exc: Exception
+    ) -> None:
+        """End an agent whose model call failed, recording a refusal as a refusal."""
+        if isinstance(exc, ProviderRefusal):
+            # A refusal is a result, not a failure to retry: recorded with its
+            # own fields so a reader -- or an evaluation scoring this run -- can
+            # tell it from an agent that broke.
+            await session.anote(
+                "agent refused by the model", actor=agent.id, refusal=True,
+                provider=exc.provider, model=exc.model, category=exc.category,
+                explanation=exc.explanation,
+            )
+            await self.lifecycle._set_status(
+                session, agent, AgentStatus.FAILED, cause=EndCause.REFUSED,
+                reason=exc.category or "refused",
+            )
+            return
+        await session.anote(f"agent failed: {exc}", actor=agent.id)
+        await self.lifecycle._set_status(
+            session, agent, AgentStatus.FAILED, cause=EndCause.ERROR,
+            reason=f"{type(exc).__name__}: {exc}",
         )
 
     async def run(
@@ -2172,6 +2487,36 @@ class Supervisor:
         if any(n.text == already for n in state.notes):
             return
         session.note(already)
+
+    def _widen_within_grant(
+        self, session: RunSession, task: ExecutionTask, wanted: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Widen the run's envelope by what a task needs that the owner granted.
+
+        The owner's ceiling is their grant, recorded against the configured
+        envelope when the run started, or the configured envelope itself.
+        Returns the paths the task may now have and the paths refused
+        (`widen_within`).
+        """
+        state = session.state
+        grant = state.envelope_grant
+        ceiling = (Ceiling("owner's grant", list(grant.paths), list(grant.forbidden_paths))
+                   if grant is not None
+                   else Ceiling("configured envelope", list(self._configured_envelope().paths),
+                                list(self._configured_envelope().forbidden_paths)))
+        current = effective(state.envelope)
+        envelope, granted, refused = widen_within(current, ceiling, wanted)
+        widened = [p for p in envelope.paths if p not in current.paths]
+        if widened:
+            # Its own event, as every change to the envelope is; the grant's
+            # date is the grant's, so it is kept, not renewed.
+            suffix = ", widened within the owner's grant"
+            source = current.source if current.source.endswith(suffix) else current.source + suffix
+            session.emit(EventType.ENVELOPE_SET,
+                         {"envelope": to_jsonable(replace(envelope, source=source))})
+            session.note(f"run envelope widened within the owner's grant for "
+                         f"{task.title!r}: {render(widened)}")
+        return granted, refused
 
     def _configured_envelope(self) -> ScopeEnvelope:
         """The envelope the user's configuration grants, before any model speaks."""

@@ -32,10 +32,12 @@ import pytest
 
 from supervisor_harness.providers.anthropic import AnthropicProvider
 from supervisor_harness.providers.base import (
+    DEFAULT_TEMPERATURE,
     ChatMessage,
     CompletionRequest,
     Provider,
     ProviderError,
+    ToolCall,
 )
 from supervisor_harness.providers.ollama import OllamaProvider
 from supervisor_harness.providers.openrouter import OpenRouterProvider
@@ -369,3 +371,57 @@ def test_ollama_accepts_a_bare_host_and_makes_a_url_of_it() -> None:
     """`OLLAMA_HOST=localhost:11434` is the documented spelling and has no scheme."""
     assert OllamaProvider(base_url="localhost:11434").base_url == "http://localhost:11434"
     assert OllamaProvider(base_url="http://box:1234/").base_url == "http://box:1234"
+
+
+# -- native tool calls (an implementer's conversation) ----------------------------
+
+
+async def test_ollama_offers_tools_natively_and_carries_the_conversation() -> None:
+    """Tools go in the provider's own field, and the calls and results go back
+    in the shape Ollama's chat API reads, so the model sees its own history."""
+    wire = Wire(_json({
+        "message": {"content": "", "tool_calls": [
+            {"function": {"name": "edit_file",
+                          "arguments": {"path": "a.py", "old": "x", "new": "y"}}},
+            {"function": {"name": "read_file", "arguments": '{"path": "b.py"}'}},
+            {"function": {"name": "", "arguments": {}}},
+            "garbage",
+        ]},
+        "model": "qwen3.8-code:latest",
+    }))
+    provider = wire.attach(OllamaProvider())
+    spec = {"name": "read_file", "description": "read", "parameters": {"type": "object"}}
+
+    response = await provider.complete(CompletionRequest(
+        messages=[
+            ChatMessage("user", "the task"),
+            ChatMessage("assistant", "", tool_calls=[ToolCall("read_file", {"path": "a.py"})]),
+            ChatMessage("tool", "a.py\n    1  x", tool_name="read_file"),
+        ],
+        tools=[spec], model_sampling=True,
+    ))
+
+    body = wire.body
+    assert body["tools"] == [{"type": "function", "function": spec}]
+    assert "temperature" not in body["options"], "the model's own sampling"
+    assert "think" not in body and "format" not in body
+    assert body["messages"][1]["tool_calls"] == [
+        {"function": {"name": "read_file", "arguments": {"path": "a.py"}}}]
+    assert body["messages"][2] == {"role": "tool", "content": "a.py\n    1  x",
+                                   "tool_name": "read_file"}
+    assert response.tool_calls == [
+        ToolCall("edit_file", {"path": "a.py", "old": "x", "new": "y"}),
+        ToolCall("read_file", {"path": "b.py"}),
+    ], "string arguments are parsed, and malformed calls dropped"
+    assert OllamaProvider.native_tools
+
+
+async def test_ollama_keeps_the_default_temperature_unless_told_otherwise() -> None:
+    wire = Wire(_ollama_ok(), _ollama_ok())
+    provider = wire.attach(OllamaProvider())
+
+    await provider.complete(CompletionRequest(messages=[ChatMessage("user", "x")]))
+    assert wire.body["options"]["temperature"] == DEFAULT_TEMPERATURE
+    await provider.complete(CompletionRequest(messages=[ChatMessage("user", "x")],
+                                              model_sampling=True, temperature=0.7))
+    assert wire.body["options"]["temperature"] == 0.7, "an explicit temperature still wins"

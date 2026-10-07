@@ -121,6 +121,22 @@ class Policy:
     # able to set this would be choosing to skip review of work done on itself.
     approval: str = "task"
 
+    # How an implementer is driven on the autonomous backend: "turns", each
+    # supervised turn a fresh JSON answer whose tool results are dropped when
+    # it ends, or "conversation", one conversation per implementer in which
+    # what it read is kept, tools are called through the provider's native
+    # interface, and supervision checks its progress every so many calls. See
+    # `core/conversation.py`. Only where the implementer's provider takes tools
+    # natively; anywhere else, "turns". Not protected: it changes how the work
+    # is done, not what is allowed or how it is checked.
+    implementer_loop: str = "turns"
+
+    # Under envelope approval, a second reading of each task the gate passes,
+    # by a reviewer that can only veto (`core/review.py`), routed to the
+    # "review" stage. Protected: a repository able to turn it off would be
+    # choosing to skip the one reading of its own changes that is not a gate.
+    veto_review: bool = True
+
     # The run's scope envelope: the ceiling on every agent scope in the run.
     # Empty means the whole workspace, which is what an empty scope already
     # means to the toolbox and to the floor beneath it. This is deliberately
@@ -190,7 +206,7 @@ DEFAULT_ROUTING: dict[str, str] = {"default": "host"}
 # and in the generated example config.
 KNOWN_STAGES: tuple[str, ...] = (
     "default", "supervisor", "planning", "analysis", "synthesis",
-    "execution", "verification", "drift", "improvement",
+    "execution", "verification", "drift", "improvement", "review",
 )
 
 
@@ -348,6 +364,7 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     ("policy", "min_scope_coverage"),
     # Whether a person reviews each task, or the harness does within a grant.
     ("policy", "approval"),
+    ("policy", "veto_review"),
 )
 
 # Per-provider keys an untrusted file may not touch, for the same reason.
