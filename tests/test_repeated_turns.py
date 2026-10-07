@@ -76,7 +76,7 @@ def test_a_lens_scoped_to_the_workspace_by_the_planner_is_not_drifting(
     assert spec.scope.paths == ["**"]
 
     assessment = assess_heuristically(_context(spec, ["pkg/config.py", "pkg/core/paths.py"]))
-    assert "scope_paths" not in {s.kind for s in assessment.signals}
+    assert not {"scope_paths", "reads_outside_scope"} & {s.kind for s in assessment.signals}
 
 
 def test_a_genuinely_outside_file_is_still_outside(config: Any, tmp_path: Path) -> None:
@@ -90,7 +90,7 @@ def test_a_genuinely_outside_file_is_still_outside(config: Any, tmp_path: Path) 
                                     fallback=[])
     (spec,) = [s for s in specs if s.role == "security"]
     assessment = assess_heuristically(_context(spec, ["pkg/billing.py"]))
-    assert "scope_paths" in {s.kind for s in assessment.signals}
+    assert "reads_outside_scope" in {s.kind for s in assessment.signals}
 
 
 def test_task_scopes_from_the_planner_are_made_relative_too() -> None:
