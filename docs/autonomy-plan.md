@@ -716,7 +716,7 @@ owner would merge. Measured against runs 4-9.
 > two because the plan's envelope left out `e2e/` and the CI workflow.
 
 > **Runs 11 and 12** (9a, 49 minutes; P3-18, 17). The conversational verifier
-> works: its review verdicts quote the code (`timing.py:344 ...`). Implementers
+> works: its review verdicts quote the code they judge, by file and line. Implementers
 > now escalate with exact, correct accounts -- "Scope guard refuses to let me
 > edit src/supervisor_harness/core/reporting.py, which is the one the task
 > requires" -- and baseline attribution read a failure right. What stopped them

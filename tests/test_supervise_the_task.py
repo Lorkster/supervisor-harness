@@ -339,3 +339,36 @@ def test_a_command_named_in_the_statement_is_the_command(tmp_path: Path) -> None
         "pytest -q tests/test_x.py", "", "", ""], "a command it would not run is not taken"
     assert crits[0].expect == "0", "an expectation written without the command is dropped"
     assert len(notes) == 3 and "named its command in its statement" in notes[0]
+
+
+def test_a_behaviour_claim_with_no_command_is_judged_not_escalated(tmp_path: Path) -> None:
+    """Measured: three of four tasks of a run went to the owner for these."""
+    from supervisor_harness.core.dod import review_what_cannot_run
+
+    claim = _no_command("Reporting.ledger() output contains 'conc' when the phase has "
+                        "dispatches")
+    named = _no_command("npm run typecheck passes")
+    task = _task(claim, named)
+    fill_suite_commands(task, None)
+    notes = review_what_cannot_run(task, Policy())
+
+    assert named.method is VerifyMethod.COMMAND and named.command == "npm run typecheck", (
+        "a command the sentence names is still run, not reviewed")
+    assert claim.method is VerifyMethod.REVIEW and claim.mandatory
+    assert "Reporting.ledger() output contains 'conc'" in claim.rubric
+    assert "Cite the test that proves it" in claim.rubric
+    assert len(notes) == 1
+
+    untested = _task(_no_command("it works"))
+    assert review_what_cannot_run(untested, Policy(require_tests=False)) == [], (
+        "only where the harness's own test bar stands behind it")
+    assert untested.dod[0].method is VerifyMethod.COMMAND
+
+
+def test_after_preparation_such_a_task_carries_the_test_bar(tmp_path: Path) -> None:
+    task = _task(_no_command("the ledger shows conc"), title="Add conc to src/ledger.py")
+    _, notes = prepare_tasks([task], Policy(require_tests=True), _node_project(tmp_path))
+    methods = [c.method for c in task.dod]
+
+    assert VerifyMethod.REVIEW in methods and VerifyMethod.TEST in methods
+    assert not any("no command given" in n for n in notes[task.id])

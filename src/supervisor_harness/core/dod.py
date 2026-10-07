@@ -640,6 +640,36 @@ def fill_suite_commands(task: ExecutionTask, workspace: Path | None) -> list[str
                     f"test suite, `{command}`" for c in candidates]
 
 
+def review_what_cannot_run(task: ExecutionTask, policy: Policy) -> list[str]:
+    """A behaviour claim with no command, judged by the verifier instead of escalated.
+
+    The last resort, after the synthesis has been sent back once and a command
+    named in the sentence or a whole-suite claim has been filled in. Measured
+    on a local model: "Reporting.ledger() output contains 'conc' when the phase
+    has dispatches" as a `command` criterion with no command, kept through the
+    send-back -- three of four tasks of a run went to the owner for it, and
+    under envelope approval nothing more happened to them. A person reading it
+    would say what it is: a statement about the code and its tests, to be
+    judged. So it becomes a mandatory `review`, judged by the independent
+    verifier with the statement as its rubric -- only where the harness's own
+    test bar is on the task, so tests that run, and that fail without the
+    change, still stand behind it.
+    """
+    if not policy.require_tests:
+        return []
+    lines: list[str] = []
+    for crit in task.dod:
+        if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST) and not crit.command.strip():
+            crit.method = VerifyMethod.REVIEW
+            crit.rubric = (f"Pass only if the code and its tests show this: {crit.statement}. "
+                           "Cite the test that proves it, by file and line, and the code it "
+                           "exercises. A claim with no test behind it fails.")
+            crit.expect = ""
+            lines.append(f"criterion {crit.statement!r} named no command it could be run by; "
+                         "the verifier judges it against the code and its tests")
+    return lines
+
+
 #: A check runner's command at the start of a statement, or anywhere in
 #: backticks: "npm run typecheck passes after the change", "`pytest -q tests/x.py`
 #: exits 0". Only runners the harness would run anyway; the result still goes
