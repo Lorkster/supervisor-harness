@@ -258,3 +258,29 @@ def test_a_check_does_not_inherit_the_harness_settings(
                         "if k.upper().startswith(('SUPERVISOR_', 'KEEP_ME'))))"],
                        tmp_path, timeout=30)
     assert done.stdout.strip() == "['KEEP_ME']"
+
+
+# -- the harness's own checks, on a task that declared no scope ------------------
+
+
+async def test_a_task_that_inherits_the_envelope_gets_the_harness_checks(
+    supervisor: Supervisor, fake: FakeProvider,
+) -> None:
+    """Measured: titled without a code word, and with no paths of its own yet,
+    a task was judged not to touch code and went ahead with no test bar."""
+    plan = fake._planning(None)  # type: ignore[arg-type]
+    plan["envelope_paths"] = ["src/auth/login.py", "tests/"]
+    synthesis = fake._synthesis(None)  # type: ignore[arg-type]
+    task = synthesis["tasks"][0]
+    task["title"] = task["action"] = "Emit a note at phase completion"
+    task.pop("scope_paths")
+    task["dod"] = [{"statement": "the note says so", "method": "inspection",
+                    "expect": "src/auth/login.py: note", "mandatory": True}]
+    fake.overrides["planning"], fake.overrides["synthesis"] = plan, synthesis
+
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE)
+    (proposed,) = supervisor.store.load_state(response.run_id).tasks.values()
+
+    assert proposed.scope.paths == ["src/auth/login.py", "tests/"]
+    assert any(c.method is VerifyMethod.TEST for c in proposed.dod), (
+        "the harness's test bar was left off a task that changes a .py file")

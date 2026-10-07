@@ -186,6 +186,11 @@ MAX_FILE_BYTES = 5_000_000
 #: timeout, so a pattern with nested repetition -- ``(a+)+$`` -- can run for
 #: hours on one line: the pattern is refused, lines are searched only so far,
 #: and the whole search stops after a time budget, saying so.
+#: A whole-file write over an existing file of at least this many lines is
+#: refused when it would keep fewer than this share of them (see
+#: ``Toolbox._truncation_refusal``). A short file is rewritten freely.
+TRUNCATION_MIN_LINES = 40
+TRUNCATION_KEEP = 0.5
 MAX_PATTERN_CHARS = 300
 MAX_SEARCH_LINE_CHARS = 2_000
 SEARCH_SECONDS = 15.0
@@ -494,34 +499,105 @@ class Toolbox:
                      "to see the rest)")
         return ToolResult("search", True, body)
 
+    def _write_refusal(self, rel: str, scope: Scope | None) -> str | None:
+        """Why this agent may not modify ``rel``; None if it may."""
+        # Before the scope, and whether or not there is one: the floor is not
+        # about this agent's fence, and an agent that declared no scope is
+        # exactly the one with nothing else standing in its way.
+        floor = self._floor_refusal(rel)
+        if floor is not None:
+            return floor
+        if scope is not None:
+            if matches_any(rel, scope.forbidden_paths):
+                return f"{rel} is a forbidden path for this agent"
+            if scope.paths and not matches_any(rel, scope.paths):
+                return f"{rel} is outside this agent's scope ({', '.join(scope.paths)})"
+        return None
+
     def write_file(self, path: str, content: str, scope: Scope | None = None) -> ToolResult:
         target = self._resolve(path)
         if target is None:
             return ToolResult("write_file", False, f"{path!r} is outside the workspace")
 
         rel = target.relative_to(self.workspace).as_posix()
-
-        # Before the scope, and whether or not there is one: the floor is not
-        # about this agent's fence, and an agent that declared no scope is
-        # exactly the one with nothing else standing in its way.
-        floor = self._floor_refusal(rel)
-        if floor is not None:
-            return ToolResult("write_file", False, floor)
-
-        if scope is not None:
-            if matches_any(rel, scope.forbidden_paths):
-                return ToolResult("write_file", False, f"{rel} is a forbidden path for this agent")
-            if scope.paths and not matches_any(rel, scope.paths):
-                return ToolResult(
-                    "write_file", False,
-                    f"{rel} is outside this agent's scope ({', '.join(scope.paths)})",
-                )
+        refusal = self._write_refusal(rel, scope) or self._truncation_refusal(target, rel, content)
+        if refusal is not None:
+            return ToolResult("write_file", False, refusal)
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         except OSError as exc:
             return ToolResult("write_file", False, f"could not write {rel}: {exc}")
         return ToolResult("write_file", True, f"wrote {rel} ({len(content)} bytes)")
+
+    @staticmethod
+    def _truncation_refusal(target: Path, rel: str, content: str) -> str | None:
+        """A whole-file write that would throw most of an existing file away.
+
+        Measured on a local model: an implementer adding one i18n key read the
+        first page of a 483-line `en.json` -- a read stops at a character
+        budget and says where to continue -- and wrote back what it had seen
+        plus its key. 142 lines were left, thirty tests broke, and the same
+        happened to the test file beside it. A write replaces the whole file,
+        so anything not in it is deleted; a change to part of a file is
+        `edit_file`'s, and this says so instead of doing it.
+        """
+        try:
+            if not target.is_file() or target.stat().st_size > MAX_FILE_BYTES:
+                return None
+            before = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
+        except OSError:
+            return None
+        after = len(content.splitlines())
+        if before < TRUNCATION_MIN_LINES or after >= before * TRUNCATION_KEEP:
+            return None
+        return (f"refused: this would replace all {before} lines of {rel} with {after}. "
+                "write_file replaces the whole file, so every line you did not include "
+                "is deleted. To change part of a file, use "
+                "edit_file(path, old, new); to see all of it, read on from where "
+                "read_file said to continue.")
+
+    def edit_file(self, path: str, old: str, new: str, scope: Scope | None = None) -> ToolResult:
+        """Replace the one occurrence of ``old`` in an existing file with ``new``.
+
+        Exactly one: none says the text is not there as written, and more than
+        one says how many, so a change never lands somewhere the agent did not
+        mean. The file's own line endings are kept -- `read_file` shows lines,
+        not the `\\r` at the end of them, so ``old`` is matched either way.
+        """
+        target = self._resolve(path)
+        if target is None:
+            return ToolResult("edit_file", False, f"{path!r} is outside the workspace")
+        rel = target.relative_to(self.workspace).as_posix()
+        refusal = self._write_refusal(rel, scope)
+        if refusal is not None:
+            return ToolResult("edit_file", False, refusal)
+        if not target.is_file():
+            return ToolResult("edit_file", False,
+                              f"{rel} does not exist; create it with write_file")
+        if not old:
+            return ToolResult("edit_file", False, "`old` is empty: name the text to replace")
+        try:
+            with target.open(encoding="utf-8", newline="") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            return ToolResult("edit_file", False, f"could not read {rel}: {exc}")
+        if "\r\n" in text:
+            old, new = (s.replace("\r\n", "\n").replace("\n", "\r\n") for s in (old, new))
+        count = text.count(old)
+        if count != 1:
+            return ToolResult("edit_file", False, (
+                f"`old` does not occur in {rel} as written; read the file and copy the "
+                "text exactly" if count == 0 else
+                f"`old` occurs {count} times in {rel}; include enough of the "
+                "surrounding lines to pick out one"))
+        line = text[:text.index(old)].count("\n") + 1
+        try:
+            with target.open("w", encoding="utf-8", newline="") as handle:
+                handle.write(text.replace(old, new, 1))
+        except OSError as exc:
+            return ToolResult("edit_file", False, f"could not write {rel}: {exc}")
+        return ToolResult("edit_file", True, f"edited {rel} at line {line}")
 
     def _path_candidates(self, tokens: list[str]) -> list[str]:
         """The arguments of a command that could name a file.
@@ -770,6 +846,15 @@ class Toolbox:
             return self.write_file(
                 str(args.get("path", "")), str(args.get("content", "")), agent.scope
             )
+        if name == "edit_file":
+            if not writable:
+                return ToolResult(
+                    "edit_file", False,
+                    f"a {agent.kind.value} agent may not modify files; report what "
+                    "should change instead",
+                )
+            return self.edit_file(str(args.get("path", "")), str(args.get("old", "")),
+                                  str(args.get("new", "")), agent.scope)
         if name == "run_command":
             if not may_run:
                 # Without this an agent forbidden from write_file could simply
@@ -796,8 +881,14 @@ def available_tools(agent: AgentSpec, policy: Policy) -> list[dict[str, str]]:
          "does": "search file contents, returning path:line matches"},
     ]
     if agent.kind.value in WRITE_KINDS:
+        tools.append({"name": "edit_file", "args": "path, old, new",
+                      "does": "change part of an existing file: replace the one place "
+                              "`old` appears, copied exactly from read_file, with `new`. "
+                              "Use this for any change to a file that exists"})
         tools.append({"name": "write_file", "args": "path, content",
-                      "does": "write a file, within your scope only"})
+                      "does": "write a whole file, within your scope only: for a new "
+                              "file, or to replace one entirely -- every line you leave "
+                              "out is deleted"})
     if policy.allow_command_execution and agent.kind.value in COMMAND_KINDS:
         tools.append({"name": "run_command", "args": "command",
                       "does": "run one of the project's check runners (pytest, npm, "

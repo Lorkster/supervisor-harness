@@ -195,7 +195,7 @@ Three differences follow from the backend rather than being oversights:
 
 | | Host-delegated | Autonomous |
 | --- | --- | --- |
-| Tools | the host's, under your permission model | `list_files`, `read_file`, `search`; `write_file` for execution agents; `run_command` only if `policy.allow_command_execution` |
+| Tools | the host's, under your permission model | `list_files`, `read_file`, `search`; `edit_file` and `write_file` for execution agents; `run_command` only if `policy.allow_command_execution` |
 | A second opinion on drift | skipped when the `drift` stage is itself routed to `host` — there is no model call to make | made whenever the heuristics fire |
 | An agent that goes silent | abandoned after `max_unreported_dispatches` packets: silence is all there is to go on | cannot happen — it answers, raises, or runs out of turns |
 

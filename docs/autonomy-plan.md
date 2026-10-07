@@ -574,6 +574,44 @@ PRs the owner would merge.
 > and both were dispatched at once), and a separate "add the tests" task
 > alongside tasks that each carry their own.
 
+> **Go-live runs 8 and 9, 2026-10-07**, after #88; 30 and 112 minutes. Both
+> fixes held: every lens finished, and implementers kept working instead of
+> reporting themselves blocked -- run 9 wrote code and tests across three tasks.
+>
+> *Run 8* (P3-18): an implementer adding one i18n key read the first page of a
+> 483-line `en.json` -- a read stops at a character budget and says where to
+> continue -- and wrote back what it had seen plus its key: 142 lines were left,
+> in `sv.json` too, and the i18n test file went from 247 lines to 105. Thirty
+> tests that pass on the baseline (889 of 889) failed, and the harness's
+> full-suite criterion caught it. The implementer called them "pre-existing";
+> the drift judge took its word and stopped the next implementer for fixing
+> them. The toolbox had no way to change part of a file. The `test:e2e` task
+> was escalated this time, its criteria unenforceable.
+>
+> *Run 9* (9a): one task was **verified 6/6 and did not do what it said**: "emit
+> the serialisation note in the supervisor path", proven by six tests of helper
+> functions in `timing.py`; the supervisor was never touched. It carried none of
+> the harness's own checks: for three of five tasks the bars were judged before
+> the task inherited the envelope's paths, so a title without a code word read
+> as "does not touch code" -- no test bar, no `fails_before`, no review. Two
+> other tasks failed on an end-to-end test the model had written and not made
+> pass; two implementers were stopped for repeating themselves, which the
+> existing signals now catch.
+>
+> Fixed after them: `edit_file`, which replaces one exact passage and keeps the
+> file's line endings; `write_file` refuses to replace most of an existing file,
+> and says to use it; and the bars are added after each task's scope is
+> settled. Two more, from the pattern across runs 5-9 rather than one run:
+> tasks whose scopes may meet are executed one at a time in the plan's order,
+> so a task that builds on another starts on a tree with its code in it
+> (`max_parallel_agents` had started every task at once, and implementers in
+> three runs stalled on "peer must land X first"); and a failed test or command
+> check is run again on the baseline commit, and its evidence says whether the
+> failures are this run's -- which is what run 8's judge needed instead of the
+> implementer's "pre-existing". Still open, and the strongest case yet for batch
+> G: a test criterion is proven by running the test, and nothing checks that
+> the test is about what the criterion says.
+
 ### Batch F — Does the model do what the harness asks?
 
 An eval in the shape of `turnstone-eval`, aimed at the harness's own directives

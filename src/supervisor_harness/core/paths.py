@@ -323,6 +323,38 @@ def narrow_globs(inner: list[str], outer: list[str]) -> list[str]:
     return kept or [NOTHING]
 
 
+def globs_may_overlap(left: list[str], right: list[str]) -> bool:
+    """Whether two path sets could name a file in common.
+
+    Sound in the other direction from :func:`pattern_within`: ``False`` is a
+    proof that no path is in both, and anything undecided answers ``True``.
+    Its caller keeps two writers apart on ``True``, so an undecided pair costs
+    parallelism and never a collision. An empty list is the whole workspace.
+    """
+    a, b = _clean(left), _clean(right)
+    if not a or not b:
+        return True
+    return any(_pattern_may_overlap(x, y) for x in a for y in b)
+
+
+def _pattern_may_overlap(x: str, y: str) -> bool:
+    if NOTHING in (x, y):
+        return False
+    if pattern_within(x, y) or pattern_within(y, x):
+        return True
+    # A single file is settled by now: `pattern_within` matched it exactly
+    # against the other pattern, and it was not in it.
+    if any(not (_META & set(p)) and _directory_base(p) is None for p in (x, y)):
+        return False
+    # Two globs, or a glob and a directory: disjoint only where what each must
+    # begin with has already diverged. Compared as strings, not on a path
+    # boundary, so `src` against `srcfoo/*` answers "may overlap" -- the safe
+    # way to be wrong.
+    px = _directory_base(x) or _literal_prefix(x)
+    py = _directory_base(y) or _literal_prefix(y)
+    return px.startswith(py) or py.startswith(px)
+
+
 def _clean(patterns: list[str]) -> list[str]:
     """``patterns`` normalised, with the empty ones dropped and order kept."""
     out: list[str] = []

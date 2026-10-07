@@ -40,10 +40,11 @@ _TIMEOUT = 15
 def _git(workspace: Path, *args: str, timeout: float = _TIMEOUT) -> str | None:
     """One git command with a fixed argv, or ``None`` if git could not answer it.
 
-    Read-only everywhere but one caller: `core/fails_before.py` adds and removes
-    a temporary worktree, which writes under ``.git/worktrees`` and never touches
-    the working tree. A checkout takes longer than a lookup, so it passes its
-    own ``timeout``.
+    Read-only everywhere but where a worktree is added and removed: the run's
+    own (`core/worktree.py`), and the temporary ones at the baseline that
+    `core/fails_before.py` and `core/attribution.py` run checks in. Those write
+    under ``.git/worktrees`` and never touch the working tree. A checkout takes
+    longer than a lookup, so they pass their own ``timeout``.
     """
     try:
         # S607: `git` is looked up on PATH on purpose -- pinning an absolute

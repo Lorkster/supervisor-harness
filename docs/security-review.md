@@ -64,7 +64,7 @@ Fixes:
 | "hardcoded password" `'x'`, `'-'`, `'--'`, `'pass'` (B105, ×4) | Bandit | false positive: argv tokens and an enum value |
 | string-built SQL in `store/index.py` (B608, ×2) | Bandit | false positive: table names from a module constant, values bound |
 | insecure deserialisation of the config file (CWE-502) | local model | false positive: `json.loads` |
-| path traversal in `read_file` / `write_file`, including via symlink | local model | false positive: paths are resolved, then checked to be inside the workspace |
+| path traversal in `read_file` / `write_file` / `edit_file`, including via symlink | local model | false positive: paths are resolved, then checked to be inside the workspace |
 | command injection through shell metacharacters in `run_command` | local model | false positive: no shell; metacharacters and globs refused |
 | file permissions when writing the config | local model | false positive: it writes an example with no secrets |
 | `SUPERVISOR_ROUTE_*` and `OLLAMA_HOST` redirect requests | local model | by design: the environment is the user's and trusted |

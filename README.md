@@ -614,8 +614,11 @@ full text back in the packet for a host that cannot read files.
 
 **Autonomous.** The harness drives models directly through a
 workspace-sandboxed toolset (`list_files`, `read_file`, `search`, and
-`write_file` for execution agents). Reads cannot escape the workspace; writes
-are additionally confined to the agent's declared scope. Shell execution is
+`edit_file` and `write_file` for execution agents). Reads cannot escape the
+workspace; writes are additionally confined to the agent's declared scope.
+`edit_file` replaces one exact occurrence of a passage, and `write_file` will
+not replace most of an existing file: a model writing back the part of a long
+file it had read was deleting the rest. Shell execution is
 **off** unless you set `policy.allow_command_execution`, because in delegated
 mode that decision belongs to your host.
 
@@ -982,6 +985,7 @@ src/supervisor_harness/
     drift.py       heuristics, escalation, the directive ladder
     dod.py         criteria validation, quality bars, verification
     fails_before.py a task's tests run on the baseline commit: they must fail there
+    attribution.py whether a failed check also fails on the baseline commit
     envelope.py    the run's scope grant, and attenuation down the delegation chain
     facts.py       whether a fact one agent established is still true when another reads it
     blackboard.py  shared context, message routing, contradiction detection

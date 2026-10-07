@@ -89,6 +89,7 @@ from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
 from . import autonomy, phases, worktree
+from .attribution import baseline_verdict
 from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
 from .dod import VerificationOutcome, fill_suite_commands, verify_criterion
@@ -104,7 +105,7 @@ from .fails_before import (
 from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
-from .paths import relative_patterns
+from .paths import globs_may_overlap, relative_patterns
 from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
@@ -205,6 +206,8 @@ class Supervisor:
         # One per tree an agent may be fenced to: the workspace, and the
         # worktree of a run executing on its own branch.
         self._toolboxes: dict[Path, Toolbox] = {self.workspace: self.toolbox}
+        #: (baseline commit, command) -> what that command does on the baseline.
+        self._baseline_verdicts: dict[tuple[str, str], str] = {}
         # The layers below the phase machine. Neither calls back into it, which
         # is what made them separable at all -- see docs/history/quality-assessment.md.
         self.reporting = Reporting(self.config, self.store)
@@ -679,18 +682,14 @@ class Supervisor:
         # finding ids and often answers with titles, and a task that names no
         # finding leaves the end of the run unable to say what it closed.
         ref_notes = phases.resolve_rationale_refs(tasks, state.findings)
-        tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
-        for extra in (dep_notes, ref_notes):
-            for task_id, entries in extra.items():
-                notes.setdefault(task_id, []).extend(entries)
         # Before the tasks are shown to anyone: a proposed scope wider than the
         # run's envelope is narrowed to the intersection, not refused. A model
         # proposing too much is ordinary; losing the task over it is not. The
         # narrowing is recorded against the task, which is what puts it in front
         # of the user at approval alongside the definition of done.
+        scope_notes: dict[str, list[str]] = {}
         for task in tasks:
             task.scope.paths, placed = placed_in_tree(task.scope.paths, self.workspace)
-            notes.setdefault(task.id, []).extend(placed)
             declared = bool(task.scope.paths)
             task.scope, clamped = attenuate(
                 task.scope, [Ceiling.of("run envelope", effective(state.envelope))]
@@ -700,7 +699,19 @@ class Supervisor:
             # ("taken from the run envelope") is not the task asking for more:
             # read as narrowing, it sent every such task to the owner.
             task.clamped = list(clamped) if declared else []
-            notes[task.id].extend(clamped)
+            scope_notes[task.id] = [*placed, *clamped]
+        # The bars after the scope, because whether a task touches code is read
+        # partly from its paths. Before, a task that declared no scope had none
+        # yet, and one titled "Emit serialisation note at phase completion" was
+        # judged not to touch code: measured in a go-live run, three of five
+        # tasks went ahead with none of the harness's own checks -- no test
+        # bar, no fails_before -- and one was "verified" by tests of helpers in
+        # a file other than the one it was about.
+        tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
+        for extra in (dep_notes, ref_notes, scope_notes):
+            for task_id, entries in extra.items():
+                notes.setdefault(task_id, []).extend(entries)
+        for task in tasks:
             for path in named_outside_scope(task, self.workspace):
                 gap = (f"the task names `{path}`, which its scope does not cover; "
                        "its agent could not change it")
@@ -833,9 +844,19 @@ class Supervisor:
         if not active:
             registry = self.packets._registry_for(session, None)
             fresh: list[AgentSpec] = []
+            started: list[ExecutionTask] = []
             for task in phases.runnable_tasks(state):
                 if task.assigned_agent_id and task.status is not TaskStatus.FAILED:
                     continue
+                # One writer at a time where scopes may meet, in the plan's
+                # order; the rest wait for the next round, and start on a tree
+                # that has the earlier tasks' code in it. Measured in three
+                # go-live runs: every task started at once, the model having
+                # declared no dependencies, and implementers stalled on code a
+                # peer had not written yet -- "peer must land X first".
+                if any(globs_may_overlap(task.scope.paths, s.scope.paths) for s in started):
+                    continue
+                started.append(task)
                 # Count the attempt before building, so the agent is stamped
                 # with the attempt it is actually working -- the verifier for
                 # this attempt is matched against the same number.
@@ -954,6 +975,10 @@ class Supervisor:
                     outcome = verify_criterion(
                         crit, tree, self.config.policy, allow_commands=allow
                     )
+                    if (outcome is not None and outcome.status is CriterionStatus.FAIL
+                            and crit.method in (VerifyMethod.TEST, VerifyMethod.COMMAND)
+                            and task.status is TaskStatus.AWAITING_VERIFICATION):
+                        outcome = self._attributed(state, crit, outcome)
                 if outcome is None:
                     continue
                 session.emit(
@@ -966,6 +991,25 @@ class Supervisor:
                     },
                     actor="harness",
                 )
+
+    def _attributed(
+        self, state: RunState, crit: DoDCriterion, outcome: VerificationOutcome
+    ) -> VerificationOutcome:
+        """A failed check's evidence, with whether it also fails on the baseline.
+
+        Once per command per run: the baseline does not move, and a full suite
+        is minutes of work.
+        """
+        baseline = commit_from_fact(state.facts.get(BASELINE_FACT, ""))
+        key = (baseline, crit.command.strip())
+        if key not in self._baseline_verdicts:
+            self._baseline_verdicts[key] = baseline_verdict(
+                crit.command, self.workspace, baseline,
+                self.config.policy.command_timeout_seconds)
+        verdict = self._baseline_verdicts[key]
+        if not verdict:
+            return outcome
+        return VerificationOutcome(outcome.status, f"{outcome.evidence}\n\n{verdict}")
 
     def _verify_fails_before(
         self, state: RunState, task: ExecutionTask, crit: DoDCriterion
