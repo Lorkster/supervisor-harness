@@ -123,6 +123,46 @@ from .tools import Toolbox, render_results
 # reading without answering is its own kind of drift, so rounds are capped.
 MAX_TOOL_ROUNDS = 6
 
+#: To an implementer, one round before its tools are taken away for the turn.
+#: Measured on a local model: implementers read until the tool budget ran out,
+#: answered with nothing written, and wrote nothing in the turns after either.
+_LAST_TOOL_ROUND = (
+    "One tool round is left in this turn. If you know the change, make it now: "
+    "write the files in this round, then answer."
+)
+
+
+def _round_nudge(tool_round: int, turns_after: int, kind: AgentKind) -> str:
+    """What, if anything, an agent is told before this tool round of a turn."""
+    if tool_round == MAX_TOOL_ROUNDS:
+        return _turn_is_over(turns_after, kind)
+    if tool_round == MAX_TOOL_ROUNDS - 1 and kind is AgentKind.EXECUTION:
+        return _LAST_TOOL_ROUND
+    return ""
+
+
+def _turn_is_over(turns_after: int, kind: AgentKind) -> str:
+    """What an agent is told when its tool rounds for the turn are spent.
+
+    It used to be told only to "answer now with what you have", and nothing
+    about the turns it had left. Measured on a local model: implementers took
+    that for the end of the work and reported themselves blocked -- "need
+    additional turns to write the implementation" with nine of ten unused --
+    and a blocked report parks the task for the owner.
+    """
+    spent = f"You have used all {MAX_TOOL_ROUNDS} tool rounds for this turn. "
+    if turns_after <= 0:
+        return (spent + "Answer now with what you have, and say plainly what you could "
+                "not establish.")
+    if kind is AgentKind.EXECUTION:
+        return (spent + f"Your work is not over: you have {turns_after} more turn(s), with "
+                "your tools again. Answer with status `running`: what you have done, and "
+                "what you will write next. `blocked` is only for something you cannot do "
+                "yourself, such as a change outside your scope -- not for needing more "
+                "turns, and not for creating a file inside your scope.")
+    return (spent + f"You have {turns_after} more turn(s) after this one. Answer now with "
+            "what you have, and say plainly what you could not establish.")
+
 #: Bounds on what one turn's tool history carries back into the next round.
 #: Results accumulate across a turn now, so each block is capped rather than the
 #: whole history being thrown away -- the rounds are already bounded by
@@ -1816,7 +1856,8 @@ class Supervisor:
         packet = self.packets._agent_packet(session, agent)
         history: list[ChatMessage] = [ChatMessage("user", packet.brief)]
 
-        for _ in range(agent.budget.max_turns):
+        for turn_number in range(agent.budget.max_turns):
+            turns_after = agent.budget.max_turns - turn_number - 1
             payload: dict[str, Any] | None = None
             raw_text = ""
             tools_called = 0
@@ -1843,13 +1884,9 @@ class Supervisor:
                 # it was meant to replace fell through to `_record_turn` as the
                 # agent's answer for the turn.
                 final_round = tool_round == MAX_TOOL_ROUNDS
-                if final_round:
-                    turn_history.append(ChatMessage(
-                        "user",
-                        f"You have used all {MAX_TOOL_ROUNDS} tool rounds for this turn. "
-                        "Answer now with what you have, and say plainly what you could "
-                        "not establish.",
-                    ))
+                nudge = _round_nudge(tool_round, turns_after, agent.kind)
+                if nudge:
+                    turn_history.append(ChatMessage("user", nudge))
 
                 try:
                     response = await self.router.complete(

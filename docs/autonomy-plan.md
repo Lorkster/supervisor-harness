@@ -548,6 +548,32 @@ PRs the owner would merge.
 > works on it. Replayed over runs 2-5, that last check names exactly the four
 > tasks that hit the gap, and no other of the 21.
 
+> **Go-live runs 6 and 7, 2026-10-07**, the same two tasks after #87, 14 and 13
+> minutes. The scope check fired where it should, in both: P3-18's Playwright
+> task (its tests live in `e2e/`, outside the envelope) and 9a's note task
+> (`core/supervisor.py`) went to the owner before anyone worked on them. Run 6
+> again executed the one task that adds `test:e2e` to `npm run check` -- the
+> change batch G exists for, proposed by the plan twice now.
+>
+> Two harness defects, both measured. *Run 6:* the UX lens read the two
+> documents the request named, outside its scope, and was stopped while the
+> drift model said it was "correctly performing the required analysis" -- the
+> scope signal is a floor the model cannot lower, and a lens reports its reads
+> where an implementer reports its writes. A lens reading outside its scope is
+> now its own signal, judged rather than floored. *Run 7:* every implementer
+> read until its tool rounds ran out, was told only to "answer now with what you
+> have", and reported itself blocked -- "need additional turns" with nine of ten
+> unused, and one asking whether it might create a test file inside its own
+> scope. A blocked report parks the task, so four tasks were parked with nothing
+> written. An agent out of tool rounds is now told the turns it has left, and an
+> implementer that `blocked` is not for needing more turns; it is also warned
+> one round early, while it can still write.
+>
+> Two model weaknesses remain, and are the planner's: dependent tasks proposed
+> without `depends_on` (run 7's predicate task needed the accessor task's code,
+> and both were dispatched at once), and a separate "add the tests" task
+> alongside tasks that each carry their own.
+
 ### Batch F — Does the model do what the harness asks?
 
 An eval in the shape of `turnstone-eval`, aimed at the harness's own directives
