@@ -63,9 +63,15 @@ def placed_in_tree(patterns: list[str], workspace: str | Path) -> tuple[list[str
     return out, notes
 
 
-#: A path written in prose: at least one directory, and a file extension. A
-#: bare `package.json` is not looked for -- too often a word in a sentence.
+#: A path written in prose: at least one directory, and a file extension.
 _PATH_IN_PROSE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z]\w{0,7})\b")
+
+#: A source file named with no directory: "the ledger line in reporting.py".
+#: Counted only when exactly one file in the tree has that name -- a bare
+#: word that merely looks like a file name names nothing, and is dropped.
+_BARE_FILE_IN_PROSE = re.compile(
+    r"(?<![\w/.-])([\w-]+\.(?:py|pyi|ts|tsx|js|jsx|mjs|go|rs|rb|java|kt|cs|cpp|c|h"
+    r"|vue|svelte|css|scss))\b")
 
 #: Words just before a path that say the task reads it rather than changes it.
 _READ_FROM = re.compile(
@@ -100,6 +106,10 @@ def named_outside_scope(task: ExecutionTask, workspace: str | Path) -> list[str]
     named += [m.group(1) for c in task.dod if c.method is VerifyMethod.INSPECTION
               for m in _PATH_IN_PROSE.finditer(c.expect.partition(":")[0])]
     placed, _ = placed_in_tree(list(dict.fromkeys(named)), root)
+    bare = [m.group(1) for m in _BARE_FILE_IN_PROSE.finditer(prose)
+            if not _READ_FROM.search(" ".join(prose[:m.start()].split()[-5:]))]
+    resolved, _ = placed_in_tree(list(dict.fromkeys(bare)), root)
+    placed += [p for p in resolved if "/" in p and (root / p).is_file()]
     return [p for p in dict.fromkeys(placed)
             if ((root / p).is_file() or (root / p).parent.is_dir())
             and not matches_any(p, task.scope.paths)]

@@ -126,7 +126,7 @@ from .fails_before import (
 from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
-from .paths import globs_may_overlap, globs_within, relative_patterns
+from .paths import globs_may_overlap, globs_within, matches_any, relative_patterns
 from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
@@ -2219,6 +2219,9 @@ class Supervisor:
                 if call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
                 else:
+                    if call.name in ("edit_file", "write_file"):
+                        await self._widen_for_write(session, agent, toolbox,
+                                                    str(call.arguments.get("path", "")))
                     result = toolbox.call(call.name, call.arguments, agent, whole_files=True)
                     stint.record(call, result.ok, result.path)
                     failures += [] if result.ok else [call.name]
@@ -2228,6 +2231,39 @@ class Supervisor:
             await session.anote("tools called", actor=agent.id,
                                 tools=[c.name for c in response.tool_calls], failures=failures)
         return report
+
+    async def _widen_for_write(
+        self, session: RunSession, agent: AgentSpec, toolbox: Toolbox, raw: str
+    ) -> None:
+        """Let an implementer write where its task needs, within the owner's grant.
+
+        Measured in a go-live run: the plan's envelope named `reporting/` -- a
+        directory that does not exist -- for a task whose whole job was a
+        change to `core/reporting.py`. Its implementer found the right line,
+        was refused by its scope, and escalated, correctly, with nothing
+        written. Within the owner's grant, the scope widens at the moment of
+        the write, and the record says so. Not where another running
+        implementer's scope could meet the path: keeping two writers apart is
+        what task scopes are for. Anything else is refused by the toolbox as
+        before.
+        """
+        state = session.state
+        task = state.tasks.get(agent.task_id or "")
+        rel = toolbox.writable_path(raw)
+        if (task is None or rel is None or not agent.scope.paths
+                or matches_any(rel, agent.scope.paths)):
+            return
+        if any(other.id != agent.id and other.kind is AgentKind.EXECUTION
+               and other.status in ACTIVE_AGENT_STATUSES
+               and globs_may_overlap([rel], other.scope.paths)
+               for other in state.agents.values()):
+            return
+        granted, _ = self._widen_within_grant(session, task, [rel])
+        if granted:
+            await session.aemit(EventType.SCOPE_WIDENED, {
+                "agent_id": agent.id, "task_id": task.id, "paths": granted})
+            await session.anote(f"scope widened within the owner's grant so "
+                                f"{agent.id} could change {rel}", actor=agent.id)
 
     async def _agent_call_failed(
         self, session: RunSession, agent: AgentSpec, exc: Exception

@@ -350,6 +350,16 @@ class Toolbox:
             return None
         return candidate
 
+    def writable_path(self, raw: str) -> str | None:
+        """``raw`` as the workspace-relative path a write would land on, if the
+        floor allows one there at all; ``None`` for a path outside the
+        workspace or under the floor. Scope is the caller's question."""
+        target = self._resolve(raw)
+        if target is None:
+            return None
+        rel = target.relative_to(self.workspace).as_posix()
+        return None if self._floor_refusal(rel) is not None else rel
+
     def _walk(self) -> list[Path]:
         """Every readable file genuinely inside the workspace.
 

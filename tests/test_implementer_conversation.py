@@ -253,3 +253,76 @@ async def test_a_verifier_judges_the_open_criteria_and_its_verdict_counts(
     assert all(f"`{c.id}`" not in brief for c in settled), (
         "criteria the harness had already settled are not handed to the verifier")
 
+
+
+# -- widening at the moment of a write ---------------------------------------------
+
+WRITE_CACHE = ToolCall("write_file", {"path": "src/cache.py", "content": "LIMIT = 10\n"})
+
+
+def _scoped_to_auth(fake: NativeFake) -> None:
+    plan = fake._synthesis(None)  # type: ignore[arg-type]
+    plan["tasks"][0]["scope_paths"] = ["src/auth/**"]
+    plan["tasks"][0]["action"] = "Add the limiter to the login handler"
+    fake.overrides["synthesis"] = plan
+
+
+async def test_a_write_the_task_needs_widens_its_scope_within_the_grant(
+    supervisor: Supervisor, workspace: Path,
+) -> None:
+    """Measured: the plan's envelope named `reporting/` for a task whose job was
+    `core/reporting.py`, and its implementer was refused the one file it needed."""
+    fake = NativeFake(_calls(WRITE_CACHE), _calls(DONE))
+    _scoped_to_auth(fake)
+    response = await _conversing(supervisor, fake).run(
+        PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+    (task,) = state.tasks.values()
+
+    assert (workspace / "src/cache.py").read_text(encoding="utf-8") == "LIMIT = 10\n"
+    assert "src/cache.py" in task.scope.paths, "replayed from the log, not only in memory"
+    assert any("scope widened within the owner's grant" in n.text for n in state.notes)
+
+
+async def test_beyond_the_grant_the_write_is_refused_as_before(
+    supervisor: Supervisor, workspace: Path,
+) -> None:
+    fake = NativeFake(_calls(WRITE_CACHE), _calls(DONE))
+    _scoped_to_auth(fake)
+    supervisor.config.policy.scope_envelope = ["src/auth/**", "tests/**"]
+    response = await _conversing(supervisor, fake).run(
+        PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    (task,) = supervisor.store.load_state(response.run_id).tasks.values()
+
+    assert not (workspace / "src/cache.py").exists()
+    assert "src/cache.py" not in task.scope.paths
+
+
+async def test_not_into_a_running_peers_scope(supervisor: Supervisor) -> None:
+    from supervisor_harness.core.tools import Toolbox
+    from supervisor_harness.models import AgentStatus, ExecutionTask, RunState, Scope
+
+    session = supervisor.store.create(RunState(id="run_W", prompt="p"))
+    task = ExecutionTask(title="mine", scope=Scope(paths=["src/auth/**"]))
+    me = AgentSpec(id="agt_me", kind=AgentKind.EXECUTION, task_id=task.id,
+                   scope=Scope(paths=["src/auth/**"]), status=AgentStatus.RUNNING)
+    peer = AgentSpec(id="agt_peer", kind=AgentKind.EXECUTION,
+                     scope=Scope(paths=["src/cache.py"]), status=AgentStatus.RUNNING)
+    session.state.tasks[task.id] = task
+    session.state.agents.update({me.id: me, peer.id: peer})
+
+    await supervisor._widen_for_write(session, me, Toolbox(supervisor.workspace,
+                                                           supervisor.config.policy),
+                                      "src/cache.py")
+    assert me.scope.paths == ["src/auth/**"], "two writers stay apart"
+
+
+def test_no_scope_is_widened_onto_the_floor(tmp_path: Path) -> None:
+    """A path no agent may write is not one a scope may be widened to."""
+    from supervisor_harness.config import Policy
+    from supervisor_harness.core.tools import Toolbox
+
+    box = Toolbox(tmp_path, Policy())
+    assert box.writable_path(".git/hooks/pre-commit") is None
+    assert box.writable_path("../outside.py") is None
+    assert box.writable_path("src/cache.py") == "src/cache.py"

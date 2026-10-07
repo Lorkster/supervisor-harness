@@ -300,3 +300,22 @@ async def test_a_task_that_inherits_the_envelope_gets_the_harness_checks(
     assert proposed.scope.paths == ["src/auth/login.py", "tests/"]
     assert any(c.method is VerifyMethod.TEST for c in proposed.dod), (
         "the harness's test bar was left off a task that changes a .py file")
+
+
+def test_a_bare_file_name_counts_when_one_file_in_the_tree_has_it(tmp_path: Path) -> None:
+    """Measured: "the ledger line in reporting.py" -- no directory, so not seen."""
+    for rel in ("src/core/timing.py", "src/core/reporting.py", "a/config.py", "b/config.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("", encoding="utf-8")
+
+    def named(action: str) -> list[str]:
+        task = ExecutionTask(title="t", action=action,
+                             scope=Scope(paths=["src/core/timing.py", "tests/"]))
+        return named_outside_scope(task, tmp_path)
+
+    assert named("Add the conc token to the ledger line in reporting.py") == [
+        "src/core/reporting.py"]
+    assert named("Change the default in config.py") == [], "two files have that name"
+    assert named("Mirror the parsing in reporting.py") == [], "read, not changed"
+    assert named("Rename notes.txt and fix timing.py") == [], "in scope, and not code"
+
