@@ -615,8 +615,17 @@ def fill_suite_commands(task: ExecutionTask, workspace: Path | None) -> list[str
 
     Returns a line per criterion filled, for the task's notes.
     """
+    lines: list[str] = []
+    for crit in task.dod:
+        if crit.method not in (VerifyMethod.COMMAND, VerifyMethod.TEST) or crit.command.strip():
+            continue
+        named = command_named_in(crit.statement)
+        if named:
+            crit.command, crit.expect = named, _exit_code_or_zero(crit.expect)
+            lines.append(f"criterion {crit.statement!r} named its command in its statement; "
+                         f"it runs `{named}`")
     if workspace is None:
-        return []
+        return lines
     candidates = [
         c for c in task.dod
         if c.method in (VerifyMethod.COMMAND, VerifyMethod.TEST)
@@ -624,11 +633,56 @@ def fill_suite_commands(task: ExecutionTask, workspace: Path | None) -> list[str
     ]
     command = detect_test_command(workspace) if candidates else ""
     if not command:
-        return []
+        return lines
     for crit in candidates:
         crit.command, crit.expect = command, "0"
-    return [f"criterion {c.statement!r} named no command; it runs the project's "
-            f"test suite, `{command}`" for c in candidates]
+    return lines + [f"criterion {c.statement!r} named no command; it runs the project's "
+                    f"test suite, `{command}`" for c in candidates]
+
+
+#: A check runner's command at the start of a statement, or anywhere in
+#: backticks: "npm run typecheck passes after the change", "`pytest -q tests/x.py`
+#: exits 0". Only runners the harness would run anyway; the result still goes
+#: through `unsafe_command`.
+_NAMED_COMMAND = re.compile(
+    r"`((?:npm|npx|pnpm|yarn|pytest|python -m pytest|go test|cargo test|make)\b[^`]*)`"
+    r"|^((?:npm|npx|pnpm|yarn|pytest|python -m pytest|go test|cargo test|make)\b.*?)"
+    r"(?=\s+(?:passes|pass|succeeds|exits|completes|runs|returns|is green|still)\b"
+    r"|\s*[(,;:]|$)",
+    re.IGNORECASE,
+)
+
+
+def command_named_in(statement: str) -> str:
+    """The command a criterion's statement names, when it names exactly one.
+
+    Measured on a local model: "npm run typecheck passes with the new
+    data-layer types", "npx playwright test tests/e2e/offline.spec.ts passes"
+    -- `command` criteria with the command in the sentence and the field
+    empty, and five of six tasks sent to the owner for it. The sentence said
+    what to run.
+    """
+    # A sentence that chains commands is not read as naming one: taking the
+    # first link alone would quietly check less than the sentence says.
+    if any(op in statement for op in (";", "&&", "||", "|")):
+        return ""
+    match = _NAMED_COMMAND.search(statement.strip())
+    if match is None:
+        return ""
+    command = (match.group(1) or match.group(2) or "").strip()
+    return command if command and unsafe_command(command) is None else ""
+
+
+def _exit_code_or_zero(expect: str) -> str:
+    """Keep an expectation that is an exit code; otherwise the command's own verdict.
+
+    The model's expectation was written without the command in front of it --
+    "at least 1 passed" read as a substring would fail a suite that printed
+    "3 passed" -- so only an exit code survives.
+    """
+    exit_code = re.fullmatch(r"(?:exit\s*(?:code)?\s*[= ]\s*)?(\d+)", expect.strip(),
+                             re.IGNORECASE)
+    return exit_code.group(1) if exit_code else "0"
 
 
 def apply_quality_bars(

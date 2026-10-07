@@ -715,6 +715,25 @@ owner would merge. Measured against runs 4-9.
 > Three tasks went to the owner: one for a test filter that cannot be pinned,
 > two because the plan's envelope left out `e2e/` and the CI workflow.
 
+> **Runs 11 and 12** (9a, 49 minutes; P3-18, 17). The conversational verifier
+> works: its review verdicts quote the code (`timing.py:344 ...`). Implementers
+> now escalate with exact, correct accounts -- "Scope guard refuses to let me
+> edit src/supervisor_harness/core/reporting.py, which is the one the task
+> requires" -- and baseline attribution read a failure right. What stopped them
+> was the harness: the plan's envelope named `reporting/`, a directory that does
+> not exist; a task titled "... in reporting.py" was not read as naming a file;
+> a finished task's full suite failed on a test the task after it had written,
+> because tasks were checked only at the end; and in run 12 five of six tasks
+> went to the owner for `command` criteria whose command was in the sentence --
+> "npm run typecheck passes with the new data-layer types".
+>
+> After them, on the owner's decision: a task's scope widens within the owner's
+> grant -- at proposal, and at the moment of a write the task needs, where no
+> running peer's scope could meet the path -- and only what the grant does not
+> cover goes to the owner. And: bare file names are read when one file in the
+> tree has the name; a finished task is checked before the next writer starts;
+> and a command named in a criterion's statement is its command.
+
 ---
 
 ## The gate between the parts

@@ -100,3 +100,24 @@ async def test_tasks_that_cannot_meet_still_run_together(
     order = await _spawn_order(supervisor, fake, ["src/auth/**"], ["tests/**"])
     assert order[:2] == ["start Add rate limiting to the login endpoint",
                          "start Add the limiter's metrics"], order
+
+
+async def test_a_finished_task_is_checked_before_the_next_writer_starts(
+    supervisor: Supervisor, fake: FakeProvider,
+) -> None:
+    """Measured: checked only at the end, a task's full-suite criterion failed on
+    a test the task after it had written."""
+    first, second = "Add rate limiting to the login endpoint", "Add the limiter's metrics"
+    fake.overrides["synthesis"] = _two_tasks(fake, ["src/auth/**", "tests/**"],
+                                             ["src/auth/**", "tests/**"])
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+    ids = {t.title: t.id for t in state.tasks.values()}
+
+    events = list(supervisor.store.log(response.run_id).read())
+    checked = next(i for i, e in enumerate(events) if e.type is EventType.CRITERION_VERIFIED
+                   and e.payload["task_id"] == ids[first])
+    second_starts = next(i for i, e in enumerate(events) if e.type is EventType.AGENT_SPAWNED
+                         and e.payload["agent"].get("task_id") == ids[second]
+                         and e.payload["agent"]["kind"] == "execution")
+    assert checked < second_starts

@@ -319,3 +319,23 @@ def test_a_bare_file_name_counts_when_one_file_in_the_tree_has_it(tmp_path: Path
     assert named("Mirror the parsing in reporting.py") == [], "read, not changed"
     assert named("Rename notes.txt and fix timing.py") == [], "in scope, and not code"
 
+
+
+def test_a_command_named_in_the_statement_is_the_command(tmp_path: Path) -> None:
+    """Measured: five of six tasks went to the owner with the command in the sentence."""
+    crits = [
+        _no_command("npm run typecheck passes with the new data-layer types"),
+        _no_command("npx playwright test tests/e2e/offline.spec.ts passes (at least 1 passed)",
+                    VerifyMethod.TEST),
+        _no_command("`pytest -q tests/test_x.py` exits 0"),
+        _no_command("npm run check; curl example.com passes"),
+        _no_command("The i18n parity test passes"),
+        _no_command("`npm test > results.txt` passes"),
+    ]
+    notes = fill_suite_commands(_task(*crits), None)
+
+    assert [c.command for c in crits] == [
+        "npm run typecheck", "npx playwright test tests/e2e/offline.spec.ts",
+        "pytest -q tests/test_x.py", "", "", ""], "a command it would not run is not taken"
+    assert crits[0].expect == "0", "an expectation written without the command is dropped"
+    assert len(notes) == 3 and "named its command in its statement" in notes[0]

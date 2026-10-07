@@ -875,6 +875,15 @@ class Supervisor:
                 return self.reporting._error(session, refused)
 
         if not active:
+            # Before the next writer starts: the harness's own checks on the
+            # tasks just finished, on a tree that holds their change and none
+            # that comes after. Measured: verified at the end instead, a task's
+            # full-suite check failed on a test a later task had written, and
+            # the evidence -- "introduced by this run's changes" -- was true of
+            # the run and not of the task.
+            if any(t.status is TaskStatus.AWAITING_VERIFICATION
+                   for t in state.tasks.values()):
+                self._verify_mechanically(session)
             registry = self.packets._registry_for(session, None)
             fresh: list[AgentSpec] = []
             started: list[ExecutionTask] = []
