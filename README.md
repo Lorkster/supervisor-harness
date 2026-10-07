@@ -993,6 +993,7 @@ src/supervisor_harness/
     journal.py     the decision journal `supervisor explain` renders
     tools.py       sandboxed workspace tools for autonomous agents
     conversation.py an implementer driven as one conversation, through native tool calls
+    review.py      batch G: a second reading of each task, which can only veto
     paths.py       path normalisation and scope matching
     placement.py   a model's paths placed in the tree, when they name no file
     baseline.py    the commit a run measures its whole-repository checks against

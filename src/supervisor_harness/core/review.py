@@ -1,0 +1,98 @@
+"""Batch G: a second reading of each task, which can only veto.
+
+Under envelope approval no person reads a task before it runs: the
+deterministic gate (`core/autonomy.py`) decides. The gate checks what can be
+checked mechanically -- scope, criteria that can be enforced, risk -- and in
+three go-live runs it passed the same task, which every check then verified:
+add the Playwright suite to `npm run check`. The project's CI runs `npm run
+check` before it installs Playwright's browser, so the change breaks CI. A
+person at the approval prompt would have caught it by reading the workflow.
+
+This is that reading: a reviewer with read-only tools looks at the task against
+the request and the repository, and rules -- proceed, or a veto from a fixed
+menu. A veto parks the task for the owner, like any escalation. Adapted from
+Turnstone's judge, with its rule: a judge only vetoes. It never passes a task
+the gate refused (it is only asked about the ones the gate passed), it cannot
+widen anything, and a reviewer that fails to rule is noted and the gate's
+decision stands -- the absence of a veto is not an approval it made.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from ..models import ExecutionTask, RunState
+
+#: What a veto may say. The first four are the plan's; the fifth is the case
+#: that made the batch worth building.
+VETO_REASONS: dict[str, str] = {
+    "off_request": "it does not serve what the request asked for, or works against it",
+    "scope_unjustified": "it changes things its purpose does not need",
+    "criteria_cannot_fail": "its definition of done would pass even if the change were wrong",
+    "risk_understated": "it is riskier than its plan says",
+    "breaks_the_project": ("it would break something the project relies on: its CI, its "
+                           "build, or its documented workflow"),
+}
+
+REVIEWER_SYSTEM = """\
+You review a task before it is carried out with no person watching. You can only \
+veto: if nothing is wrong with it, it goes ahead.
+
+Read what you need with the tools, then call ruling. Look in particular at what the \
+task would change and what depends on it: the project's CI workflows (for example \
+.github/workflows/), its build and package scripts, and its own documented workflow \
+(docs/, CONTRIBUTING, AGENTS.md, CLAUDE.md). A change that looks right in isolation \
+can break the pipeline that runs it.
+
+Veto only for a concrete reason you can point to in a file. "It could be better" is \
+not a veto; "this breaks .github/workflows/ci.yml line 31" is.
+"""
+
+NUDGE = "Read what you need, then call ruling: proceed, or a veto with its reason."
+NOW = ("Your reading time is up. Call ruling now: proceed, or a veto naming the file "
+       "and line that justify it.")
+
+RULING_TOOL: dict[str, Any] = {
+    "name": "ruling",
+    "description": "Your decision on the task. Call it once.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "verdict": {"type": "string", "enum": ["proceed", *VETO_REASONS]},
+            "why": {"type": "string",
+                    "description": "For a veto: what is wrong, citing file and line"},
+        },
+        "required": ["verdict"],
+    },
+}
+
+ROLE = (REVIEWER_SYSTEM, "ruling", NUDGE)
+
+
+def review_brief(state: RunState, task: ExecutionTask) -> str:
+    criteria = "\n".join(f"- {c.statement}" for c in task.dod) or "- (none)"
+    scope = ", ".join(f"`{p}`" for p in task.scope.paths) or "the whole workspace"
+    vetoes = "\n".join(f"- `{name}`: {meaning}" for name, meaning in VETO_REASONS.items())
+    return (
+        f"# Task to review: {task.title}\n\n"
+        f"## The request it is part of\n{state.prompt}\n\n"
+        f"## What it would do\n{task.action}\n\n{task.motivation}\n\n"
+        f"## It may change\n{scope}\n\n"
+        f"## Done means\n{criteria}\n\n"
+        f"## You may veto it because\n{vetoes}"
+    )
+
+
+def parse_ruling(arguments: dict[str, Any] | None) -> tuple[str, str] | None:
+    """The veto and its reason, or None to let the task proceed.
+
+    Anything that is not a recognised veto -- "proceed", a verdict off the
+    menu, no ruling at all -- is not a veto: this reviewer cannot say no by
+    accident, only by naming a reason.
+    """
+    if not arguments:
+        return None
+    verdict = str(arguments.get("verdict", "")).strip()
+    if verdict not in VETO_REASONS:
+        return None
+    return verdict, str(arguments.get("why", "")).strip()

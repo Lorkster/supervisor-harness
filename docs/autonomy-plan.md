@@ -645,6 +645,21 @@ Built only if batch E's runs show tasks reaching execution that a person would
 have rejected. A judge that is never needed is cost and attack surface. Pairs
 with nine-batch 9b, which is the other half of plan quality.
 
+> **Built, 2026-10-07** (`core/review.py`), on the owner's go-ahead: the
+> condition was met three times, by one task -- add the Playwright suite to
+> `npm run check` -- that the gate passed and every check verified in runs 4,
+> 6 and 15, though plantsandclimate's CI runs `npm run check` before it
+> installs Playwright's browser. Under envelope approval, each task the gate
+> passes is read by a reviewer with read-only tools, routed to the `review`
+> stage, which rules `proceed` or vetoes from the menu above plus a fifth,
+> `breaks_the_project` -- the measured case. A veto is a `review_veto`
+> escalation; no ruling, a failed call or a review model without native tools
+> is noted and the gate's decision stands. `policy.veto_review`, protected.
+> "A different model" is a routing choice: with one local model, it is the
+> same model in a different role. Probed on the local model against run 15's
+> real tasks: the CI-breaking task vetoed in 35 seconds, citing `ci.yml` line
+> 31 against line 40; the i18n task let through.
+
 ### Batch H — A stuck signal *(conditional)*
 
 Turnstone's `RepeatDetector`: three identical tool calls in a row is the cheapest
@@ -733,6 +748,15 @@ owner would merge. Measured against runs 4-9.
 > cover goes to the owner. And: bare file names are read when one file in the
 > tree has the name; a finished task is checked before the next writer starts;
 > and a command named in a criterion's statement is its command.
+
+> **Run 15** (P3-18, 64 minutes). Three of four tasks verified, and the branch
+> passes every check the project has: typecheck, lint, 902 unit tests (889 on
+> the baseline), the build, all 25 Playwright journeys -- among them the new
+> one, "a saved garden works offline: cached plants keep their verdict, the
+> uncached say needs connection" -- and `scripts/verify.ps1`. Two things stood
+> between it and a merge: a scratch spec its implementer could not delete
+> (there was no tool; `delete_file` now), and the `npm run check` change again
+> -- which batch G now vetoes.
 
 ---
 

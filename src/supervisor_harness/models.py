@@ -523,6 +523,9 @@ class EscalationReason(StrEnum):
     UNRUNNABLE_CRITERION = "unrunnable_criterion"
     #: The plan rated it above the risk that goes ahead without its owner.
     HIGH_RISK = "high_risk"
+    #: The second reading vetoed it (`core/review.py`); ``detail`` carries the
+    #: veto and the reviewer's own reason, as data.
+    REVIEW_VETO = "review_veto"
 
 
 class Resolution(StrEnum):

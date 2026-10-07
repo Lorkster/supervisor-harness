@@ -73,12 +73,14 @@ from ..models import (
     EndCause,
     EnvelopeGrant,
     Escalation,
+    EscalationReason,
     ExecutionTask,
     Phase,
     Resolution,
     RunMode,
     RunState,
     RunWorktree,
+    Scope,
     ScopeEnvelope,
     TaskDecision,
     TaskStatus,
@@ -130,6 +132,9 @@ from .paths import globs_may_overlap, globs_within, matches_any, relative_patter
 from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
+from .review import NOW as REVIEW_NOW
+from .review import ROLE as REVIEW_ROLE
+from .review import RULING_TOOL, parse_ruling, review_brief
 
 #: Re-exported for the callers that have always imported it from here --
 #: the CLI, the MCP server and the tests. It lives in `core/responses.py`
@@ -406,7 +411,7 @@ class Supervisor:
             elif phase is Phase.SYNTHESIZING:
                 response = await self._run_synthesis(session)
             elif phase is Phase.AWAITING_APPROVAL:
-                response = self._await_approval(session)
+                response = await self._await_approval(session)
             elif phase is Phase.EXECUTING:
                 response = await self._continue_execution(session)
             elif phase is Phase.VERIFYING:
@@ -755,14 +760,14 @@ class Supervisor:
         session.emit(EventType.NOTE, {"text": "tasks proposed", "notes": notes})
         self._transition(session, Phase.AWAITING_APPROVAL)
 
-    def _await_approval(self, session: RunSession) -> SupervisorResponse | None:
+    async def _await_approval(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
         proposed = [t for t in state.tasks.values() if t.status is TaskStatus.PROPOSED]
         if not proposed:
             self._transition(session, Phase.EXECUTING)
             return None
         if state.envelope_grant is not None:
-            self._approve_within_envelope(session, proposed)
+            await self._approve_within_envelope(session, proposed)
             return None
 
         notes = {t.id: list(state.task_notes[t.id]) for t in proposed if t.id in state.task_notes}
@@ -781,7 +786,7 @@ class Supervisor:
             detail={"envelope": to_jsonable(effective(state.envelope))},
         )
 
-    def _approve_within_envelope(
+    async def _approve_within_envelope(
         self, session: RunSession, proposed: list[ExecutionTask]
     ) -> None:
         """Decide each proposed task by the deterministic gate, not by a person.
@@ -794,24 +799,28 @@ class Supervisor:
         approved = 0
         for task in proposed:
             reasons = autonomy.gate(task, self.config.policy)
+            if not reasons and self.config.policy.veto_review:
+                veto = await self._review_task(session, task)
+                if veto is not None:
+                    reasons = [(EscalationReason.REVIEW_VETO, f"{veto[0]}: {veto[1]}")]
             if not reasons:
                 task.decision = Decision.APPROVE
                 task.decision_note = "approved by the harness within the granted envelope"
                 task.status = TaskStatus.APPROVED
                 task.updated_at = now_iso()
-                session.emit(EventType.TASK_DECIDED, {"task": to_jsonable(task),
-                                                      "by": "envelope"})
+                await session.aemit(EventType.TASK_DECIDED, {"task": to_jsonable(task),
+                                                             "by": "envelope"})
                 approved += 1
                 continue
             escalation = Escalation(
                 run_id=session.state.id, reason=reasons[0][0], task_id=task.id,
                 detail=" | ".join(f"{reason}: {why}" for reason, why in reasons),
             )
-            session.emit(EventType.ESCALATION_RAISED, {"escalation": to_jsonable(escalation)},
-                         actor="harness")
+            await session.aemit(EventType.ESCALATION_RAISED,
+                                {"escalation": to_jsonable(escalation)}, actor="harness")
             task.status = TaskStatus.BLOCKED
             task.updated_at = now_iso()
-            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
 
         if approved:
             self._transition(session, Phase.EXECUTING)
@@ -2183,19 +2192,61 @@ class Supervisor:
         await self.supervision._assess_drift(session, agent, turn)
         await self._report_verification(session, agent, payload)
 
+    async def _review_task(
+        self, session: RunSession, task: ExecutionTask
+    ) -> tuple[str, str] | None:
+        """The second reading of a task the gate passed: a veto, or None.
+
+        See `core/review.py`. Read-only tools, two stretches of reading at
+        most, and a ruling. No ruling, a failed call, or a review model with no
+        native tools is noted, and the gate's decision stands.
+        """
+        reader = AgentSpec(id=f"review_{task.id}", kind=AgentKind.ANALYSIS, role="reviewer",
+                           title=f"Review of {task.title!r}", scope=Scope(),
+                           binding=self.config.binding_for("review"))
+        if not self.router.native_tools(reader.binding):
+            await session.anote("veto review skipped: the review model takes no tools "
+                                "natively", task_id=task.id)
+            return None
+        messages = [ChatMessage("user", review_brief(session.state, task))]
+        tools = [t for t in native_tool_specs(reader, self.config.policy)
+                 if t["name"] != "report"] + [RULING_TOOL]
+        stint = Stint()
+        ruling: dict[str, Any] | None = None
+        for _ in range(2):
+            ruling = await self._work_a_stint(session, reader, messages, tools, stint,
+                                              role=REVIEW_ROLE, stage="review")
+            if ruling is not None or stint.failed:
+                break
+            messages.append(ChatMessage("user", REVIEW_NOW))
+        veto = parse_ruling(ruling)
+        if veto is not None:
+            outcome = f"vetoed ({veto[0]}): {veto[1]}"
+        elif ruling is not None:
+            outcome = "proceed"
+        else:
+            outcome = "no ruling; the gate's decision stands"
+        await session.anote(f"veto review of {task.title!r}: {outcome}",
+                            task_id=task.id, read=stint.read, tool_calls=stint.tool_calls)
+        return veto
+
     async def _work_a_stint(
         self, session: RunSession, agent: AgentSpec, messages: list[ChatMessage],
-        tools: list[dict[str, Any]], stint: Stint,
+        tools: list[dict[str, Any]], stint: Stint, *,
+        role: tuple[str, str, str] | None = None, stage: str = "",
     ) -> dict[str, Any] | None:
         """Let the agent work until it finishes, goes quiet, or a checkpoint is due.
 
         Returns what it finished with -- an implementer's ``report``, a
         verifier's ``verdict`` -- or None at a checkpoint. A failed model call
-        ends the agent here, and says so on ``stint.failed``.
+        ends the agent here, and says so on ``stint.failed``. ``role`` and
+        ``stage`` are for a reader that is not one of the run's agents (the
+        veto review); it is not ended on a failure, only stopped.
         """
         toolbox = self._toolbox_for(session.state)
-        stage = self.lifecycle._stage_for(agent)
-        system, finish, nudge = CONVERSATION_ROLES[agent.kind.value]
+        in_run = role is None
+        stage = stage or self.lifecycle._stage_for(agent)
+        system, finish, nudge = role or CONVERSATION_ROLES[agent.kind.value]
         report: dict[str, Any] | None = None
         idle = 0
         while report is None and stint.tool_calls < CHECKPOINT_CALLS and idle < MAX_IDLE_ANSWERS:
@@ -2210,7 +2261,10 @@ class Supervisor:
                     model_sampling=True, cache=True, timeout=600.0,
                 ), binding=agent.binding)
             except Exception as exc:  # noqa: BLE001 - one agent must not kill the run
-                await self._agent_call_failed(session, agent, exc)
+                if in_run:
+                    await self._agent_call_failed(session, agent, exc)
+                else:
+                    await session.anote(f"{agent.title}: the model call failed: {exc}")
                 stint.failed = True
                 return None
             stint.usage = stint.usage.add(response.usage)
