@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from ..agents.brief import (
+    build_implementer_brief,
+    build_verifier_brief,
     render_directive,
 )
 from ..agents.registry import AgentRegistry
@@ -92,6 +94,17 @@ from . import autonomy, phases, worktree
 from .attribution import baseline_verdict
 from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
+from .conversation import (
+    CHECKPOINT_CALLS,
+    MAX_IDLE_ANSWERS,
+    VERDICT_NOW,
+    VERDICT_STINTS,
+    Stint,
+    compact,
+    native_tool_specs,
+    stint_payload,
+)
+from .conversation import ROLE as CONVERSATION_ROLES
 from .dod import VerificationOutcome, fill_suite_commands, verify_criterion
 from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
 from .fails_before import (
@@ -1897,6 +1910,10 @@ class Supervisor:
         piece of work, not three. The outer one is the supervised loop: each real
         answer is recorded, assessed for drift, and answered with a directive.
         """
+        if self._conversational(agent):
+            await (self._converse_verifier if agent.kind is AgentKind.VERIFICATION
+                   else self._converse)(session, agent)
+            return
         packet = self.packets._agent_packet(session, agent)
         history: list[ChatMessage] = [ChatMessage("user", packet.brief)]
 
@@ -1944,26 +1961,8 @@ class Supervisor:
                         ),
                         binding=agent.binding,
                     )
-                except ProviderRefusal as exc:
-                    # A refusal is a result, not a failure to retry: recorded
-                    # with its own fields so a reader -- or an evaluation
-                    # scoring this run -- can tell it from an agent that broke.
-                    await session.anote(
-                        "agent refused by the model", actor=agent.id, refusal=True,
-                        provider=exc.provider, model=exc.model, category=exc.category,
-                        explanation=exc.explanation,
-                    )
-                    await self.lifecycle._set_status(
-                        session, agent, AgentStatus.FAILED, cause=EndCause.REFUSED,
-                        reason=exc.category or "refused",
-                    )
-                    return
                 except Exception as exc:  # noqa: BLE001 - one agent must not kill the run
-                    await session.anote(f"agent failed: {exc}", actor=agent.id)
-                    await self.lifecycle._set_status(
-                        session, agent, AgentStatus.FAILED, cause=EndCause.ERROR,
-                        reason=f"{type(exc).__name__}: {exc}",
-                    )
+                    await self._agent_call_failed(session, agent, exc)
                     return
 
                 turn_usage = turn_usage.add(response.usage)
@@ -2052,11 +2051,21 @@ class Supervisor:
                 ChatMessage("user", render_directive(directive, agent)),
             ]
 
-        # Falling out of the loop means the supervised turns ran out without a
-        # terminal directive: every turn drew a continuation, or the budget
-        # allowed none. Without a terminal status the agent stayed in
-        # ACTIVE_AGENT_STATUSES, so the phase drove it again from turn one until
-        # the run was failed for not settling.
+        await self._out_of_turns(session, agent)
+
+    def _conversational(self, agent: AgentSpec) -> bool:
+        """Whether this agent is driven as a conversation (`core/conversation.py`)."""
+        return (agent.kind in (AgentKind.EXECUTION, AgentKind.VERIFICATION)
+                and self.config.policy.implementer_loop == "conversation"
+                and self.router.native_tools(agent.binding))
+
+    async def _out_of_turns(self, session: RunSession, agent: AgentSpec) -> None:
+        """End an agent whose supervised turns ran out without a terminal directive.
+
+        Every turn drew a continuation, or the budget allowed none. Without a
+        terminal status the agent stayed in ACTIVE_AGENT_STATUSES, so the phase
+        drove it again from turn one until the run was failed for not settling.
+        """
         turns_used = session.state.turn_counts.get(agent.id, 0)
         await session.anote(
             f"agent `{agent.id}` stopped: turn budget exhausted "
@@ -2066,6 +2075,162 @@ class Supervisor:
         await self.lifecycle._set_status(
             session, agent, AgentStatus.STOPPED, cause=EndCause.TURN_BUDGET,
             reason=f"turn budget exhausted ({turns_used}/{agent.budget.max_turns})",
+        )
+
+    async def _converse(self, session: RunSession, agent: AgentSpec) -> None:
+        """Drive an implementer as one conversation through native tool calls.
+
+        See `core/conversation.py`. The supervised loop is the same one -- a
+        stretch of work becomes a turn, which is assessed and answered -- but
+        the conversation carries on through it: what the agent read is still
+        there after the directive, which is appended rather than swapped in.
+        """
+        state = session.state
+        task = state.tasks.get(agent.task_id or "") or ExecutionTask(
+            run_id=state.id, title=agent.title)
+        brief = state.briefs.get(agent.id)
+        if brief is None:
+            findings = [f"[{f.severity.value}] {f.title}: {f.detail}"
+                        for f in state.findings if f.id in task.rationale_refs]
+            brief = build_implementer_brief(state, agent, task, findings)
+            await session.aemit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
+        messages = [ChatMessage("user", brief)]
+        tools = native_tool_specs(agent, self.config.policy)
+
+        for _ in range(agent.budget.max_turns):
+            stint = Stint()
+            report = await self._work_a_stint(session, agent, messages, tools, stint)
+            if stint.failed:
+                return
+            payload = stint_payload(stint, report)
+            payload["usage"] = {**to_jsonable(stint.usage), "tool_calls": stint.tool_calls}
+            turn = await self.supervision._record_turn(session, agent, payload)
+            await self._flush_assists(session, agent)
+            directive = await self.supervision._supervise(session, agent, turn)
+            if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP,
+                                  DirectiveKind.ESCALATE):
+                self._mark_task_awaiting_verification(session, agent, payload)
+                return
+            messages.append(ChatMessage("user", render_directive(directive, agent)))
+        await self._out_of_turns(session, agent)
+
+    async def _converse_verifier(self, session: RunSession, agent: AgentSpec) -> None:
+        """Drive a verifier as a conversation that ends in a ``verdict``.
+
+        On the turn contract a verifier on a local model had one turn, and in a
+        measured run returned an empty answer on all three attempts: the review
+        criteria of a correct task were never judged, and the task was failed.
+        It is shown only the criteria still open -- the harness has proved the
+        mechanical ones itself -- and is asked once more for a verdict if a
+        stretch of reading ends without one.
+        """
+        state = session.state
+        task = state.tasks.get(agent.task_id or "") or ExecutionTask(
+            run_id=state.id, title=agent.title)
+        brief = state.briefs.get(agent.id)
+        if brief is None:
+            brief = build_verifier_brief(state, task, self.packets._change_summary(session, task))
+            await session.aemit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
+        messages = [ChatMessage("user", brief)]
+        tools = native_tool_specs(agent, self.config.policy)
+        stint = Stint()
+        verdict: dict[str, Any] | None = None
+        for _ in range(VERDICT_STINTS):
+            verdict = await self._work_a_stint(session, agent, messages, tools, stint)
+            if stint.failed:
+                return
+            if verdict is not None:
+                break
+            messages.append(ChatMessage("user", VERDICT_NOW))
+        verdict = verdict or {}
+        payload = {
+            "output": str(verdict.get("summary", "")) or "; ".join(stint.actions[-20:]),
+            "results": [r for r in (verdict.get("results") or []) if isinstance(r, dict)],
+            "status": "done", "files_read": stint.read,
+            "usage": {**to_jsonable(stint.usage), "tool_calls": stint.tool_calls},
+        }
+        turn = await self.supervision._record_turn(session, agent, payload)
+        await self._flush_assists(session, agent)
+        await self.supervision._assess_drift(session, agent, turn)
+        await self._report_verification(session, agent, payload)
+
+    async def _work_a_stint(
+        self, session: RunSession, agent: AgentSpec, messages: list[ChatMessage],
+        tools: list[dict[str, Any]], stint: Stint,
+    ) -> dict[str, Any] | None:
+        """Let the agent work until it finishes, goes quiet, or a checkpoint is due.
+
+        Returns what it finished with -- an implementer's ``report``, a
+        verifier's ``verdict`` -- or None at a checkpoint. A failed model call
+        ends the agent here, and says so on ``stint.failed``.
+        """
+        toolbox = self._toolbox_for(session.state)
+        stage = self.lifecycle._stage_for(agent)
+        system, finish, nudge = CONVERSATION_ROLES[agent.kind.value]
+        report: dict[str, Any] | None = None
+        idle = 0
+        while report is None and stint.tool_calls < CHECKPOINT_CALLS and idle < MAX_IDLE_ANSWERS:
+            if compact(messages):
+                await session.anote("conversation compacted: the oldest tool results "
+                                    "were removed", actor=agent.id)
+            try:
+                # A copy: the conversation grows after the call, and a request
+                # is what was asked, not what the conversation later became.
+                response = await self.router.complete(stage, CompletionRequest(
+                    messages=list(messages), system=system, tools=tools,
+                    model_sampling=True, cache=True, timeout=600.0,
+                ), binding=agent.binding)
+            except Exception as exc:  # noqa: BLE001 - one agent must not kill the run
+                await self._agent_call_failed(session, agent, exc)
+                stint.failed = True
+                return None
+            stint.usage = stint.usage.add(response.usage)
+            stint.reasoning = response.reasoning or stint.reasoning
+            stint.text.append(response.text)
+            messages.append(ChatMessage("assistant", response.text,
+                                        tool_calls=response.tool_calls))
+            if not response.tool_calls:
+                idle += 1
+                messages.append(ChatMessage("user", nudge))
+                continue
+            idle = 0
+            failures: list[str] = []
+            for call in response.tool_calls:
+                if call.name == finish:
+                    report, text = call.arguments, "Received; the supervisor will answer."
+                else:
+                    result = toolbox.call(call.name, call.arguments, agent, whole_files=True)
+                    stint.record(call, result.ok, result.path)
+                    failures += [] if result.ok else [call.name]
+                    text = render_results([result], limit=TOOL_RESULT_CHARS)
+                messages.append(ChatMessage("tool", text, tool_name=call.name,
+                                            tool_call_id=call.id))
+            await session.anote("tools called", actor=agent.id,
+                                tools=[c.name for c in response.tool_calls], failures=failures)
+        return report
+
+    async def _agent_call_failed(
+        self, session: RunSession, agent: AgentSpec, exc: Exception
+    ) -> None:
+        """End an agent whose model call failed, recording a refusal as a refusal."""
+        if isinstance(exc, ProviderRefusal):
+            # A refusal is a result, not a failure to retry: recorded with its
+            # own fields so a reader -- or an evaluation scoring this run -- can
+            # tell it from an agent that broke.
+            await session.anote(
+                "agent refused by the model", actor=agent.id, refusal=True,
+                provider=exc.provider, model=exc.model, category=exc.category,
+                explanation=exc.explanation,
+            )
+            await self.lifecycle._set_status(
+                session, agent, AgentStatus.FAILED, cause=EndCause.REFUSED,
+                reason=exc.category or "refused",
+            )
+            return
+        await session.anote(f"agent failed: {exc}", actor=agent.id)
+        await self.lifecycle._set_status(
+            session, agent, AgentStatus.FAILED, cause=EndCause.ERROR,
+            reason=f"{type(exc).__name__}: {exc}",
         )
 
     async def run(

@@ -654,6 +654,67 @@ real run, shows looping that the existing signals miss.
 *Changes the harness condition:* **yes**. It is a drift signal, and report mode
 is supervised. Flag it to security-eval before merging.
 
+### Batch I — An implementer loop a local model can work in
+
+*Added 2026-10-07, after go-live runs 4-9.* The owner's reading, which the
+runs bear out: people run Turnstone on the same model to good results, so the
+gap is the harness's. Read side by side, the two loops differ where the runs
+failed -- in the long, tool-heavy work of an implementer, not in the
+single-shot judgements of planning and analysis, which have held since #88.
+
+What the harness did to an implementer that Turnstone does not:
+
+1. **Forgot what it read at every turn.** After each supervised turn the
+   conversation was reset to the brief, the agent's last answer and the
+   directive; every tool result was dropped. Each turn began again with six
+   tool rounds. Behind the read/search loops stopped for "100% repetition"
+   (runs 7, 9), "tool rounds consumed by repeated identical calls" (run 5), and
+   a translation file written back from the first page seen (run 8).
+2. **Bypassed the model's tool calling.** Every step was one JSON object under a
+   grammar, tool calls inside it; writing a file meant its whole contents as an
+   escaped string. `qwen3.8-code` has native tool calling, and Turnstone uses it.
+3. **Turned the model's thinking off** on every structured call.
+4. **Sampled at 0.2** against the model's tuned 0.6; low-temperature decoding is
+   a known cause of repetition in this model family. A likely contributor, not
+   a proven one.
+5. **Buried the task.** A measured implementer brief was 28,000 characters, of
+   which "what to do" was 53: the run's shared context, every lesson, the other
+   agents and a JSON output contract came first. NOOA's warning that context is
+   eager, in one number.
+
+The batch: on a provider that takes tools natively, with
+`policy.implementer_loop = "conversation"`, an implementer is one conversation
+(`core/conversation.py`). What it reads stays, compacted only near its context
+limit. It acts through native tool calls with Turnstone-style workflow guidance
+in the descriptions, reads files whole, and ends a stretch of work by calling
+`report`. Supervision looks in at each report and every fifteen tool calls; the
+directive is appended to the conversation, not swapped in for it. Thinking is
+left on and the model's own sampling used. The opening message is the task and
+little else (`build_implementer_brief`).
+
+Unchanged: what an implementer may do -- the toolbox, its fences, the floor --
+and how its work is checked. Lenses and verifiers keep the turn contract.
+
+*Done when:* P3-18 and 9a, on the same local model, end with branches the
+owner would merge. Measured against runs 4-9.
+
+*Changes the harness condition:* no. Report mode spawns no implementer.
+
+> **Go-live run 10, 2026-10-07** (P3-18, the conversation loop, 41 minutes).
+> The first run whose work passes the project's own gate: on the run's branch
+> `npm run check`'s typecheck, lint, 897 unit tests (the baseline's 889 and
+> eight new) and build all pass. One task verified 7/7 -- the results list
+> made per-plant, a shard that cannot be reached stranding only its own plants
+> as "needs connection", offline told apart from other failures -- in the
+> repository's own style, and every edit surgical: `en.json` gained one key and
+> lost one it no longer used, where run 8 had cut it from 483 lines to 142.
+> Of the rest, a task with correct keys and passing checks failed because its
+> **verifier**, still on the turn contract, returned an empty answer on all
+> three attempts -- the same defect one role along, so verifiers are now
+> conversations that end in a `verdict` and see only the criteria still open.
+> Three tasks went to the owner: one for a test filter that cannot be pinned,
+> two because the plan's envelope left out `e2e/` and the CI workflow.
+
 ---
 
 ## The gate between the parts

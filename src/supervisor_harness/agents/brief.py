@@ -16,6 +16,7 @@ from typing import Any
 from ..models import (
     BASELINE_FACT,
     AgentSpec,
+    CriterionStatus,
     Directive,
     DoDCriterion,
     ExecutionTask,
@@ -420,6 +421,84 @@ def build_execution_brief(
         ),
         _section("Budget", _budget_block(agent)),
         _section("Output contract", render_contract(schema, refs.contract, refs.result)),
+    ]
+    return "\n".join(p for p in parts if p).strip()
+
+
+#: Findings behind a task, in an implementer's conversation, are capped: they
+#: are why the task exists, and the task itself is what the agent works from.
+IMPLEMENTER_FINDINGS_CHARS = 2_500
+
+
+def build_implementer_brief(
+    run: RunState,
+    agent: AgentSpec,
+    task: ExecutionTask,
+    supporting_findings: list[str] | None = None,
+) -> str:
+    """The opening message of an implementer's conversation: the task, and little else.
+
+    The turn-contract brief carried the whole run -- shared context, every
+    lesson, the other agents, a JSON output contract -- 28,000 characters in
+    a measured run, in which "what to do" was 53. A local model working a long
+    tool conversation loses the task in that. Everything here is about this
+    task: the run's request is a line of context, and how to work and how to
+    finish are the system prompt's (`core/conversation.py`), stated once.
+    """
+    what = task.action if task.action and task.action != task.title else task.title
+    findings = _bullets(supporting_findings or [])
+    if len(findings) > IMPLEMENTER_FINDINGS_CHARS:
+        findings = findings[:IMPLEMENTER_FINDINGS_CHARS].rsplit("\n", 1)[0] + "\n- ..."
+    scope = (
+        "You may change: " + ", ".join(f"`{p}`" for p in agent.scope.paths)
+        if agent.scope.paths else "You may change any file in the workspace."
+    )
+    if agent.scope.forbidden_paths:
+        scope += "\nNever change: " + ", ".join(f"`{p}`" for p in agent.scope.forbidden_paths)
+    baseline = run.facts.get(BASELINE_FACT, "")
+    parts = [
+        f"# Your task: {task.title}",
+        _section("What to do", what),
+        _section("Why", task.motivation),
+        _section("Findings behind it", findings),
+        _section("Done means", _dod_block(task.dod)),
+        _section("Scope", scope),
+        _section(
+            "Baseline",
+            (f"The run started from commit {baseline}. " if baseline else "")
+            + "A test that passed there and fails after your change is yours to fix: "
+            "the harness runs the suite on that commit too, so it will know.",
+        ),
+        _section("Context", f"This task is one part of the request: {run.prompt}"),
+    ]
+    return "\n".join(p for p in parts if p).strip()
+
+
+def build_verifier_brief(run: RunState, task: ExecutionTask, change_summary: str = "") -> str:
+    """The opening message of a verifier's conversation: what is still to be judged.
+
+    Only the criteria still open. The harness has already run every command
+    and inspection it could; listing those too asked a local model to redo
+    settled work before reaching the review criteria that were its whole job.
+    """
+    still_open = [c for c in task.dod if c.status is CriterionStatus.UNVERIFIED]
+    parts = [
+        f"# Verify: {task.title}",
+        _section("What was supposed to happen",
+                 f"{task.action}\n\n{task.motivation}".strip()),
+        _section("What the implementer reports", change_summary),
+        _section("Criteria to judge", _dod_block(still_open or task.dod)),
+        _section(
+            "How to judge",
+            _bullets([
+                "Read the files the criteria are about, and quote the lines that "
+                "settle each one.",
+                "For a review criterion, judge against its rubric and cite the code "
+                "that meets or fails it.",
+                "Finding a genuine failure is a successful verification.",
+            ]),
+        ),
+        _section("Context", f"This task is one part of the request: {run.prompt}"),
     ]
     return "\n".join(p for p in parts if p).strip()
 

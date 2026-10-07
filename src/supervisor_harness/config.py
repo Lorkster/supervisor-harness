@@ -121,6 +121,16 @@ class Policy:
     # able to set this would be choosing to skip review of work done on itself.
     approval: str = "task"
 
+    # How an implementer is driven on the autonomous backend: "turns", each
+    # supervised turn a fresh JSON answer whose tool results are dropped when
+    # it ends, or "conversation", one conversation per implementer in which
+    # what it read is kept, tools are called through the provider's native
+    # interface, and supervision checks its progress every so many calls. See
+    # `core/conversation.py`. Only where the implementer's provider takes tools
+    # natively; anywhere else, "turns". Not protected: it changes how the work
+    # is done, not what is allowed or how it is checked.
+    implementer_loop: str = "turns"
+
     # The run's scope envelope: the ceiling on every agent scope in the run.
     # Empty means the whole workspace, which is what an empty scope already
     # means to the toolbox and to the floor beneath it. This is deliberately

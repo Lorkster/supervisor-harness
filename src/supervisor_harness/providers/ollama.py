@@ -7,6 +7,7 @@ cost and latency down without touching the network.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -15,10 +16,12 @@ import httpx
 from ..models import Usage
 from .base import (
     DEFAULT_TEMPERATURE,
+    ChatMessage,
     CompletionRequest,
     CompletionResponse,
     Provider,
     ProviderError,
+    ToolCall,
     schema_instruction,
 )
 
@@ -37,6 +40,7 @@ GRAMMAR_MAX_PROMPT_CHARS = 100_000
 
 class OllamaProvider(Provider):
     name = "ollama"
+    native_tools = True
 
     def __init__(
         self,
@@ -72,15 +76,15 @@ class OllamaProvider(Provider):
             return []
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if request.system:
             messages.append({"role": "system", "content": request.system})
-        messages.extend({"role": m.role, "content": m.content} for m in request.messages)
+        messages.extend(_wire_message(m) for m in request.messages)
 
         temperature = request.temperature
-        options: dict[str, Any] = {
-            "temperature": DEFAULT_TEMPERATURE if temperature is None else temperature,
-        }
+        options: dict[str, Any] = {}
+        if temperature is not None or not request.model_sampling:
+            options["temperature"] = DEFAULT_TEMPERATURE if temperature is None else temperature
         if request.max_tokens:
             options["num_predict"] = request.max_tokens
         if request.stop:
@@ -112,6 +116,8 @@ class OllamaProvider(Provider):
             # thinking channel and return empty content. Callers that want the
             # reasoning back can pass think=True explicitly.
             body["think"] = False
+        if request.tools:
+            body["tools"] = [{"type": "function", "function": spec} for spec in request.tools]
         body.update(request.extra)
 
         try:
@@ -142,6 +148,7 @@ class OllamaProvider(Provider):
             ),
             finish_reason=data.get("done_reason", ""),
             raw=data,
+            tool_calls=_tool_calls(message.get("tool_calls")),
         )
 
     def describe(self) -> dict[str, Any]:
@@ -151,6 +158,41 @@ class OllamaProvider(Provider):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+
+def _wire_message(message: ChatMessage) -> dict[str, Any]:
+    """A message as Ollama's chat API takes it, tool calls and results included."""
+    wire: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.tool_calls:
+        wire["tool_calls"] = [
+            {"function": {"name": call.name, "arguments": call.arguments}}
+            for call in message.tool_calls
+        ]
+    if message.tool_name:
+        wire["tool_name"] = message.tool_name
+    return wire
+
+
+def _tool_calls(raw: Any) -> list[ToolCall]:
+    """The native tool calls in a response, skipping any that are malformed.
+
+    Arguments arrive as an object, or from some models as a JSON string.
+    """
+    calls: list[ToolCall] = []
+    for entry in raw if isinstance(raw, list) else []:
+        function = entry.get("function") if isinstance(entry, dict) else None
+        if not isinstance(function, dict) or not str(function.get("name", "")).strip():
+            continue
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        calls.append(ToolCall(name=str(function["name"]).strip(),
+                              arguments=arguments if isinstance(arguments, dict) else {},
+                              id=str(entry.get("id", ""))))
+    return calls
 
 
 __all__ = ["OllamaProvider"]

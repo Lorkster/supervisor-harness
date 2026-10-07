@@ -176,6 +176,11 @@ MAX_READ_LINES = 400
 #: alone did not bound it: 400 lines of dense code is 16,000 characters, more
 #: than a round's results could carry, and the excess was lost without a word.
 MAX_READ_CHARS = 10_000
+#: What a read returns to an agent whose conversation keeps it (see
+#: ``Toolbox.call``): enough for the 483-line translation file whose first page
+#: was all one implementer saw, and wrote back.
+WHOLE_FILE_LINES = 3_000
+WHOLE_FILE_CHARS = 80_000
 MAX_MATCHES = 60
 MAX_LIST = 200
 #: Files larger than this are not read whole: a read refuses them, a search
@@ -421,7 +426,8 @@ class Toolbox:
             body += f"\n... and {len(matches) - MAX_LIST} more"
         return ToolResult("list_files", True, body)
 
-    def read_file(self, path: str, start: int = 1, limit: int = MAX_READ_LINES) -> ToolResult:
+    def read_file(self, path: str, start: int = 1, limit: int = MAX_READ_LINES, *,
+                  max_lines: int = MAX_READ_LINES, max_chars: int = MAX_READ_CHARS) -> ToolResult:
         target = self._resolve(path)
         if target is None:
             return ToolResult("read_file", False, f"{path!r} is outside the workspace")
@@ -437,12 +443,12 @@ class Toolbox:
             return ToolResult("read_file", False, f"could not read {path!r}: {exc}")
 
         start = max(1, int(start or 1))
-        limit = max(1, min(int(limit or MAX_READ_LINES), MAX_READ_LINES))
+        limit = max(1, min(int(limit or max_lines), max_lines))
         numbered: list[str] = []
         size = 0
         for n, line in enumerate(lines[start - 1 : start - 1 + limit], start):
             text = f"{n:>5}  {line}"
-            if numbered and size + len(text) + 1 > MAX_READ_CHARS:
+            if numbered and size + len(text) + 1 > max_chars:
                 break
             numbered.append(text)
             size += len(text) + 1
@@ -820,8 +826,14 @@ class Toolbox:
 
     # -- dispatch ----------------------------------------------------------
 
-    def call(self, name: str, args: dict[str, Any], agent: AgentSpec) -> ToolResult:
-        """Run one requested tool, enforcing what this agent is allowed to do."""
+    def call(self, name: str, args: dict[str, Any], agent: AgentSpec, *,
+             whole_files: bool = False) -> ToolResult:
+        """Run one requested tool, enforcing what this agent is allowed to do.
+
+        ``whole_files`` is for an agent whose conversation keeps what it read:
+        a read then returns a file whole, up to a far larger bound, because a
+        model that saw only the first page of a file writes back only that.
+        """
         name = (name or "").strip()
         writable = agent.kind.value in WRITE_KINDS
         may_run = agent.kind.value in COMMAND_KINDS
@@ -829,10 +841,13 @@ class Toolbox:
         if name == "list_files":
             return self.list_files(str(args.get("pattern", "**/*")))
         if name == "read_file":
+            lines, chars = ((WHOLE_FILE_LINES, WHOLE_FILE_CHARS) if whole_files
+                            else (MAX_READ_LINES, MAX_READ_CHARS))
             return self.read_file(
                 str(args.get("path", "")),
                 int(args.get("start", 1) or 1),
-                int(args.get("limit", MAX_READ_LINES) or MAX_READ_LINES),
+                int(args.get("limit", lines) or lines),
+                max_lines=lines, max_chars=chars,
             )
         if name == "search":
             return self.search(str(args.get("pattern", "")), str(args.get("glob", "**/*")))
