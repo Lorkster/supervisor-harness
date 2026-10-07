@@ -679,18 +679,14 @@ class Supervisor:
         # finding ids and often answers with titles, and a task that names no
         # finding leaves the end of the run unable to say what it closed.
         ref_notes = phases.resolve_rationale_refs(tasks, state.findings)
-        tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
-        for extra in (dep_notes, ref_notes):
-            for task_id, entries in extra.items():
-                notes.setdefault(task_id, []).extend(entries)
         # Before the tasks are shown to anyone: a proposed scope wider than the
         # run's envelope is narrowed to the intersection, not refused. A model
         # proposing too much is ordinary; losing the task over it is not. The
         # narrowing is recorded against the task, which is what puts it in front
         # of the user at approval alongside the definition of done.
+        scope_notes: dict[str, list[str]] = {}
         for task in tasks:
             task.scope.paths, placed = placed_in_tree(task.scope.paths, self.workspace)
-            notes.setdefault(task.id, []).extend(placed)
             declared = bool(task.scope.paths)
             task.scope, clamped = attenuate(
                 task.scope, [Ceiling.of("run envelope", effective(state.envelope))]
@@ -700,7 +696,19 @@ class Supervisor:
             # ("taken from the run envelope") is not the task asking for more:
             # read as narrowing, it sent every such task to the owner.
             task.clamped = list(clamped) if declared else []
-            notes[task.id].extend(clamped)
+            scope_notes[task.id] = [*placed, *clamped]
+        # The bars after the scope, because whether a task touches code is read
+        # partly from its paths. Before, a task that declared no scope had none
+        # yet, and one titled "Emit serialisation note at phase completion" was
+        # judged not to touch code: measured in a go-live run, three of five
+        # tasks went ahead with none of the harness's own checks -- no test
+        # bar, no fails_before -- and one was "verified" by tests of helpers in
+        # a file other than the one it was about.
+        tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
+        for extra in (dep_notes, ref_notes, scope_notes):
+            for task_id, entries in extra.items():
+                notes.setdefault(task_id, []).extend(entries)
+        for task in tasks:
             for path in named_outside_scope(task, self.workspace):
                 gap = (f"the task names `{path}`, which its scope does not cover; "
                        "its agent could not change it")
