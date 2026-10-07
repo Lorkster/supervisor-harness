@@ -247,7 +247,19 @@ def _check_repetition(ctx: TurnContext) -> DriftSignal | None:
 
 
 def _check_brief_echo(ctx: TurnContext) -> DriftSignal | None:
-    """Output is mostly the brief handed back, with nothing new in it."""
+    """Output is mostly the brief handed back, with nothing new in it.
+
+    Not for an implementer reporting work: its work is the change, and whether
+    the change is done is settled by its definition of done, not by how novel
+    its account sounds. A short, accurate report of a one-line change uses the
+    brief's words because the brief names the change -- measured in a go-live
+    run, where it read as "only 10% new information", earned the implementer a
+    "deepen", and helped stop it with its task already done.
+    """
+    if ctx.agent.kind is AgentKind.EXECUTION and (
+        ctx.turn.files_touched or ctx.turn.claimed_status is AgentStatus.DONE
+    ):
+        return None
     body = tokens(ctx.turn.output)
     if len(body) < 12:
         return None

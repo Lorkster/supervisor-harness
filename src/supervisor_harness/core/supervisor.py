@@ -91,7 +91,7 @@ from ..store.runstore import RunSession, RunStore
 from . import autonomy, phases, worktree
 from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
-from .dod import VerificationOutcome, verify_criterion
+from .dod import VerificationOutcome, fill_suite_commands, verify_criterion
 from .envelope import Ceiling, attenuate, effective, establish, render, stale_reason
 from .fails_before import (
     changed_since,
@@ -105,7 +105,7 @@ from .journal import RunJournal
 from .lifecycle import Lifecycle
 from .packets import Packets
 from .paths import relative_patterns
-from .placement import placed_in_tree
+from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
 
@@ -593,8 +593,11 @@ class Supervisor:
         )
         if not wants_execution:
             return data
-        weak = phases.unenforceable_criteria(
-            parse_tasks(data, state.id, state.workspace), self.config.policy)
+        proposed = parse_tasks(data, state.id, state.workspace)
+        # What the harness fills in itself is not the model's to fix.
+        for task in proposed:
+            fill_suite_commands(task, self.workspace)
+        weak = phases.unenforceable_criteria(proposed, self.config.policy)
         if not weak:
             return data
         await session.anote("synthesis sent back once: criteria it proposed cannot be "
@@ -658,6 +661,11 @@ class Supervisor:
             # read as narrowing, it sent every such task to the owner.
             task.clamped = list(clamped) if declared else []
             notes[task.id].extend(clamped)
+            for path in named_outside_scope(task, self.workspace):
+                gap = (f"the task names `{path}`, which its scope does not cover; "
+                       "its agent could not change it")
+                task.clamped.append(gap)
+                notes[task.id].append(gap)
             session.emit(EventType.TASK_PROPOSED, {"task": to_jsonable(task),
                                                    "notes": notes.get(task.id, [])})
         session.emit(EventType.NOTE, {"text": "tasks proposed", "notes": notes})

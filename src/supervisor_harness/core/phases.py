@@ -48,7 +48,13 @@ from .blackboard import (
     detect_contradictions,
     rank_findings,
 )
-from .dod import apply_quality_bars, summarise, unsafe_command, validate_criteria
+from .dod import (
+    apply_quality_bars,
+    fill_suite_commands,
+    summarise,
+    unsafe_command,
+    validate_criteria,
+)
 from .paths import relative_patterns
 
 # --------------------------------------------------------------------------
@@ -453,7 +459,7 @@ def prepare_tasks(
     """
     notes: dict[str, list[str]] = {}
     for task in tasks:
-        entries: list[str] = []
+        entries: list[str] = fill_suite_commands(task, workspace)
         added = apply_quality_bars(task, policy, workspace)
         for crit in added:
             entries.append(f"harness added mandatory criterion: {crit.statement}")

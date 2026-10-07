@@ -47,6 +47,7 @@ from ..models import (
     Escalation,
     EscalationReason,
     Finding,
+    RunState,
     Scope,
     TaskStatus,
 )
@@ -510,15 +511,7 @@ class Supervision:
             "agent working carefully on the wrong thing is drifting; an agent working "
             "roughly on the right thing is not."
         )
-        user = (
-            "# The agent's objectives\n" + "\n".join(f"- {o}" for o in agent.objectives)
-            + "\n\n# Explicitly out of scope\n"
-            + ("\n".join(f"- {o}" for o in agent.scope.out_of_scope) or "(nothing listed)")
-            + f"\n\n# The overall task\n{state.prompt}"
-            + f"\n\n# What the agent just reported\n{last.output[:4000]}"
-            + "\n\n# Mechanical signals already detected\n"
-            + ("\n".join(f"- {s.kind}: {s.detail}" for s in heuristic.signals) or "(none)")
-        )
+        user = drift_judge_prompt(state, agent, last.output, heuristic)
         data = await self._call("drift", system, user, DRIFT_SCHEMA, session)
         model_view = parse_drift(data, checked_by=self.router.binding("drift").ref())
         merged = merge_assessments(heuristic, model_view)
@@ -585,3 +578,33 @@ class Supervision:
                 "model": response.model, "provider": response.provider,
             })
         return response.json()
+
+
+def drift_judge_prompt(
+    state: RunState, agent: AgentSpec, output: str, heuristic: DriftAssessment
+) -> str:
+    """What the drift model is shown about an agent's last turn.
+
+    An agent working one task of a plan is judged against that task. Shown the
+    run's request as "the overall task", the judge in a go-live run stopped an
+    implementer whose task was one line of package.json for "abandoning the
+    primary task" -- the offline feature other tasks were for -- after it had
+    done its own.
+    """
+    task = state.tasks.get(agent.task_id) if agent.task_id else None
+    context = (
+        f"# The agent's assignment\nOne task of a larger plan: {task.title!r}. "
+        "Other tasks cover the rest of the request; this agent is not expected "
+        "to do them, and doing only its own task is not drift."
+        f"\n\n# The run's request (context only)\n{state.prompt}"
+        if task is not None else f"# The overall task\n{state.prompt}"
+    )
+    return (
+        "# The agent's objectives\n" + "\n".join(f"- {o}" for o in agent.objectives)
+        + "\n\n# Explicitly out of scope\n"
+        + ("\n".join(f"- {o}" for o in agent.scope.out_of_scope) or "(nothing listed)")
+        + f"\n\n{context}"
+        + f"\n\n# What the agent just reported\n{output[:4000]}"
+        + "\n\n# Mechanical signals already detected\n"
+        + ("\n".join(f"- {s.kind}: {s.detail}" for s in heuristic.signals) or "(none)")
+    )

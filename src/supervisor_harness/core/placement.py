@@ -8,9 +8,11 @@ the workspace, so it is asked here, once, where the paths come in.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
-from .paths import _META, NOTHING
+from ..models import ExecutionTask, VerifyMethod
+from .paths import _META, NOTHING, matches_any
 
 #: Directories a search for "the file a model meant" never descends into:
 #: version control, the harness's own store, dependencies and build output.
@@ -59,6 +61,48 @@ def placed_in_tree(patterns: list[str], workspace: str | Path) -> tuple[list[str
         elif not (root / pat).parent.exists():
             notes.append(f"`{pat}` names no file, in a directory that does not exist")
     return out, notes
+
+
+#: A path written in prose: at least one directory, and a file extension. A
+#: bare `package.json` is not looked for -- too often a word in a sentence.
+_PATH_IN_PROSE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z]\w{0,7})\b")
+
+#: Words just before a path that say the task reads it rather than changes it.
+_READ_FROM = re.compile(
+    r"\b(using|uses?|read\w*|from|via|see|mirror\w*|like|following|import\w*|calls?)\b",
+    re.IGNORECASE,
+)
+
+
+def named_outside_scope(task: ExecutionTask, workspace: str | Path) -> list[str]:
+    """Files the task's own words say it changes, that its scope does not cover.
+
+    Measured on a local model: the plan's envelope named the two files the
+    prompt mentioned and missed the one it described by name ("Reporting.
+    ledger"), and a task whose action read "In Reporting.ledger (core/
+    reporting.py:202-260), append ..." was approved within that envelope. Its
+    agent could not write the file the task was about; it spent ten turns and
+    three rounds of remediation finding out. Only the owner widens -- so the
+    task goes to them before anyone works on it, not after.
+
+    The words are the task's title and action, and the file each inspection
+    criterion checks: the files the task must produce. Only writes are fenced,
+    so a path the action reads from -- "using the client in src/cache.py" --
+    is not counted. A file that does not exist yet counts where its directory
+    does, because creating it is a write the scope forbids just the same.
+    """
+    root = Path(workspace)
+    if not task.scope.paths or not root.is_dir():
+        return []  # no paths is the whole workspace
+    prose = f"{task.title} {task.action}"
+    named = [m.group(1) for m in _PATH_IN_PROSE.finditer(prose)
+             if not _READ_FROM.search(" ".join(prose[:m.start()].split()[-5:]))]
+    named += [m.group(1) for c in task.dod if c.method is VerifyMethod.INSPECTION
+              for m in _PATH_IN_PROSE.finditer(c.expect.partition(":")[0])]
+    placed, _ = placed_in_tree(list(dict.fromkeys(named)), root)
+    return [p for p in dict.fromkeys(placed)
+            if ((root / p).is_file() or (root / p).parent.is_dir())
+            and not matches_any(p, task.scope.paths)]
 
 
 def _tree_files(root: Path) -> list[str]:

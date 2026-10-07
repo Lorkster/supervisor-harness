@@ -507,6 +507,47 @@ PRs the owner would merge.
 > said the agents were working correctly. A forbidden path now constrains only
 > an agent that can write.
 
+> **Go-live runs 4 and 5, 2026-10-06**, P3-18 and 9a again after #86. **Tasks
+> went ahead within the envelope and executed, in both.** All lenses accepted in
+> run 4 (none stopped), and the send-back fired: the revision turned most
+> criteria into inspections the harness can check.
+>
+> *Run 4* (P3-18, 8 tasks, 15 minutes): one approved and executed -- add `test:e2e` to
+> `npm run check` -- verified 2/2, and **wrong**. plantsandclimate's CI runs
+> `npm run check` before it installs Playwright's browser, so the change would
+> break CI. Every check passed because every check was about the text of
+> `package.json`. This is batch G's condition, met: a task reached execution
+> that a person would have rejected. The run's branch is a proposal, and the
+> owner's merge is where it would have been caught -- which is the design. The
+> other seven went to the owner for one criterion each, "existing unit tests
+> still pass" naming no command, kept through the send-back. The drift judge,
+> shown the whole request as "the overall task", also stopped the executed
+> task's implementer for "abandoning the primary task" after it had done its
+> own.
+>
+> *Run 5* (9a, 4 tasks, 85 minutes over three remediation rounds): all four approved and dispatched in
+> parallel into the run's worktree. One produced good code -- per-phase
+> concurrency in `core/timing.py`, six tests, and `fails_before` proved all six
+> fail on the baseline and pass with the change -- then failed its full-suite
+> criterion on three CLI tests that read the harness's own `SUPERVISOR_HOME`,
+> inherited by the check. Without it the suite passes (969). Two tasks named
+> files outside the envelope (`core/reporting.py`, `core/supervisor.py`), which
+> the plan had drawn from the files the prompt named, not the one it described;
+> their agents could not write them, and escalated after ten turns and three
+> rounds of remediation. Two implementers cycled read/search/read for six tool
+> rounds, which one reported itself and no signal caught -- the evidence batch H
+> waits for, though the log does not record arguments, so "identical" is the
+> agent's word.
+>
+> Fixed after them: the drift judge sees an implementer's own task; brief echo
+> does not apply to an implementer reporting a change; a one-word action is
+> replaced by the title; a whole-suite criterion naming no command runs the
+> project's suite, and a criterion that cannot run no longer displaces the
+> harness's test bar; checks do not inherit `SUPERVISOR_*`; and a task whose own
+> words name a file its scope does not cover goes to the owner before anyone
+> works on it. Replayed over runs 2-5, that last check names exactly the four
+> tasks that hit the gap, and no other of the 21.
+
 ### Batch F — Does the model do what the harness asks?
 
 An eval in the shape of `turnstone-eval`, aimed at the harness's own directives
