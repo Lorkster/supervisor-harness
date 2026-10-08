@@ -145,3 +145,39 @@ def test_the_plan_schema_asks_for_what_a_model_would_otherwise_leave_out() -> No
     assert task["properties"]["scope_paths"]["minItems"] == 1
     assert {"command", "expect"} <= set(_DOD["required"])
     assert "scope_paths" in REVISION_SCHEMA["required"]
+
+
+def test_a_list_sent_as_json_text_is_read_as_the_list() -> None:
+    """Batch F: five of 21 planner conversations sent "tasks" as the JSON of the
+    list, and the plan read as having no tasks."""
+    import json
+
+    from supervisor_harness.core.conversation import as_specified
+    from supervisor_harness.core.planner import PLAN_TOOL
+
+    tasks = [{"title": "t", "action": "a"}]
+    fixed = as_specified({"tasks": json.dumps(tasks), "summary": "{\"a\": 1}",
+                          "recommended_mode": "execute"}, PLAN_TOOL)
+    assert fixed["tasks"] == tasks
+    assert fixed["summary"] == "{\"a\": 1}", "a string the schema wants stays a string"
+    assert as_specified({"tasks": "not json"}, PLAN_TOOL)["tasks"] == "not json"
+    assert as_specified({"tasks": '{"a": 1}'}, PLAN_TOOL)["tasks"] == '{"a": 1}', (
+        "decoded only to the type the schema names")
+
+
+class TextPlanner(Planner):
+    """Proposes its plan with the tasks as JSON text, as the local model did."""
+
+    def plan(self, weak: bool) -> dict[str, Any]:
+        import json
+
+        data = super().plan(weak)
+        return {**data, "tasks": json.dumps(data["tasks"])}
+
+
+async def test_a_plan_whose_tasks_came_as_text_still_plans(supervisor: Supervisor) -> None:
+    response = await _planning(supervisor, TextPlanner()).run(PROMPT, mode=RunMode.EXECUTE,
+                                                              auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+    assert [t.title for t in state.tasks.values()] == ["Add rate limiting to the login endpoint"]
+    assert not any("ended without a plan" in n.text for n in state.notes)

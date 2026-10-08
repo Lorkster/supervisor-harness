@@ -103,6 +103,7 @@ from .conversation import (
     VERDICT_NOW,
     VERDICT_STINTS,
     Stint,
+    as_specified,
     compact,
     native_tool_specs,
     stint_payload,
@@ -2440,7 +2441,10 @@ class Supervisor:
                 continue
             idle = 0
             failures: list[str] = []
+            specs = {t["name"]: t for t in tools}
             for call in response.tool_calls:
+                call = replace(call, arguments=as_specified(call.arguments,
+                                                            specs.get(call.name)))
                 if call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
                 elif call.name not in offered:

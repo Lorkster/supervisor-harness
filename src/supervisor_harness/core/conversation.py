@@ -31,6 +31,7 @@ fences, the floor -- and how its work is checked are exactly as before.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -241,6 +242,30 @@ class Stint:
                 self.written.append(target)
         elif ok and path and path not in self.read:
             self.read.append(path)
+
+
+def as_specified(arguments: dict[str, Any], spec: dict[str, Any] | None) -> dict[str, Any]:
+    """Tool-call arguments with a list or object that arrived as JSON text decoded.
+
+    A local model sometimes sends a nested argument as the JSON of it rather than
+    the value: in batch F, five of 21 planner conversations proposed
+    ``"tasks": "[{...}]"``, a string, and the plan read as having no tasks. Only
+    where the tool's own schema says array or object, and the text decodes to
+    exactly that; anything else is left as the model sent it.
+    """
+    properties = ((spec or {}).get("parameters") or {}).get("properties") or {}
+    fixed = dict(arguments)
+    for key, value in arguments.items():
+        wanted = (properties.get(key) or {}).get("type")
+        if wanted not in ("array", "object") or not isinstance(value, str):
+            continue
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, list if wanted == "array" else dict):
+            fixed[key] = decoded
+    return fixed
 
 
 def stint_payload(stint: Stint, report: dict[str, Any] | None) -> dict[str, Any]:
