@@ -379,6 +379,9 @@ shorthand for something the CLI will not tell you itself.
 | `delete [RUN]` | **remove runs from disk** and their rows from the index | a run id, or `--older-than DAYS`; `--keep-last N` never deletes the N most recent (default 5) |
 | `prune-lessons` | drop lessons the library has not seen for a while | `--older-than DAYS` (default 180) |
 | `mcp` | run the MCP server on stdio; `.mcp.json` starts the same server through the `supervisor-mcp` entry point | — |
+| `eval run CASES…` | measure roles (planner, reviewer, verifier) on fixed cases, several times each, and summarise how often each check passed | `--variant NAME:route=…,think=on,sampling=model` (repeatable), `--route`, `--repeat N` (default 3), `--role`, `--case`, `--out FILE` |
+| `eval summary FILES…` | summarise record files from earlier `eval run`s | — |
+| `eval score RUN` | a run's own record beside the project's acceptance commands, run on the tree the run left | `--accept CMD` and `--setup CMD` (repeatable), `--tree PATH` |
 
 Every command also takes `-w/--workspace`, `--json` and `--debug`, before or
 after the subcommand; `supervisor --version` prints the version.
@@ -905,6 +908,34 @@ SELECT method, status, COUNT(*) FROM criteria GROUP BY method, status;
 
 ---
 
+## Measuring the harness
+
+A live run is one sample: the planner varies from run to run, so a single run
+cannot tell a fix from luck, and the harness's own count of verified tasks has
+disagreed with the branch in both directions. `supervisor eval` measures
+instead.
+
+```bash
+# Each role on recorded or hand-written cases, three times each, two ways of calling the planner
+supervisor eval run evals/cases --route ollama:qwen3.8-code:latest \
+    --variant harness --variant think:think=on,sampling=model --repeat 3 --out records.jsonl
+
+# A finished run: what it recorded, and whether the project's own acceptance holds on its tree
+supervisor eval score <run_id> --setup "npm ci" \
+    --accept "npm run check" --accept "npx playwright test"
+```
+
+A case is one role, one workspace and one input, in JSON: a repository at a
+commit (`${VAR}` in its path is read from the environment), a set of files, or
+an empty directory -- a green-field project, where the request is all there
+is. Its output is judged by checks that hold for any project (a scope names
+what exists or what the task creates; every criterion is one the harness can
+enforce; a veto cites a file; every criterion handed to a verifier is ruled
+on), and by a person's expectations where a case carries them, with who wrote
+them. `tools/extract_eval_cases.py` turns a recorded run into cases;
+`evals/README.md` describes the ones in this repository. Nothing in `eval`
+changes how a run behaves.
+
 ## Policy
 
 Tuning lives in `supervisor.config.json` under `policy`:
@@ -977,6 +1008,7 @@ src/supervisor_harness/
   agents/          roles and lens selection, host-agent discovery, briefs
   host/            which host is driving, and what it can spawn
   integrations/    the files `supervisor init` writes into a project
+  evals/           batch F: each role measured on fixed cases, and a whole run's scorecard
   core/
     supervisor.py  the state machine driving a run
     lifecycle.py   an agent's life: spawned, attenuated, statused, abandoned

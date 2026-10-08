@@ -1,0 +1,110 @@
+{
+  "id": "p3-18-run19-verifier-add-needs-connection-i18n-keys-to-zgvk",
+  "role": "verifier",
+  "fixture": {
+    "kind": "git",
+    "repo": "${PLANTSANDCLIMATE}",
+    "commit": "cfdb95ca1ce8",
+    "patch": "p3-18-run19.patch"
+  },
+  "request": "Do task P3-18 in docs/PLAN-PHASE-3.md: 'Offline states, and a test that actually goes offline'. Follow docs/AGENT-WORKFLOW.md and read the docs in the task's Reads column (UX-PRINCIPLES.md section 7, ARCHITECTURE.md section Progressive enhancement and offline) before changing anything. A saved garden must work with no connection; a plant or a tile that is not cached says 'needs connection' rather than guessing; user-visible strings only in src/i18n/. Add a Playwright test that drives the app with the network cut. The work is done when the phase's acceptance criteria hold: npm run check, pwsh scripts/verify.ps1 and the Playwright suite (npm run test:e2e) each pass, as separate gates, as in CI.",
+  "input": {
+    "task": {
+      "id": "tsk_01M4DGAC2SZGVK",
+      "run_id": "run_01M4DFED8Y9Q06",
+      "title": "Add 'needs connection' i18n keys to en.json and sv.json",
+      "action": "Add a dedicated offline/needs-connection key (e.g., offline.plant.needsConnection) to both src/i18n/en.json and src/i18n/sv.json. The English value must be an affordance ('This plant needs a connection to load its data'), not an error ('Failed to load'). The Swedish value must be a proper translation. Both keys must be added in the same commit so the parity test passes.",
+      "motivation": "Multiple agents (quality, ux) independently confirmed that no offline-related key exists in either locale file. formatMessage() throws on missing keys, and tests/i18n/index.test.ts enforces key parity between en and sv. The task requires user-visible strings only in src/i18n/.",
+      "rationale_refs": [
+        "fnd_01M4DFNT36392J",
+        "fnd_01M4DG6X7QMTTE",
+        "fnd_01M4DG4CT17BVD",
+        "fnd_01M4DFPJPYN3BV",
+        "fnd_01M4DFNT36YB0P",
+        "fnd_01M4DG5A3B71Y8",
+        "fnd_01M4DFJBGESNG0"
+      ],
+      "dod": [
+        {
+          "id": "dod_01M4DGAC2SMAW5",
+          "statement": "The i18n parity test passes, proving both en.json and sv.json contain the same set of keys including the new offline key",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Pass only if the code and its tests show this: The i18n parity test passes, proving both en.json and sv.json contain the same set of keys including the new offline key. Cite the test that proves it, by file and line, and the code it exercises. A claim with no test behind it fails.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:20:49.563Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2TR8EN",
+          "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:20:49.583Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2TZZ0N",
+          "statement": "No wait, retry or lock this change adds can hang, deadlock or spin without bound",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Follow every wait, retry and lock acquisition the change adds or modifies. Pass only on a bounded-time demonstration: a named test that drives the contended or failing path to completion inside a stated wall-clock bound, with the measured time quoted. Reading the code is not a demonstration. Fail if a retry loop has neither a delay nor an attempt ceiling, if a lock is taken without a timeout, or if a failure path returns to the same wait with nothing changed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:20:49.602Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2T7VPV",
+          "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:20:49.625Z",
+          "verified_by": ""
+        }
+      ],
+      "scope": {
+        "paths": [
+          "src/",
+          "tests/",
+          "playwright.config.ts",
+          "package.json",
+          "docs/"
+        ],
+        "forbidden_paths": [],
+        "topics": [],
+        "out_of_scope": []
+      },
+      "suggested_role": "",
+      "suggested_binding": null,
+      "depends_on": [],
+      "risk": "low",
+      "clamped": [],
+      "effort": "medium",
+      "status": "verified",
+      "decision": "approve",
+      "decision_note": "approved by the harness within the granted envelope",
+      "assigned_agent_id": "agt_01M4DGJKYX8GJW",
+      "attempts": 1,
+      "created_at": "2026-10-08T10:18:07.321Z",
+      "updated_at": "2026-10-08T11:20:49.674Z"
+    },
+    "change_summary": ""
+  },
+  "labelled_by": ""
+}

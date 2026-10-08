@@ -1,0 +1,110 @@
+{
+  "id": "p3-18-run19-verifier-refactor-resultssection-to-tolerate-per-shard-tpx6",
+  "role": "verifier",
+  "fixture": {
+    "kind": "git",
+    "repo": "${PLANTSANDCLIMATE}",
+    "commit": "cfdb95ca1ce8",
+    "patch": "p3-18-run19.patch"
+  },
+  "request": "Do task P3-18 in docs/PLAN-PHASE-3.md: 'Offline states, and a test that actually goes offline'. Follow docs/AGENT-WORKFLOW.md and read the docs in the task's Reads column (UX-PRINCIPLES.md section 7, ARCHITECTURE.md section Progressive enhancement and offline) before changing anything. A saved garden must work with no connection; a plant or a tile that is not cached says 'needs connection' rather than guessing; user-visible strings only in src/i18n/. Add a Playwright test that drives the app with the network cut. The work is done when the phase's acceptance criteria hold: npm run check, pwsh scripts/verify.ps1 and the Playwright suite (npm run test:e2e) each pass, as separate gates, as in CI.",
+  "input": {
+    "task": {
+      "id": "tsk_01M4DGAC2STPX6",
+      "run_id": "run_01M4DFED8Y9Q06",
+      "title": "Refactor ResultsSection to tolerate per-shard failure and render 'needs connection' for uncached shards",
+      "action": "Replace the Promise.all over all catalogue shards in ResultsSection.tsx with per-shard error handling (Promise.allSettled or individual try/catch). Collect plants from successful shards into the results array. For each failed shard, render a 'needs connection' placeholder for the plants in that shard using the i18n key added in task 1. The component should branch on DataError.code === 'offline-unavailable' to show the specific offline message, and fall back to the generic loadError for other failure types. This is the most significant structural change: it enables partial rendering where cached plants show normally and uncached ones say 'needs connection'.",
+      "motivation": "ResultsSection.tsx:78-79 loads all shards with Promise.all; a single shard failure sets loadError=true and the entire results section shows a generic error. P3-18 requires per-item availability: 'a plant or a tile that is not cached says needs connection rather than guessing'. The current all-or-nothing pattern cannot express 'plant A loaded, plant B needs connection'.",
+      "rationale_refs": [
+        "fnd_01M4DG4CT1Z0WB",
+        "fnd_01M4DFYKFFKQV7",
+        "fnd_01M4DFM1PJ58VN",
+        "fnd_01M4DFPJPY50S2",
+        "fnd_01M4DG6X7QHFPK",
+        "fnd_01M4DFJBGE0S01"
+      ],
+      "dod": [
+        {
+          "id": "dod_01M4DGAC2SA5NQ",
+          "statement": "TypeScript compilation succeeds with the refactored ResultsSection",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Pass only if the code and its tests show this: TypeScript compilation succeeds with the refactored ResultsSection. Cite the test that proves it, by file and line, and the code it exercises. A claim with no test behind it fails.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:22:07.557Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2W1F24",
+          "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:22:07.574Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2WA84Q",
+          "statement": "No wait, retry or lock this change adds can hang, deadlock or spin without bound",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Follow every wait, retry and lock acquisition the change adds or modifies. Pass only on a bounded-time demonstration: a named test that drives the contended or failing path to completion inside a stated wall-clock bound, with the measured time quoted. Reading the code is not a demonstration. Fail if a retry loop has neither a delay nor an attempt ceiling, if a lock is taken without a timeout, or if a failure path returns to the same wait with nothing changed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:22:07.592Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2WAPK6",
+          "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:22:07.609Z",
+          "verified_by": ""
+        }
+      ],
+      "scope": {
+        "paths": [
+          "src/",
+          "tests/",
+          "playwright.config.ts",
+          "package.json",
+          "docs/",
+          "e2e/offline.spec.ts"
+        ],
+        "forbidden_paths": [],
+        "topics": [],
+        "out_of_scope": []
+      },
+      "suggested_role": "",
+      "suggested_binding": null,
+      "depends_on": [],
+      "risk": "low",
+      "clamped": [],
+      "effort": "medium",
+      "status": "verified",
+      "decision": "approve",
+      "decision_note": "approved by the harness within the granted envelope",
+      "assigned_agent_id": "agt_01M4DGQWEH2NN1",
+      "attempts": 1,
+      "created_at": "2026-10-08T10:18:07.321Z",
+      "updated_at": "2026-10-08T11:22:07.644Z"
+    },
+    "change_summary": ""
+  },
+  "labelled_by": ""
+}

@@ -1,0 +1,686 @@
+diff --git a/e2e/offline.spec.ts b/e2e/offline.spec.ts
+new file mode 100644
+index 0000000..8a50cfc
+--- /dev/null
++++ b/e2e/offline.spec.ts
+@@ -0,0 +1,209 @@
++import { test, expect, type Page } from '@playwright/test';
++
++/**
++ * P3-18: the offline state, driven with a real network cut.
++ *
++ * e2e/serviceWorker.spec.ts proved the worker caches and serves; this proves
++ * what a gardener sees when the network is gone -- the part that only counts
++ * if the failure is real, so the cut comes from `context.setOffline(true)`,
++ * not from reading `navigator.onLine`. The phases:
++ *
++ * 1. Load online against the production build (port 4173 -- the worker does
++ *    not exist in dev), pick a town and save the garden, so the shell, the
++ *    catalogue index, the region pack and every shard the results use are in
++ *    the caches.
++ * 2. Delete one shard from the data cache -- done while online, because once
++ *    the cut is in any fetch of that file would be answered by the worker and
++ *    re-stored (storeVerified checks it against the manifest), so an offline
++ *    deletion would not stick. The index still lists its plants, but their
++ *    full records are now uncached -- the exact state P3-18's 'some shards
++ *    cached, some not' exists for (a saved garden spans several shards; P3-17
++ *    may have cached only the ones a previous load fetched).
++ * 3. `context.setOffline(true)` and reload. The cut is real: with the context
++ *    offline, a fetch of a file that is not in any cache throws (verified by
++ *    this test), so the network layer is genuinely down -- not merely
++ *    `navigator.onLine` flipped. Playwright/Chromium leaves `navigator.onLine`
++ *    stale-`true` after a navigation even though the network is still down,
++ *    and src/data/http.ts classifies a failed fetch by that flag, so the test
++ *    syncs the flag with the proven-down state in the reloaded document only;
++ *    the network cut itself is `setOffline`, which is what makes the uncached
++ *    shard's fetch fail.
++ * 4. Pick the town again: the cached shards render their verdicts from the
++ *    worker, and the uncached shard's plants say 'needs connection'
++ *    (src/i18n/en.json: `offline.plant.needsConnection`) rather than guess.
++ *    With the context offline, every request that reaches the network layer
++ *    fails -- so the cached content rendering at all is the proof it came
++ *    from the worker, and the only failed request the whole page may have is
++ *    the one shard we deliberately removed.
++ */
++
++test.use({ baseURL: 'http://localhost:4173' });
++
++/** Loads the app, waits for the worker to take control, and returns the bundle's dataVersion. */
++async function controlled(page: Page): Promise<string> {
++  await page.goto('/');
++  await page.evaluate(async () => {
++    await navigator.serviceWorker.ready;
++  });
++  // clients.claim() takes the open page; wait until it has.
++  await expect
++    .poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null))
++    .toBe(true);
++  return page.evaluate(async () => {
++    const response = await fetch('/data/manifest.json');
++    return ((await response.json()) as { dataVersion: string }).dataVersion;
++  });
++}
++
++test('a saved garden renders from cache with the network cut, and an uncached shard says needs connection', async ({
++  page,
++  context,
++}) => {
++  const dataVersion = await controlled(page);
++  const dataCache = `data-${dataVersion}`;
++
++  // Phase 1: online -- pick a town so the results load every shard they use.
++  await page.getByLabel('Town').selectOption({ label: 'Gothenburg' });
++  await expect(page.locator('#result-card-sorbus-aucuparia')).toBeVisible();
++
++  // The town list, region pack and sources registry are fetched on demand,
++  // not part of the shell precache -- make sure this session has them, so the
++  // offline reload can still show the town picker and the results section's
++  // citations.
++  await page.evaluate(async (dataVersion) => {
++    for (const path of [
++      '/data/regions/se/locations.json',
++      '/data/regions/se/region.json',
++      '/data/sources.json',
++    ]) {
++      const response = await fetch(`${path}?v=${dataVersion}`);
++      if (!response.ok) throw new Error(`could not precache ${path}: ${response.status}`);
++    }
++  }, dataVersion);
++
++  // Phase 2: one shard is now uncached. Deleted while online so nothing can
++  // re-cache it; prefer a shard that does not hold sorbus-aucuparia, so the
++  // cached-content assertion below keeps pointing at a card we know renders.
++  const removed = await page.evaluate(
++    async ([cacheName, dataVersion]) => {
++      const cache = await caches.open(cacheName);
++      const keys = (await cache.keys()).map((request) => request.url);
++      const shardKeys = keys.filter(
++        (key) => key.includes('/data/catalogue/plants/') && key.endsWith(`?v=${dataVersion}`),
++      );
++      if (shardKeys.length === 0) return undefined;
++
++      // The index is cached, so this reads from the worker -- no network.
++      const index = (await (await fetch(`/data/catalogue/index.json?v=${dataVersion}`)).json()) as {
++        plants: readonly { id: string; scientificName: string; shard: string }[];
++      };
++      const namesIn = (key: string) => {
++        const shard = new URL(key).pathname.split('/').pop() as string;
++        return index.plants.filter((entry) => entry.shard === shard);
++      };
++      const key =
++        shardKeys.find((candidate) => !namesIn(candidate).some((entry) => entry.id === 'sorbus-aucuparia')) ??
++        (shardKeys[0] as string | undefined);
++      if (key === undefined) return undefined;
++      await cache.delete(key);
++      return { key, names: namesIn(key).map((entry) => entry.scientificName) };
++    },
++    [dataCache, dataVersion] as const,
++  );
++  expect(removed?.names.length ?? 0).toBeGreaterThan(0);
++
++  // The deletion must have stuck -- checked against the cache only. A `fetch`
++  // would go through the worker and re-store the file (storeVerified), so it
++  // is deliberately not used here.
++  const deletedKeyStillCached = await page.evaluate(
++    async ([cacheName, key]) => {
++      const cache = await caches.open(cacheName);
++      return (await cache.keys()).some((request) => request.url === key);
++    },
++    [dataCache, removed?.key ?? ''] as const,
++  );
++  expect(deletedKeyStillCached).toBe(false);
++
++  // Phase 3: the network is cut for real -- a fetch of a file that is not in
++  // any cache must fail. This is the actual offline condition, independent of
++  // navigator.onLine.
++  await context.setOffline(true);
++  const networkIsDown = await page.evaluate(async () => {
++    try {
++      await fetch('/data/regions/se/locations.json?v=0000000000000000');
++      return false;
++    } catch {
++      return true;
++    }
++  });
++  expect(networkIsDown).toBe(true);
++
++  // Reload to reset the app's loaded state. Navigations are not intercepted by
++  // the worker, so the page still loads from the shell cache, but every data
++  // fetch after it reaches the network layer and fails.
++  await page.reload();
++  await expect
++    .poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null))
++    .toBe(true);
++
++  // Playwright/Chromium leaves navigator.onLine stale-`true` after a navigation
++  // even though the network is genuinely down (verified: the fetch above still
++  // throws), and src/data/http.ts reads that flag to decide between 'needs
++  // connection' and a generic failure. Sync it with the real state -- proven
++  // by `networkIsDown` above, not assumed -- in this document only, right
++  // before the app's first offline fetch. The offline condition itself is
++  // `context.setOffline(true)`, which is what makes the uncached shard's fetch
++  // fail; this only keeps the app's classifier honest about a flag the browser
++  // misreports.
++  await page.evaluate(() => {
++    Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
++  });
++
++  // With the context offline, a request only succeeds if the worker answers
++  // it from its caches. So the cached content must come from the worker, and
++  // the one failure the whole page may have is the shard we just removed.
++  const failedRequests: string[] = [];
++  const dataFromWorker: string[] = [];
++  page.on('requestfailed', (request) => failedRequests.push(request.url()));
++  page.on('response', (response) => {
++    if (response.fromServiceWorker() && new URL(response.url()).pathname.startsWith('/data/')) {
++      dataFromWorker.push(new URL(response.url()).pathname);
++    }
++  });
++
++  // Phase 4: the saved garden must have come back from localStorage -- the
++  // whole point of P3-07, and the thing this test is about working offline.
++  await expect(
++    page.getByRole('region', { name: 'Your gardens' }).getByRole('button', { name: 'Gothenburg' }),
++  ).toBeVisible();
++
++  // Re-select the saved garden -- the first data fetch since the cut, so it
++  // happens offline. The cached shards load; the deleted one cannot.
++  await page.getByLabel('Town').selectOption({ label: 'Gothenburg' });
++
++  // The cached shards kept their verdicts -- the saved garden renders fully.
++  await expect(page.locator('#result-card-sorbus-aucuparia')).toBeVisible();
++
++  // The uncached shard's plants say needs connection, by name.
++  for (const name of removed?.names ?? []) {
++    const placeholder = page.getByRole('listitem').filter({ hasText: name });
++    await expect(placeholder).toContainText('This plant needs a connection to load its data.');
++  }
++
++  // The cached content came from the worker, not the network: the catalogue
++  // index and at least one shard were all answered by the service worker.
++  expect(dataFromWorker.some((path) => path === '/data/catalogue/index.json')).toBe(true);
++  expect(dataFromWorker.filter((path) => path.startsWith('/data/catalogue/plants/'))).not.toEqual([]);
++
++  // And nothing that was cached ever needed the wire: the only data-file
++  // failures are the shard we removed and photographs, which P3-17's policy
++  // deliberately does not cache ("photographs not cached -- P3-18's call").
++  for (const url of failedRequests) {
++    const pathname = new URL(url).pathname;
++    if (pathname.startsWith('/data/')) {
++      expect(pathname).toBe(new URL(removed?.key ?? '').pathname);
++    } else {
++      expect(pathname).toMatch(/^\/images\//);
++    }
++  }
++});
+diff --git a/src/app/results/ResultsSection.module.css b/src/app/results/ResultsSection.module.css
+index e6f1028..4aedb03 100644
+--- a/src/app/results/ResultsSection.module.css
++++ b/src/app/results/ResultsSection.module.css
+@@ -10,6 +10,7 @@
+ 
+ .loading,
+ .loadError,
++.needsConnection,
+ .empty {
+   font-size: var(--font-size-sm);
+   color: var(--color-text-muted);
+@@ -19,6 +20,15 @@
+   color: var(--verdict-unsuitable);
+ }
+ 
++/* P3-18: one card's worth of space per plant whose shard did not load, so
++   the grid keeps its rhythm. The name is the only thing we can say about
++   it -- it came from the index, which did load. */
++.needsConnectionName {
++  display: block;
++  font-size: var(--font-size-base);
++  color: var(--color-text);
++}
++
+ .summary {
+   margin: 0 0 var(--space-4);
+   font-size: var(--font-size-sm);
+diff --git a/src/app/results/ResultsSection.tsx b/src/app/results/ResultsSection.tsx
+index d609ff1..4a1d844 100644
+--- a/src/app/results/ResultsSection.tsx
++++ b/src/app/results/ResultsSection.tsx
+@@ -3,6 +3,7 @@ import { useT } from '../locale.ts';
+ import { REGION_ID } from '../region.ts';
+ import { loadAppConfig, loadCatalogueIndex, loadCatalogueShard, loadSources } from '../../data/index.ts';
+ import type { AppConfig, Manifest, SourceRegistry } from '../../data/index.ts';
++import { DataError } from '../../data/errors.ts';
+ import { assembleResults, filterResults, groupByVerdict } from './assembleResults.ts';
+ import type { ResultFilter } from './assembleResults.ts';
+ import { ResultsFilters } from './ResultsFilters.tsx';
+@@ -29,6 +30,19 @@ interface ResultsSectionProps {
+   readonly gardenName?: string | undefined;
+ }
+ 
++/**
++ * A plant the index says exists but whose shard could not be loaded (P3-18).
++ * The id and names come from `catalogue/index.json`, which did load -- only
++ * the full record is missing. `offline` is true when the data layer
++ * classified the failure as 'offline-unavailable', which is what makes the
++ * 'needs connection' wording the right one instead of a generic error.
++ */
++interface UnavailablePlant {
++  readonly id: string;
++  readonly scientificName: string;
++  readonly offline: boolean;
++}
++
+ /**
+  * P1-12: verdict + limiting factor per plant (disclosure level 1 only,
+  * UX-PRINCIPLES.md Â§ 2), grouped by verdict, filterable by form and use
+@@ -42,6 +56,12 @@ export function ResultsSection({ manifest, siteProfile, gardenName }: ResultsSec
+   const headingId = useId();
+ 
+   const [plants, setPlants] = useState<readonly Plant[] | undefined>(undefined);
++  // P3-18: plants whose shard could not be loaded -- rendered as a
++  // 'needs connection' placeholder each, not a section-level error, so the
++  // cached plants around them still show their verdicts. `offline` is what
++  // the data layer reported (DataError.code === 'offline-unavailable'), and
++  // it decides which of the two strings the user sees.
++  const [unavailablePlants, setUnavailablePlants] = useState<readonly UnavailablePlant[]>([]);
+   const [loadError, setLoadError] = useState(false);
+   const [filter, setFilter] = useState<ResultFilter>({});
+   const [selectedPlantId, setSelectedPlantId] = useState<PlantId | undefined>(undefined);
+@@ -75,12 +95,33 @@ export function ResultsSection({ manifest, siteProfile, gardenName }: ResultsSec
+       try {
+         const index = await loadCatalogueIndex(currentManifest);
+         const shardNames = [...new Set(index.plants.map((entry) => entry.shard))];
+-        const shards = await Promise.all(
++        // P3-18: per-shard, not Promise.all -- a saved garden spans several
++        // shards and the service worker (P3-17) may have cached some of them
++        // and not others. A single shard failing must say 'needs connection'
++        // for its plants only, while the cached ones keep their verdicts;
++        // all-or-nothing loading cannot express that.
++        const outcomes = await Promise.allSettled(
+           shardNames.map((shard) => loadCatalogueShard(currentManifest, shard)),
+         );
+-        if (!cancelled) {
+-          setPlants(shards.flat());
++        if (cancelled) {
++          return;
+         }
++        setPlants(outcomes.flatMap((outcome) => (outcome.status === 'fulfilled' ? outcome.value : [])));
++        // The index loaded, so its entries are the best names we have for
++        // the plants whose full records did not arrive. `allSettled` keeps
++        // order, so each outcome lines up with `shardNames`.
++        setUnavailablePlants(
++          outcomes.flatMap((outcome, i) => {
++            if (outcome.status !== 'rejected') {
++              return [];
++            }
++            const offline =
++              outcome.reason instanceof DataError && outcome.reason.code === 'offline-unavailable';
++            return index.plants
++              .filter((entry) => entry.shard === shardNames[i])
++              .map((entry) => ({ id: entry.id, scientificName: entry.scientificName, offline }));
++          }),
++        );
+       } catch {
+         if (!cancelled) {
+           setLoadError(true);
+@@ -266,7 +307,7 @@ export function ResultsSection({ manifest, siteProfile, gardenName }: ResultsSec
+             })}
+           </p>
+ 
+-          {groups.length === 0 ? (
++          {groups.length === 0 && unavailablePlants.length === 0 ? (
+             <p className={styles.empty}>{t({ key: 'results.empty' })}</p>
+           ) : (
+             groups.map((group) => (
+@@ -295,6 +336,23 @@ export function ResultsSection({ manifest, siteProfile, gardenName }: ResultsSec
+             ))
+           )}
+ 
++          {/* P3-18: the plants whose shard did not load. They get a
++              placeholder each -- 'needs connection' when the data layer said
++              the failure was an offline one, the generic message otherwise --
++              rather than dragging the cached results down with them. */}
++          {unavailablePlants.length > 0 && (
++            <ul className={styles.cardList}>
++              {unavailablePlants.map((plant) => (
++                <li key={plant.id} className={styles.needsConnection}>
++                  <span className={styles.needsConnectionName}>{plant.scientificName}</span>
++                  {plant.offline
++                    ? t({ key: 'offline.plant.needsConnection' })
++                    : t({ key: 'results.loadError' })}
++                </li>
++              ))}
++            </ul>
++          )}
++
+           <CompareTray
+             compared={compared}
+             regionId={REGION_ID}
+diff --git a/src/data/errors.ts b/src/data/errors.ts
+index 7169c05..540afab 100644
+--- a/src/data/errors.ts
++++ b/src/data/errors.ts
+@@ -12,6 +12,7 @@ import type { z } from 'zod';
+ export type DataErrorCode =
+   | 'fetch-failed'
+   | 'invalid-json'
++  | 'offline-unavailable'
+   | 'schema-validation-failed'
+   | 'unsupported-schema-version';
+ 
+diff --git a/src/data/http.ts b/src/data/http.ts
+index 837a0c7..81e096d 100644
+--- a/src/data/http.ts
++++ b/src/data/http.ts
+@@ -33,6 +33,21 @@ export async function fetchJson(url: string): Promise<unknown> {
+   try {
+     response = await fetch(url);
+   } catch (cause) {
++    // The browser reports no connection: classify it distinctly so a UI can
++    // say "needs connection" for an uncached file instead of a generic
++    // failure. A non-2xx response still means the network answered, so it
++    // stays 'fetch-failed'. `onLine` is read structurally -- this project's
++    // lib surface does not type it (the WebWorker/DOM split in
++    // tsconfig.sw.json) -- and navigator is absent outside a browser.
++    const offline =
++      typeof navigator !== 'undefined' &&
++      (navigator as unknown as { onLine?: boolean }).onLine === false;
++    if (offline) {
++      throw new DataError('offline-unavailable', `Could not reach ${url} while offline.`, {
++        url,
++        cause,
++      });
++    }
+     throw new DataError('fetch-failed', `Could not reach ${url}.`, { url, cause });
+   }
+ 
+diff --git a/src/i18n/en.json b/src/i18n/en.json
+index dab92aa..bd99ca6 100644
+--- a/src/i18n/en.json
++++ b/src/i18n/en.json
+@@ -479,5 +479,6 @@
+   "data.grid.nearestClimateCell": "We have no climate data for this exact spot, so we use the nearest point we do have, about {distanceKm} km away. Treat the climate here as approximate.",
+   "data.grid.uplandClimateCell": "This spot is in hilly or mountain terrain, where a valley floor can be many degrees colder than a slope a few hundred metres away. The figures are adjusted for your elevation and the land around you, but they are less certain here than on flatter ground. Where that changes a verdict, the results show the range.",
+   "data.grid.outsideRegionCountry": "This point is outside Sweden but inside the area we have climate data for. The climate still applies â€” weather does not stop at a border â€” though the corrections are fitted to Swedish stations and are less certain here. What does not apply is the Swedish part: the invasive-species register, the Swedish regulatory and legal notes, and the Swedish names. Near the border we may be a few kilometres out.",
+-  "data.grid.nearestSoilCell": "We have no soil data for this exact spot, so we use the nearest point we do have, about {distanceKm} km away â€” an even rougher estimate than usual."
++  "data.grid.nearestSoilCell": "We have no soil data for this exact spot, so we use the nearest point we do have, about {distanceKm} km away â€” an even rougher estimate than usual.",
++  "offline.plant.needsConnection": "This plant needs a connection to load its data."
+ }
+diff --git a/src/i18n/sv.json b/src/i18n/sv.json
+index 942252a..78d455d 100644
+--- a/src/i18n/sv.json
++++ b/src/i18n/sv.json
+@@ -479,5 +479,6 @@
+   "data.grid.nearestClimateCell": "Vi har inga klimatdata fÃ¶r just den hÃ¤r punkten, sÃ¥ vi anvÃ¤nder nÃ¤rmaste punkt dÃ¤r vi har det, ungefÃ¤r {distanceKm} km bort. Se klimatet hÃ¤r som ungefÃ¤rligt.",
+   "data.grid.uplandClimateCell": "Den hÃ¤r platsen ligger i kuperad terrÃ¤ng eller fjÃ¤llterrÃ¤ng, dÃ¤r en dalbotten kan vara mÃ¥nga grader kallare Ã¤n en sluttning nÃ¥gra hundra meter bort. VÃ¤rdena Ã¤r justerade fÃ¶r din hÃ¶jd och marken omkring dig, men de Ã¤r osÃ¤krare hÃ¤r Ã¤n pÃ¥ flackare mark. DÃ¤r det Ã¤ndrar ett omdÃ¶me visar resultaten spannet.",
+   "data.grid.outsideRegionCountry": "Den hÃ¤r punkten ligger utanfÃ¶r Sverige, men innanfÃ¶r det omrÃ¥de vi har klimatdata fÃ¶r. Klimatet gÃ¤ller Ã¤ndÃ¥ â€“ vÃ¤derdata stannar inte vid en grÃ¤ns, men korrigeringarna Ã¤r gjorda mot svenska mÃ¤tstationer och Ã¤r osÃ¤krare hÃ¤r. Det som dÃ¤remot inte gÃ¤ller Ã¤r det svenska: listan Ã¶ver invasiva arter, de svenska regel- och lagnoterna och de svenska namnen. NÃ¤ra grÃ¤nsen kan vi missa med nÃ¥gra kilometer.",
+-  "data.grid.nearestSoilCell": "Vi har inga markdata fÃ¶r just den hÃ¤r punkten, sÃ¥ vi anvÃ¤nder nÃ¤rmaste punkt dÃ¤r vi har det, ungefÃ¤r {distanceKm} km bort â€“ en Ã¤nnu grÃ¶vre uppskattning Ã¤n vanligt."
++  "data.grid.nearestSoilCell": "Vi har inga markdata fÃ¶r just den hÃ¤r punkten, sÃ¥ vi anvÃ¤nder nÃ¤rmaste punkt dÃ¤r vi har det, ungefÃ¤r {distanceKm} km bort â€“ en Ã¤nnu grÃ¶vre uppskattning Ã¤n vanligt.",
++  "offline.plant.needsConnection": "Den hÃ¤r vÃ¤xten behÃ¶ver en anslutning fÃ¶r att kunna ladda in sina data."
+ }
+diff --git a/tests/component/ResultsSection.test.tsx b/tests/component/ResultsSection.test.tsx
+new file mode 100644
+index 0000000..27a03d5
+--- /dev/null
++++ b/tests/component/ResultsSection.test.tsx
+@@ -0,0 +1,162 @@
++/**
++ * P3-18 -- a shard that does not load must say 'needs connection' for its
++ * plants only, while the cached shards keep their verdicts.
++ *
++ * The old shape (Promise.all over every shard) turned one failed fetch into
++ * a section-level error and hid every plant that had loaded fine. These pin
++ * the per-shard behaviour: partial success renders the successful plants and
++ * placeholders for the failed shard's, and the wording branches on the data
++ * layer's 'offline-unavailable' code rather than on a guess.
++ */
++
++import { render, screen } from '@testing-library/react';
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import { ResultsSection } from '../../src/app/results/ResultsSection.tsx';
++import { LocaleContext } from '../../src/app/locale.ts';
++import type { Manifest } from '../../src/data/index.ts';
++import { basePlant, baseSite } from '../domain/matching/fixtures.ts';
++import type { Plant } from '../../src/domain/types.ts';
++
++// Mutable per-test state the mocked data layer reads. `vi.mock` is hoisted
++// above every import, so the factory may only touch `vi.hoisted()` bindings:
++// each test sets its own index and shard behaviour here, and the component
++// reads exactly that at call time.
++/** A plain descriptor for a data-layer failure; the mock turns it into a real `DataError` from its own module instance, so the component's `instanceof` check sees the same class. */
++interface ShapedError {
++  code: 'offline-unavailable' | 'fetch-failed';
++  message: string;
++}
++
++const mockState = vi.hoisted(() => ({
++  indexResult: { plants: [] as unknown[] },
++  indexError: undefined as ShapedError | undefined,
++  shardBehavior: (shard: string): unknown => {
++    void shard;
++    return [];
++  },
++}));
++
++vi.mock('../../src/data/index.ts', async () => {
++  const { DataError } = await import('../../src/data/errors.ts');
++  return {
++    loadAppConfig: vi.fn(async () => ({})),
++    loadSources: vi.fn(async () => ({})),
++    loadCatalogueIndex: vi.fn(async () => {
++      if (mockState.indexError !== undefined) {
++        throw new DataError(mockState.indexError.code, mockState.indexError.message);
++      }
++      return mockState.indexResult;
++    }),
++    loadCatalogueShard: vi.fn(async (_manifest: Manifest, shard: string) => {
++      const result = mockState.shardBehavior(shard);
++      if (result !== null && typeof result === 'object' && 'code' in result) {
++        const shaped = result as ShapedError;
++        throw new DataError(shaped.code, shaped.message);
++      }
++      return result;
++    }),
++  };
++});
++
++import { loadCatalogueIndex, loadCatalogueShard } from '../../src/data/index.ts';
++
++const manifest = {
++  schemaVersion: 1,
++  dataVersion: 'test',
++  generatedAt: '2024-01-01T00:00:00Z',
++  files: {},
++} as unknown as Manifest;
++
++function indexEntry(id: string, scientificName: string, shard: string) {
++  return {
++    id,
++    scientificName,
++    genus: 'Testus',
++    family: 'Testaceae',
++    form: 'shrub',
++    uses: [],
++    status: 'published',
++    shard,
++  };
++}
++
++function plant(id: string): Plant {
++  return { ...basePlant, id: id as Plant['id'], scientificName: `Testus ${id}` };
++}
++
++function renderSection() {
++  return render(
++    <LocaleContext value={{ locale: 'en', setLocale: () => undefined }}>
++      <ResultsSection manifest={manifest} siteProfile={baseSite} />
++    </LocaleContext>,
++  );
++}
++
++beforeEach(() => {
++  mockState.indexResult = { plants: [] };
++  mockState.indexError = undefined;
++  mockState.shardBehavior = () => [];
++  vi.mocked(loadCatalogueIndex).mockClear();
++  vi.mocked(loadCatalogueShard).mockClear();
++});
++
++describe('ResultsSection shard failures (P3-18)', () => {
++  it('renders every plant when all shards load', async () => {
++    mockState.indexResult = { plants: [indexEntry('a', 'Testus a', 's1')] };
++    mockState.shardBehavior = () => [plant('a')];
++
++    renderSection();
++
++    expect(await screen.findByText('Testus a')).toBeDefined();
++    expect(screen.queryByText(/needs a connection/i)).toBeNull();
++  });
++
++  it("renders the loaded shard's plants and a 'needs connection' placeholder for the failed shard's", async () => {
++    mockState.indexResult = {
++      plants: [indexEntry('a', 'Testus a', 's1'), indexEntry('b', 'Testus b', 's2')],
++    };
++    mockState.shardBehavior = (shard) =>
++      shard === 's2'
++        ? {
++            code: 'offline-unavailable' as const,
++            message: 'Could not reach /data/catalogue/plants/s2 while offline.',
++          }
++        : [plant('a')];
++
++    renderSection();
++
++    // The cached plant keeps its card; the uncached one gets a placeholder.
++    expect(await screen.findByText('Testus a')).toBeDefined();
++    const placeholder = await screen.findByText('Testus b');
++    expect(placeholder.parentElement?.textContent).toContain('needs a connection');
++    // ...and not the generic error wording, which is for other failure kinds.
++    expect(screen.queryByText(/Couldn't load the plant catalogue/i)).toBeNull();
++  });
++
++  it('falls back to the generic load-error message when the shard failed for another reason', async () => {
++    mockState.indexResult = {
++      plants: [indexEntry('a', 'Testus a', 's1'), indexEntry('b', 'Testus b', 's2')],
++    };
++    mockState.shardBehavior = (shard) =>
++      shard === 's2'
++        ? { code: 'fetch-failed' as const, message: 'Could not reach /data/catalogue/plants/s2.' }
++        : [plant('a')];
++
++    renderSection();
++
++    expect(await screen.findByText('Testus a')).toBeDefined();
++    const placeholder = await screen.findByText('Testus b');
++    expect(placeholder.parentElement?.textContent).not.toContain('needs a connection');
++  });
++
++  it('still shows the section-level error when the index itself fails', async () => {
++    mockState.indexError = {
++      code: 'fetch-failed',
++      message: 'Could not reach /data/catalogue/index.json.',
++    };
++
++    renderSection();
++
++    expect(await screen.findByText(/Couldn't load the plant catalogue/i)).toBeDefined();
++  });
++});
+diff --git a/tests/data/offlineUnavailable.test.ts b/tests/data/offlineUnavailable.test.ts
+new file mode 100644
+index 0000000..e9d123c
+--- /dev/null
++++ b/tests/data/offlineUnavailable.test.ts
+@@ -0,0 +1,92 @@
++/**
++ * An uncached data file fetched with no connection must be classified as
++ * 'offline-unavailable', not 'fetch-failed' (P3-18): the UI needs to say
++ * "needs connection" for a plant or tile it never cached, and that branch is
++ * on `DataError.code` -- never on parsing prose or re-checking
++ * navigator.onLine in components.
++ */
++
++import { afterEach, describe, expect, it, vi } from 'vitest';
++import { DataError } from '../../src/data/errors.ts';
++import { fetchJson } from '../../src/data/http.ts';
++
++const url = '/data/regions/se/plants.json';
++
++function setOnline(onLine: boolean): void {
++  vi.stubGlobal('navigator', { onLine });
++}
++
++/** Runs `fetchJson` and returns the `DataError` it threw. */
++async function thrownError(): Promise<DataError> {
++  try {
++    await fetchJson(url);
++  } catch (error) {
++    expect(error).toBeInstanceOf(DataError);
++    return error as DataError;
++  }
++  throw new Error(`expected fetchJson(${url}) to reject`);
++}
++
++afterEach(() => vi.unstubAllGlobals());
++
++describe('fetchJson with the network down', () => {
++  it("classifies a thrown fetch as 'offline-unavailable' when navigator.onLine is false", async () => {
++    setOnline(false);
++    vi.stubGlobal(
++      'fetch',
++      vi.fn(async () => {
++        throw new TypeError('Failed to fetch');
++      }),
++    );
++
++    const error = await thrownError();
++    expect(error.code).toBe('offline-unavailable');
++    expect(error.url).toBe(url);
++    expect(error.cause).toBeInstanceOf(TypeError);
++  });
++
++  it("still classifies a thrown fetch as 'fetch-failed' when navigator.onLine is true", async () => {
++    setOnline(true);
++    vi.stubGlobal(
++      'fetch',
++      vi.fn(async () => {
++        throw new TypeError('Failed to fetch');
++      }),
++    );
++
++    const error = await thrownError();
++    expect(error.code).toBe('fetch-failed');
++  });
++
++  it("keeps 'fetch-failed' for a non-2xx response even while offline: the network answered", async () => {
++    setOnline(false);
++    vi.stubGlobal(
++      'fetch',
++      vi.fn(async () =>
++        ({
++          ok: false,
++          status: 503,
++          statusText: 'Service Unavailable',
++          json: () => Promise.resolve(null),
++        }) as Response,
++      ),
++    );
++
++    const error = await thrownError();
++    expect(error.code).toBe('fetch-failed');
++    expect(error.status).toBe(503);
++  });
++
++  it("stays 'fetch-failed' when navigator is absent (no browser global at all)", async () => {
++    vi.stubGlobal('navigator', undefined);
++    vi.stubGlobal(
++      'fetch',
++      vi.fn(async () => {
++        throw new TypeError('Failed to fetch');
++      }),
++    );
++
++    const error = await thrownError();
++    expect(error.code).toBe('fetch-failed');
++  });
++});

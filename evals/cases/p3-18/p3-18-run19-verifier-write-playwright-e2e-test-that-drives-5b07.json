@@ -1,0 +1,111 @@
+{
+  "id": "p3-18-run19-verifier-write-playwright-e2e-test-that-drives-5b07",
+  "role": "verifier",
+  "fixture": {
+    "kind": "git",
+    "repo": "${PLANTSANDCLIMATE}",
+    "commit": "cfdb95ca1ce8",
+    "patch": "p3-18-run19.patch"
+  },
+  "request": "Do task P3-18 in docs/PLAN-PHASE-3.md: 'Offline states, and a test that actually goes offline'. Follow docs/AGENT-WORKFLOW.md and read the docs in the task's Reads column (UX-PRINCIPLES.md section 7, ARCHITECTURE.md section Progressive enhancement and offline) before changing anything. A saved garden must work with no connection; a plant or a tile that is not cached says 'needs connection' rather than guessing; user-visible strings only in src/i18n/. Add a Playwright test that drives the app with the network cut. The work is done when the phase's acceptance criteria hold: npm run check, pwsh scripts/verify.ps1 and the Playwright suite (npm run test:e2e) each pass, as separate gates, as in CI.",
+  "input": {
+    "task": {
+      "id": "tsk_01M4DGAC2S5B07",
+      "run_id": "run_01M4DFED8Y9Q06",
+      "title": "Write Playwright e2e test that drives the app with network cut",
+      "action": "Create e2e/offline.spec.ts using the production build on port 4173 (where the service worker is registered). The test must: (1) load the app online to populate SW caches and save a garden, (2) call context.setOffline(true), (3) reload and assert the saved garden renders fully with cached content, (4) attempt to view an uncached plant or tile and assert the 'needs connection' i18n string is visible, (5) verify no network requests are made for cached content. Follow the patterns of the existing e2e/serviceWorker.spec.ts. The test must use context.setOffline(true) (not just checking navigator.onLine) to simulate a real network failure.",
+      "motivation": "The task explicitly requires 'a test that actually goes offline' and 'Playwright drives it with the network cut, because an offline claim no one has tested offline is the kind of promise this repo does not make.' No such test exists. The service worker is registered in production only (port 4173), so the dev server cannot be used.",
+      "rationale_refs": [
+        "fnd_01M4DFPJPYR97Q",
+        "fnd_01M4DG6X7Q78M9",
+        "fnd_01M4DFJBGED43E",
+        "fnd_01M4DFNT36PY2H",
+        "fnd_01M4DFM1PJTKNX",
+        "fnd_01M4DG4CT1JV03"
+      ],
+      "dod": [
+        {
+          "id": "dod_01M4DGAC2S7EV0",
+          "statement": "The Playwright offline test passes when run against the production build",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Pass only if the code and its tests show this: The Playwright offline test passes when run against the production build. Cite the test that proves it, by file and line, and the code it exercises. A claim with no test behind it fails.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:21:31.789Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2XNDZJ",
+          "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:21:31.807Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2X5AFF",
+          "statement": "No wait, retry or lock this change adds can hang, deadlock or spin without bound",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Follow every wait, retry and lock acquisition the change adds or modifies. Pass only on a bounded-time demonstration: a named test that drives the contended or failing path to completion inside a stated wall-clock bound, with the measured time quoted. Reading the code is not a demonstration. Fail if a retry loop has neither a delay nor an attempt ceiling, if a lock is taken without a timeout, or if a failure path returns to the same wait with nothing changed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:21:31.829Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2XT3HP",
+          "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:21:31.851Z",
+          "verified_by": ""
+        }
+      ],
+      "scope": {
+        "paths": [
+          "src/",
+          "tests/",
+          "playwright.config.ts",
+          "package.json",
+          "docs/",
+          "e2e/offline.spec.ts",
+          "e2e/serviceWorker.spec.ts"
+        ],
+        "forbidden_paths": [],
+        "topics": [],
+        "out_of_scope": []
+      },
+      "suggested_role": "",
+      "suggested_binding": null,
+      "depends_on": [],
+      "risk": "low",
+      "clamped": [],
+      "effort": "medium",
+      "status": "verified",
+      "decision": "approve",
+      "decision_note": "approved by the harness within the granted envelope",
+      "assigned_agent_id": "agt_01M4DHD8TK4ZNK",
+      "attempts": 1,
+      "created_at": "2026-10-08T10:18:07.321Z",
+      "updated_at": "2026-10-08T11:21:31.898Z"
+    },
+    "change_summary": ""
+  },
+  "labelled_by": ""
+}

@@ -1,0 +1,26 @@
+{
+  "id": "greenfield-wordfreq-planner",
+  "role": "planner",
+  "fixture": {
+    "kind": "files",
+    "files": {}
+  },
+  "request": "Create a small Python command-line tool, wordfreq, that prints the ten most frequent words in a text file, case-insensitively and ignoring punctuation. Package it under src/wordfreq with a console entry point, and test it with pytest. The work is done when python -m pytest passes.",
+  "input": {
+    "findings": []
+  },
+  "checks": [
+    "answered",
+    "criteria_enforceable",
+    "mechanical_criterion",
+    "scopes_specific",
+    "scopes_grounded",
+    "inspections_grounded",
+    {
+      "check": "task_count",
+      "min": 1,
+      "max": 6
+    }
+  ],
+  "labelled_by": "Claude (Opus 5.5), written as a green-field case: the request is all there is"
+}

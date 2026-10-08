@@ -614,24 +614,63 @@ PRs the owner would merge.
 
 ### Batch F — Does the model do what the harness asks?
 
-An eval in the shape of `turnstone-eval`, aimed at the harness's own directives
-rather than at tool use in general:
+An eval in the shape of `turnstone-eval`, aimed at the harness's own roles
+rather than at tool use in general. **Retargeted after go-live run 22** (see
+"After run 22" below): as first written it covered the implementer's
+directives -- `refocus`, `deepen`, `narrow`, `fails_before` -- and by run 19
+that was the half that worked. The failures had moved to the roles that plan
+and judge, which nothing measured.
 
-- small fixture workspaces;
-- per case: the directive or brief, the expected behaviour, the *forbidden*
-  behaviour (writing outside scope, claiming done with nothing read), several
-  runs, and held-out cases;
-- covering `refocus`, `deepen` (coverage), `narrow`, parallel dispatch, and
-  `fails_before` fixing.
+**What it measures.** One role at a time, called the way the harness calls it,
+on a fixed input, several times:
 
-The output is a table of model × role × adherence. It says which roles a local
-model can hold and which need a frontier one, which is the measured version of
-"Hermes frustrates me, Claude Code doesn't".
+- the **planner** (the synthesis that writes tasks): does every task's scope
+  name what exists or what the task creates; is every criterion one the
+  harness can enforce; do two tasks claim the same change; does a task
+  contradict how the project says it is checked;
+- the **reviewer**: does it veto what a person would, and let through what a
+  person would;
+- the **verifier**: does it rule on every open criterion, and correctly;
+- the **checkpoint**: do its corrections name the task they are for.
+
+**Generic, not P3-18.** A case is a workspace and an input. The workspace is
+a fixture -- a repository at a commit, a small project, or *an empty
+directory with nothing but a prompt*, because a run may start a green-field
+project -- and the checks are properties of the role's output that hold for
+any project (scopes exist or will be created, criteria are enforceable, a veto
+names a file), with project-specific expectations only where a case was
+labelled by a person. Cases recorded from go-live runs are one source; a
+green-field case written by hand is another; both are needed.
+
+**What it varies.** The model, and how the role is called: in one shot or as
+a conversation, thinking on or off, the harness's temperature or the model's
+own sampling. That is what lets a change to a role -- above all the planner --
+be measured on recorded inputs in minutes, before a live run, and what says
+which roles a local model can hold in any setting and which need another
+model: the measured version of "Hermes frustrates me, Claude Code doesn't".
+
+**What it gives back.** A table of role × model × setting × pass rate, with
+the spread across repetitions; and, for a whole run, a scorecard: the
+project's own acceptance commands run on the run's branch, beside what the
+harness itself recorded, because the two diverged in both directions.
 
 It reads nothing from security-eval's benchmarks. Its output is what
 security-eval's RQ4 needs from this side.
 
 *Changes the harness condition:* no. It is a tool, and observe-only.
+
+> **Built** (`src/supervisor_harness/evals/`, `supervisor eval`). Three roles
+> -- planner (its first answer, before the harness repairs anything), reviewer
+> (`_review_task`), verifier (`_converse_verifier`) -- on 35 cases: recorded
+> from go-live runs 13, 18, 19 and 21, and written by hand for green-field
+> projects that start from an empty directory. Variants for the one-shot
+> planner: thinking, and the model's own sampling. `eval score` puts a run's
+> record beside the project's acceptance commands run on its tree. The
+> checkpoint is not covered yet. The first smoke run on the local model: the
+> reviewer vetoed a green-field off-request task, the verifier caught code
+> that did not do what the implementer said, and the planner gave a
+> green-field plan the whole workspace as every task's scope and inspection
+> criteria with no file to look in -- the same two defects the live runs had.
 
 ### Batch G — A reviewer that can only veto *(conditional)*
 
@@ -859,6 +898,43 @@ owner would merge. Measured against runs 4-9.
 > liveness bar; a correction that names no task goes to the tasks whose files
 > it names, and to every task only when it names none of theirs; and every
 > task held for the owner, not only the vetoed, is listed in each brief.
+
+### After run 22: where the failures come from
+
+Thirteen go-live runs on the batch I loop (10-22). The half that writes code
+now works: implementers finish, verifiers and the reviewer rule, and in runs
+19-22 every task that ran was verified. Nearly every remaining failure starts
+before code is written. Measured from the runs' records:
+
+1. **The request contradicted the project.** Ours said "green when `npm run
+   check` passes" and asked for a Playwright test; plantsandclimate's own
+   acceptance is `check`, `verify.ps1` and the Playwright suite, separately.
+   The planner reconciled them by wiring the suite into `check` -- in ten of
+   eleven P3-18 runs. A request is written by a person and can be wrong, and
+   in a green-field project it is all there is.
+2. **Batch I was applied to half the harness.** The planner, the lenses, the
+   synthesis, the checkpoint, the drift judge and the revision still run in one
+   shot, in JSON, with thinking off and temperature 0.2, and none of them can
+   open a file -- the configuration batch I diagnosed. 39 of 70 task scopes
+   were the whole run envelope; tasks were built on code that does not exist;
+   the synthesis was sent back in every recent run.
+3. **Downstream repair compounds.** About 25 fixes in 13 runs, many of them
+   text heuristics on a model's prose, and several later failures were those
+   heuristics misfiring. Each layer is another chance to fail.
+4. **No measurement could tell a fix from luck.** One run per harness version,
+   one task, a planner that varies run to run, and a harness score that
+   diverged from the branch both ways (good code scored 0/6; verified tasks on
+   a branch with failing tests).
+5. **The owner's decisions are not remembered.** The same CI change was vetoed
+   eight times and declined every time; lessons are drawn only from the
+   harness's own bookkeeping.
+
+**The order agreed with the owner.** (1) Correct the request. (2) Build batch
+F, retargeted. (3) A baseline on main, scored by batch F: P3-18 three times and
+9a twice, unchanged in between. (4) The planner as a conversation with tools
+-- batch I's remedy for the planning half -- judged against (2) and (3). And,
+in the meantime: no new text heuristics; every solution must hold for any
+project, including a green-field one with nothing but a prompt.
 
 ---
 
