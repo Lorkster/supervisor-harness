@@ -58,6 +58,7 @@ from .dod import (
     validate_criteria,
 )
 from .paths import relative_patterns
+from .placement import correct_inspection_paths
 
 # --------------------------------------------------------------------------
 # Planning
@@ -463,6 +464,7 @@ def prepare_tasks(
     for task in tasks:
         entries: list[str] = fill_suite_commands(task, workspace)
         entries += review_what_cannot_run(task, policy)
+        entries += correct_inspection_paths(task, workspace)
         entries += review_what_cannot_inspect(task)
         added = apply_quality_bars(task, policy, workspace)
         for crit in added:

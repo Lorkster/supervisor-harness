@@ -115,6 +115,40 @@ def named_outside_scope(task: ExecutionTask, workspace: str | Path) -> list[str]
             and not matches_any(p, task.scope.paths)]
 
 
+
+def correct_inspection_paths(task: ExecutionTask, workspace: str | Path | None) -> list[str]:
+    """Put right an inspection's file the model placed in a directory that does not exist.
+
+    Measured in go-live run 17: "src/styles/tokens.css: --state-offline", where
+    the project's file is `src/app/styles/tokens.css` -- the task changed the
+    real file, and the criterion failed on every attempt because the file it
+    names does not exist. When the named directory does not exist (so the task
+    is not creating a file there) and exactly one file in the tree has the name,
+    inside the task's scope, that file is the one meant. Returns a note per
+    correction.
+    """
+    if workspace is None or not Path(workspace).is_dir():
+        return []
+    root = Path(workspace)
+    notes: list[str] = []
+    files: list[str] | None = None
+    for crit in task.dod:
+        raw, colon, needle = crit.expect.partition(":")
+        path = raw.strip()
+        if (crit.method is not VerifyMethod.INSPECTION or not colon or not path
+                or (root / path).parent.is_dir()):
+            continue
+        files = _tree_files(root) if files is None else files
+        name = path.rsplit("/", 1)[-1]
+        same = [f for f in files if f.rsplit("/", 1)[-1] == name
+                and (not task.scope.paths or matches_any(f, task.scope.paths))]
+        if len(same) != 1:
+            continue
+        crit.expect = f"{same[0]}:{needle}"
+        notes.append(f"criterion {crit.statement!r} named {path}, which is not in the tree; "
+                     f"it checks {same[0]}, the one file of that name")
+    return notes
+
 def _tree_files(root: Path) -> list[str]:
     found: list[str] = []
     for current, dirs, names in os.walk(root):

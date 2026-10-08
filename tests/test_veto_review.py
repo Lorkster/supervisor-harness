@@ -188,3 +188,34 @@ def test_every_implementer_is_told_what_is_held_for_the_owner() -> None:
     escalation.resolution = Resolution.GRANT
     assert "Held for the owner" not in build_implementer_brief(run, agent, peer), (
         "answered, it is no longer held")
+
+
+class LongReader(Reviewer):
+    """Reads for as long as reading is offered, then rules."""
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        names = {t["name"] for t in request.tools or []}
+        if "ruling" in names and names != {"ruling"}:
+            self.requests.append(request)
+            return CompletionResponse(tool_calls=[ToolCall(
+                "read_file", {"path": ".github/workflows/ci.yml"})])
+        return await super().complete(request)
+
+
+async def test_a_reviewer_that_keeps_reading_is_brought_to_a_ruling(
+    supervisor: Supervisor, workspace: Path,
+) -> None:
+    """Measured (go-live run 17): the review's stretches shared one tool-call count,
+    so it was never asked for its ruling -- "no ruling" on most tasks."""
+    from supervisor_harness.core.conversation import CHECKPOINT_CALLS
+
+    _with_ci(workspace)
+    fake = LongReader()
+    supervisor.router.register("fake", fake)
+    session = supervisor.store.create(RunState(id="run_L", prompt="Do P3-18"))
+
+    veto = await supervisor._review_task(session, TASK)
+
+    assert veto is not None and veto[0] == "breaks_the_project"
+    assert len(fake.requests) > 2 * CHECKPOINT_CALLS
+    assert [t["name"] for t in fake.requests[-1].tools or []] == ["ruling"]

@@ -2183,14 +2183,10 @@ class Supervisor:
         messages = [ChatMessage("user", brief)]
         tools = native_tool_specs(agent, self.config.policy)
         stint = Stint()
-        verdict: dict[str, Any] | None = None
-        for _ in range(VERDICT_STINTS):
-            verdict = await self._work_a_stint(session, agent, messages, tools, stint)
-            if stint.failed:
-                return
-            if verdict is not None:
-                break
-            messages.append(ChatMessage("user", VERDICT_NOW))
+        verdict = await self._read_then_finish(session, agent, messages, tools, stint,
+                                               finish="verdict", now=VERDICT_NOW)
+        if stint.failed:
+            return
         verdict = verdict or {}
         payload = {
             "output": str(verdict.get("summary", "")) or "; ".join(stint.actions[-20:]),
@@ -2223,13 +2219,9 @@ class Supervisor:
         tools = [t for t in native_tool_specs(reader, self.config.policy)
                  if t["name"] != "report"] + [RULING_TOOL]
         stint = Stint()
-        ruling: dict[str, Any] | None = None
-        for _ in range(2):
-            ruling = await self._work_a_stint(session, reader, messages, tools, stint,
+        ruling = await self._read_then_finish(session, reader, messages, tools, stint,
+                                              finish="ruling", now=REVIEW_NOW,
                                               role=REVIEW_ROLE, stage="review")
-            if ruling is not None or stint.failed:
-                break
-            messages.append(ChatMessage("user", REVIEW_NOW))
         veto = parse_ruling(ruling)
         if veto is not None:
             outcome = f"vetoed ({veto[0]}): {veto[1]}"
@@ -2240,6 +2232,29 @@ class Supervisor:
         await session.anote(f"veto review of {task.title!r}: {outcome}",
                             task_id=task.id, read=stint.read, tool_calls=stint.tool_calls)
         return veto
+
+    async def _read_then_finish(
+        self, session: RunSession, agent: AgentSpec, messages: list[ChatMessage],
+        tools: list[dict[str, Any]], stint: Stint, *, finish: str, now: str,
+        role: tuple[str, str, str] | None = None, stage: str = "",
+    ) -> dict[str, Any] | None:
+        """Stretches of reading, then one in which the finishing tool is all there is.
+
+        For a verifier's ``verdict`` and the reviewer's ``ruling``. Measured in
+        go-live run 17: twelve of thirteen verifiers read until a stretch's
+        tool calls ran out and never ruled, and each task they judged failed
+        with its review criteria unjudged. Reading is offered for
+        `VERDICT_STINTS` stretches; after that the model is told its time is up
+        and offered nothing but the tool that finishes.
+        """
+        only = [t for t in tools if t["name"] == finish]
+        for offered in [tools] * VERDICT_STINTS + [only]:
+            result = await self._work_a_stint(session, agent, messages, offered, stint,
+                                              role=role, stage=stage)
+            if result is not None or stint.failed:
+                return result
+            messages.append(ChatMessage("user", now))
+        return None
 
     async def _work_a_stint(
         self, session: RunSession, agent: AgentSpec, messages: list[ChatMessage],
@@ -2259,8 +2274,13 @@ class Supervisor:
         stage = stage or self.lifecycle._stage_for(agent)
         system, finish, nudge = role or CONVERSATION_ROLES[agent.kind.value]
         report: dict[str, Any] | None = None
-        idle = 0
-        while report is None and stint.tool_calls < CHECKPOINT_CALLS and idle < MAX_IDLE_ANSWERS:
+        offered = {t["name"] for t in tools}
+        # Counted from here: a verifier's stretches share one Stint, and
+        # counting its whole total ended every stretch after the first before
+        # the model was called -- the "call verdict now" was never sent.
+        start, idle = stint.tool_calls, 0
+        while (report is None and stint.tool_calls - start < CHECKPOINT_CALLS
+               and idle < MAX_IDLE_ANSWERS):
             if compact(messages):
                 await session.anote("conversation compacted: the oldest tool results "
                                     "were removed", actor=agent.id)
@@ -2292,6 +2312,9 @@ class Supervisor:
             for call in response.tool_calls:
                 if call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
+                elif call.name not in offered:
+                    text = f"{call.name} is not available now. Call {finish}."
+                    failures.append(call.name)
                 else:
                     if call.name in ("edit_file", "write_file", "delete_file"):
                         await self._widen_for_write(session, agent, toolbox,

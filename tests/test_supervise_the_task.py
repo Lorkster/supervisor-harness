@@ -411,3 +411,36 @@ def test_kept_through_the_send_back_it_is_judged_not_blocked(tmp_path: Path) -> 
     assert "Cite the file and line" in empty.rubric
     assert good.method is VerifyMethod.INSPECTION, "one it can check stays a check"
     assert any("named no file and text" in n for n in notes[task.id])
+
+
+# -- an inspection of a file the model placed wrongly -----------------------------
+# Go-live run 17: "src/styles/tokens.css: --state-offline", where the project's
+# file is src/app/styles/tokens.css. The task changed the real file; the
+# criterion failed on every attempt.
+
+
+def test_an_inspection_of_a_misplaced_file_checks_the_one_meant(tmp_path: Path) -> None:
+    from supervisor_harness.core.placement import correct_inspection_paths
+
+    for path in ("src/app/styles/tokens.css", "src/app/a/x.ts", "src/app/b/x.ts",
+                 "src/lib/util.ts", "infra/only.tf"):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("", encoding="utf-8")
+    misplaced = _inspect("a distinct offline token", expect="src/styles/tokens.css: --offline")
+    ambiguous = _inspect("x is exported", expect="src/shared/x.ts: export")
+    created = _inspect("a new helper beside the styles", expect="src/app/styles/util.ts: x")
+    outside = _inspect("only", expect="src/nowhere/only.tf: rule")
+    task = _task(misplaced, ambiguous, created, outside)
+
+    notes = correct_inspection_paths(task, tmp_path)
+
+    assert misplaced.expect == "src/app/styles/tokens.css: --offline"
+    assert ambiguous.expect == "src/shared/x.ts: export", "two files of that name: not guessed"
+    assert created.expect == "src/app/styles/util.ts: x", (
+        "a file the task creates where it can be created is left, though one elsewhere "
+        "has the name")
+    assert outside.expect == "src/nowhere/only.tf: rule", "not to a file outside its scope"
+    assert len(notes) == 1 and "src/styles/tokens.css" in notes[0]
+    _, prepared = prepare_tasks([_task(_inspect("t", expect="src/styles/tokens.css: a"))],
+                                Policy(require_tests=False), tmp_path)
+    assert any("the one file of that name" in n for n in next(iter(prepared.values())))

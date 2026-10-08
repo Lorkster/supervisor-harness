@@ -781,6 +781,21 @@ owner would merge. Measured against runs 4-9.
 >   only within the run's envelope: the grant from `--grant-envelope` is the
 >   whole workspace, which is how the twenty scripts got in.
 
+> **Run 17** (P3-18, 1h32m, after #90). No agent stopped (five in run 16), no
+> edit missed, and the veto held: G vetoed the e2e-into-`check` task again,
+> citing the project's own definition of the green gate, and `package.json`
+> was left alone. The branch passes `npm run check` (901 unit tests),
+> `verify.ps1` and all 25 Playwright journeys, the new offline one among them.
+> One of six tasks verified, for a bug of batch I's own: a verifier's two
+> stretches shared one tool-call count, so the second ended before the model
+> was called, and "call verdict now" was never sent -- twelve of thirteen
+> verifiers were cut off mid-reading, and the reviewer's frequent "no ruling"
+> had the same cause. Now each stretch counts its own calls, and after the
+> reading stretches comes one in which `verdict` (or `ruling`) is the only
+> tool. And one inspection named `src/styles/tokens.css` for the project's
+> `src/app/styles/tokens.css`: where the named directory does not exist and
+> one file in the task's scope has the name, the criterion checks that file.
+
 ---
 
 ## The gate between the parts
