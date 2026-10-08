@@ -796,6 +796,20 @@ owner would merge. Measured against runs 4-9.
 > `src/app/styles/tokens.css`: where the named directory does not exist and
 > one file in the task's scope has the name, the criterion checks that file.
 
+> **Run 18** (P3-18, 1h10m, with the fixes above). Every task that ran was
+> verified, three of three, and the branch passes every check the project
+> has. The reviewer, now brought to a ruling, vetoed four of seven tasks: two
+> rightly (the CI break again, and a change built on a `loadPlant` call
+> `PlantDetailView` never makes), and two for not requiring the network-cut
+> Playwright test -- which was another task of the same plan, carried out and
+> verified. It had been shown each task alone. The core of P3-18, a plant
+> that is not cached saying "needs connection" in the results, was one of
+> the two. Now the reviewer's brief lists the plan's other tasks, and it is
+> told a requirement another task covers is not missing from this one.
+> Probed on the local model against run 18's four vetoed tasks: the two
+> over-strict vetoes became `proceed`; the two correct ones stood, for the
+> same reasons.
+
 ---
 
 ## The gate between the parts

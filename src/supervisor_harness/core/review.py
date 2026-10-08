@@ -21,7 +21,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..models import ExecutionTask, RunState
+from ..models import ExecutionTask, RunState, TaskStatus
+
+#: How much of each other task's action the reviewer is shown.
+PLAN_ACTION_CHARS = 300
 
 #: What a veto may say. The first four are the plan's; the fifth is the case
 #: that made the batch worth building.
@@ -46,6 +49,10 @@ can break the pipeline that runs it.
 
 Veto only for a concrete reason you can point to in a file. "It could be better" is \
 not a veto; "this breaks .github/workflows/ci.yml line 31" is.
+
+The task is one part of a plan, and the brief lists the other parts. Judge it by its \
+own part: a requirement another task in the plan covers -- a test, a wiring, a \
+follow-up -- is not missing from this one. A gap no task in the plan covers is.
 """
 
 NUDGE = "Read what you need, then call ruling: proceed, or a veto with its reason."
@@ -79,8 +86,30 @@ def review_brief(state: RunState, task: ExecutionTask) -> str:
         f"## What it would do\n{task.action}\n\n{task.motivation}\n\n"
         f"## It may change\n{scope}\n\n"
         f"## Done means\n{criteria}\n\n"
-        f"## You may veto it because\n{vetoes}"
+        + _rest_of_the_plan(state, task)
+        + f"## You may veto it because\n{vetoes}"
     )
+
+
+def _rest_of_the_plan(state: RunState, task: ExecutionTask) -> str:
+    """The plan's other tasks, so a task is not faulted for what a sibling does.
+
+    Measured in go-live run 18: two tasks were vetoed as `criteria_cannot_fail`
+    for not requiring the network-cut Playwright test -- which was another
+    task of the same plan, approved, carried out and verified. The reviewer
+    had been shown each task alone.
+    """
+    others = [t for t in state.tasks.values()
+              if t.id != task.id and t.status is not TaskStatus.REJECTED]
+    if not others:
+        return ""
+    lines = []
+    for other in others:
+        action = " ".join((other.action or other.title).split())
+        if len(action) > PLAN_ACTION_CHARS:
+            action = action[:PLAN_ACTION_CHARS].rsplit(" ", 1)[0] + " ..."
+        lines.append(f"- **{other.title}**: {action}")
+    return "## The rest of the plan\n" + "\n".join(lines) + "\n\n"
 
 
 def parse_ruling(arguments: dict[str, Any] | None) -> tuple[str, str] | None:

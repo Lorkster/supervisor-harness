@@ -219,3 +219,28 @@ async def test_a_reviewer_that_keeps_reading_is_brought_to_a_ruling(
     assert veto is not None and veto[0] == "breaks_the_project"
     assert len(fake.requests) > 2 * CHECKPOINT_CALLS
     assert [t["name"] for t in fake.requests[-1].tools or []] == ["ruling"]
+
+
+def test_the_reviewer_is_shown_the_rest_of_the_plan() -> None:
+    """Measured (go-live run 18): two tasks were vetoed for not requiring the
+    network-cut Playwright test, which was another task of the same plan, carried
+    out and verified. The reviewer had been shown each task alone."""
+    from supervisor_harness.core.review import PLAN_ACTION_CHARS, REVIEWER_SYSTEM
+
+    run = RunState(prompt="Do P3-18")
+    results = ExecutionTask(title="Offline state in ResultsSection", action="Catch it")
+    e2e = ExecutionTask(title="Write the Playwright offline test",
+                        action="Drive the app with the network cut " * 20)
+    dropped = ExecutionTask(title="Rejected idea", action="x", status=TaskStatus.REJECTED)
+    run.tasks.update({t.id: t for t in (results, e2e, dropped)})
+
+    brief = review_brief(run, results)
+    plan = brief.split("## The rest of the plan\n", 1)[1].split("\n\n", 1)[0]
+
+    assert "**Write the Playwright offline test**: Drive the app" in plan
+    assert "Offline state in ResultsSection" not in plan, "not the task itself"
+    assert "Rejected idea" not in plan
+    assert len(plan) < PLAN_ACTION_CHARS + 80 and plan.endswith("..."), "each one is short"
+    assert "another task in the plan covers" in REVIEWER_SYSTEM
+    assert "## The rest of the plan" not in review_brief(RunState(prompt="p"), TASK), (
+        "a task alone has no plan to show")
