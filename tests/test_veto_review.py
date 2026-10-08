@@ -181,7 +181,7 @@ def test_every_implementer_is_told_what_is_held_for_the_owner() -> None:
     brief = build_implementer_brief(run, agent, peer)
     assert "## Held for the owner" in brief
     assert "Add npm run test:e2e to the check script" in brief and "ci.yml:31" in brief
-    assert "Do not make them, in any file" in brief
+    assert "Do not do their work, in any file" in brief
     assert "Held for the owner" not in build_implementer_brief(run, agent, vetoed), (
         "not its own task's")
 

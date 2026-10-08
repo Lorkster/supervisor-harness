@@ -31,6 +31,7 @@ in-memory change second, which is what makes a run resumable from any point.
 from __future__ import annotations
 
 import asyncio
+import re
 import traceback
 from dataclasses import replace
 from pathlib import Path
@@ -2682,7 +2683,22 @@ def _tasks_named_by(correction: str, tasks: list[ExecutionTask]) -> set[str]:
         # title ("add a limiter" inside "add a limiter test"), so once any task
         # is named by id the titles are not consulted.
         return by_id
-    return {t.id for t in tasks if t.title.strip() and t.title.strip().lower() in text}
+    by_title = {t.id for t in tasks if t.title.strip() and t.title.strip().lower() in text}
+    if by_title:
+        return by_title
+    # Failing a name, the files it names. Go-live run 22: "implement per-shard
+    # error handling in ResultsSection.tsx" and "create e2e/offline.spec.ts"
+    # named no task, so both went to every reopened task -- and the one adding
+    # i18n strings built the work of two tasks held for the owner, by its own
+    # brief. A file only other tasks mention makes the correction theirs.
+    files = {Path(name).name.lower() for name in _FILE_IN_TEXT.findall(text)}
+    return {t.id for t in tasks if files and any(
+        name in " ".join([t.title, t.action, *(c.expect for c in t.dod)]).lower()
+        for name in files)}
+
+
+#: A file name in prose: `ResultsSection.tsx`, `e2e/offline.spec.ts`, `en.json`.
+_FILE_IN_TEXT = re.compile(r"[\w./-]*\w\.(?:[a-z]{1,4}\.)?[a-z]{1,5}\b", re.IGNORECASE)
 
 
 def _coerce_decision(raw: dict[str, Any]) -> TaskDecision:

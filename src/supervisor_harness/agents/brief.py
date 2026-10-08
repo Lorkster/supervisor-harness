@@ -464,7 +464,7 @@ def build_implementer_brief(
         _section("Findings behind it", findings),
         _section("Done means", _dod_block(task.dod)),
         _section("Scope", scope),
-        _section("Held for the owner", _vetoed_changes(run, task)),
+        _section("Held for the owner", _held_tasks(run, task)),
         _section(
             "Baseline",
             (f"The run started from commit {baseline}. " if baseline else "")
@@ -476,8 +476,8 @@ def build_implementer_brief(
     return "\n".join(p for p in parts if p).strip()
 
 
-def _vetoed_changes(run: RunState, task: ExecutionTask) -> str:
-    """The changes a reviewer vetoed that the owner has not decided on yet.
+def _held_tasks(run: RunState, task: ExecutionTask) -> str:
+    """The tasks waiting for the owner -- vetoed or otherwise held -- and why.
 
     A veto parks one task, not the change it proposed: in a go-live run the
     reviewer vetoed adding the e2e suite to `npm run check` (it breaks CI), and
@@ -486,17 +486,21 @@ def _vetoed_changes(run: RunState, task: ExecutionTask) -> str:
     """
     held: list[str] = []
     for escalation in run.open_escalations():
-        vetoed = run.tasks.get(escalation.task_id)
-        if (escalation.reason is not EscalationReason.REVIEW_VETO or vetoed is None
-                or vetoed.id == task.id):
+        other = run.tasks.get(escalation.task_id)
+        if other is None or other.id == task.id:
             continue
-        detail = escalation.detail.removeprefix("review_veto: ")
-        held.append(f"{vetoed.title}: {vetoed.action or vetoed.title} -- vetoed: {detail}")
+        # Every task waiting for the owner, not only the vetoed: in go-live run
+        # 22 two tasks were held for criteria the harness could not enforce,
+        # and another task's implementer built both.
+        why = ("vetoed: " + escalation.detail.removeprefix("review_veto: ")
+               if escalation.reason is EscalationReason.REVIEW_VETO
+               else f"held: {escalation.reason.value.replace('_', ' ')}")
+        held.append(f"{other.title}: {(other.action or other.title)[:300]} -- {why}")
     if not held:
         return ""
-    return ("A reviewer vetoed these changes and the owner has not decided on them. Do "
-            "not make them, in any file, as part of your task; if your task cannot be "
-            "done without one, say so in your report.\n" + _bullets(held))
+    return ("These tasks are waiting for the owner's decision. Do not do their work, in "
+            "any file, as part of your task; if your task cannot be done without it, "
+            "say so in your report.\n" + _bullets(held))
 
 
 def build_verifier_brief(run: RunState, task: ExecutionTask, change_summary: str = "") -> str:

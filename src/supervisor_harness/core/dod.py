@@ -184,6 +184,15 @@ _CONCRETE_SHAPE = re.compile(
 # standing security bar asks whether a change is safe, never whether it
 # terminates: a fix that replaced a crash with an unbounded hot spin satisfied
 # every criterion it carried.
+#: Quoted text in a task: a string it adds or a message it shows, not what its
+#: code does. Go-live run 22: "Add 'needs connection' i18n strings" matched
+#: `connection` below, and a task adding two JSON strings was held to a
+#: bounded-time test of a contended path it could never have.
+_QUOTED = re.compile(
+    r"\"[^\"\n]{1,200}\"|(?<!\w)'[^'\n]{1,200}'(?!\w)"
+    "|[\u201c\u2018][^\u201d\u2019\n]{1,200}[\u201d\u2019]"
+)
+
 _LIVENESS_TASK = re.compile(
     r"""
       \b(lock|locks|locking|unlock\w*|mutex|semaphore|latch|barrier)\b
@@ -289,7 +298,7 @@ _PASSED_SOME = re.compile(r"\b[1-9]\d*\s+(?:tests?\s+)?passed\b", re.IGNORECASE)
 
 # Runners whose summary says how many tests passed, so a filtered run of theirs
 # can be held to at least one. `go test` without -v prints only "ok".
-_RUNNERS_THAT_COUNT = frozenset({"pytest", "vitest", "jest", "cargo"})
+_RUNNERS_THAT_COUNT = frozenset({"pytest", "vitest", "jest", "cargo", "playwright"})
 
 
 def counts_passed(command: str) -> bool:
@@ -901,7 +910,7 @@ def apply_quality_bars(
     # Safety is not liveness. A change that cannot be tricked can still stop
     # answering: the crash this kind of task is usually written to fix was once
     # replaced by an unbounded hot spin, which every criterion on it accepted.
-    if policy.require_liveness_review and _LIVENESS_TASK.search(subject):
+    if policy.require_liveness_review and _LIVENESS_TASK.search(_QUOTED.sub(" ", subject)):
         bar(
             bool(_COVERS_LIVENESS.search(existing)),
             DoDCriterion(

@@ -844,6 +844,22 @@ owner would merge. Measured against runs 4-9.
 > second veto goes to the owner, with the first named. The reviewer still
 > only vetoes, and a revision can widen nothing.
 
+> **Run 22** (P3-18, 1h05m). The revision did what it was built for: the
+> wiring task came back also reordering `ci.yml`, was vetoed again (the
+> project documents `check` as the fast gate) and went to the owner with the
+> first veto named. But two tasks were held for `playwright test --grep`
+> with no count -- Playwright, which prints "N passed", was missing from the
+> runners that count. And the task adding the "needs connection" strings was
+> held to the liveness bar, because `connection` is a trigger word; its
+> verifier blocked, the checkpoint reopened it, and the checkpoint's
+> corrections -- per-shard handling in `ResultsSection.tsx`, a new
+> `e2e/offline.spec.ts` -- named no task, so they went to it too. Its
+> implementer built the work of two tasks held for the owner, and that e2e
+> spec fails. Now Playwright counts; quoted text in a task does not bring the
+> liveness bar; a correction that names no task goes to the tasks whose files
+> it names, and to every task only when it names none of theirs; and every
+> task held for the owner, not only the vetoed, is listed in each brief.
+
 ---
 
 ## The gate between the parts
