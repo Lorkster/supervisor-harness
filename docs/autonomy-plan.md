@@ -781,6 +781,85 @@ owner would merge. Measured against runs 4-9.
 >   only within the run's envelope: the grant from `--grant-envelope` is the
 >   whole workspace, which is how the twenty scripts got in.
 
+> **Run 17** (P3-18, 1h32m, after #90). No agent stopped (five in run 16), no
+> edit missed, and the veto held: G vetoed the e2e-into-`check` task again,
+> citing the project's own definition of the green gate, and `package.json`
+> was left alone. The branch passes `npm run check` (901 unit tests),
+> `verify.ps1` and all 25 Playwright journeys, the new offline one among them.
+> One of six tasks verified, for a bug of batch I's own: a verifier's two
+> stretches shared one tool-call count, so the second ended before the model
+> was called, and "call verdict now" was never sent -- twelve of thirteen
+> verifiers were cut off mid-reading, and the reviewer's frequent "no ruling"
+> had the same cause. Now each stretch counts its own calls, and after the
+> reading stretches comes one in which `verdict` (or `ruling`) is the only
+> tool. And one inspection named `src/styles/tokens.css` for the project's
+> `src/app/styles/tokens.css`: where the named directory does not exist and
+> one file in the task's scope has the name, the criterion checks that file.
+
+> **Run 18** (P3-18, 1h10m, with the fixes above). Every task that ran was
+> verified, three of three, and the branch passes every check the project
+> has. The reviewer, now brought to a ruling, vetoed four of seven tasks: two
+> rightly (the CI break again, and a change built on a `loadPlant` call
+> `PlantDetailView` never makes), and two for not requiring the network-cut
+> Playwright test -- which was another task of the same plan, carried out and
+> verified. It had been shown each task alone. The core of P3-18, a plant
+> that is not cached saying "needs connection" in the results, was one of
+> the two. Now the reviewer's brief lists the plan's other tasks, and it is
+> told a requirement another task covers is not missing from this one.
+> Probed on the local model against run 18's four vetoed tasks: the two
+> over-strict vetoes became `proceed`; the two correct ones stood, for the
+> same reasons.
+
+> **Run 19** (P3-18, 1h19m). Every task that ran was verified, four of four,
+> among them the core of P3-18 -- the results list keeps every shard that
+> loaded and says "needs connection" for the rest -- and the branch passes
+> `npm run check` (897 unit tests), `verify.ps1` and all 25 Playwright
+> journeys. The one escalation is the CI veto, right again. But two
+> implementers ran out of turns after finishing: each short, accurate "done"
+> scored 0/8 objectives by word overlap with its objectives and was sent
+> back to deepen three times, and one, sent looking for more, wandered into
+> the Playwright task. An implementer's "done" is judged by its task's
+> definition of done, which the harness checks next; the overlap no longer
+> counts against it (it still nudges an implementer mid-task, and still
+> judges a lens's "done").
+
+> **Run 20** (P3-18, 38 minutes). Every task that ran verified, three of
+> three; no agent stopped or was sent back for nothing; the branch passes
+> every check the project has. Two escalations: the CI veto, and a task held
+> for `vitest run tests/data/http.test.ts -t 'offline'` with no count -- the
+> rule that a name filter must say how many tests it selects, because a
+> filter matching nothing exits 0. For a runner whose summary counts the tests
+> that passed (pytest, vitest, jest, cargo), that is now caught where it runs:
+> a filtered run in which no test passed fails. Other runners, and boolean
+> filters, still need node ids or a count.
+
+> **Run 21** (P3-18, 20 minutes). Both tasks that ran verified. The reviewer
+> vetoed three of five, each rightly and each with its fix in the reason: the
+> e2e test bundled with the CI-breaking wiring, a tile-loader change whose
+> caller (`grid.ts`) no task covered, and results criteria that would pass if
+> nothing said "needs connection". A veto ended each one. Now a vetoed task
+> goes back to the planner once, with the veto and the rest of the plan; the
+> revision is applied as an edit -- the harness's bars re-applied, its scope
+> held to the run's envelope -- and faces the gate and the reviewer again. A
+> second veto goes to the owner, with the first named. The reviewer still
+> only vetoes, and a revision can widen nothing.
+
+> **Run 22** (P3-18, 1h05m). The revision did what it was built for: the
+> wiring task came back also reordering `ci.yml`, was vetoed again (the
+> project documents `check` as the fast gate) and went to the owner with the
+> first veto named. But two tasks were held for `playwright test --grep`
+> with no count -- Playwright, which prints "N passed", was missing from the
+> runners that count. And the task adding the "needs connection" strings was
+> held to the liveness bar, because `connection` is a trigger word; its
+> verifier blocked, the checkpoint reopened it, and the checkpoint's
+> corrections -- per-shard handling in `ResultsSection.tsx`, a new
+> `e2e/offline.spec.ts` -- named no task, so they went to it too. Its
+> implementer built the work of two tasks held for the owner, and that e2e
+> spec fails. Now Playwright counts; quoted text in a task does not bring the
+> liveness bar; a correction that names no task goes to the tasks whose files
+> it names, and to every task only when it names none of theirs; and every
+> task held for the owner, not only the vetoed, is listed in each brief.
+
 ---
 
 ## The gate between the parts

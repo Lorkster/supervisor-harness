@@ -21,7 +21,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..models import ExecutionTask, RunState
+from ..contracts import _DOD
+from ..models import ExecutionTask, RunState, TaskStatus
+
+#: How much of each other task's action the reviewer is shown.
+PLAN_ACTION_CHARS = 300
 
 #: What a veto may say. The first four are the plan's; the fifth is the case
 #: that made the batch worth building.
@@ -46,6 +50,10 @@ can break the pipeline that runs it.
 
 Veto only for a concrete reason you can point to in a file. "It could be better" is \
 not a veto; "this breaks .github/workflows/ci.yml line 31" is.
+
+The task is one part of a plan, and the brief lists the other parts. Judge it by its \
+own part: a requirement another task in the plan covers -- a test, a wiring, a \
+follow-up -- is not missing from this one. A gap no task in the plan covers is.
 """
 
 NUDGE = "Read what you need, then call ruling: proceed, or a veto with its reason."
@@ -79,8 +87,30 @@ def review_brief(state: RunState, task: ExecutionTask) -> str:
         f"## What it would do\n{task.action}\n\n{task.motivation}\n\n"
         f"## It may change\n{scope}\n\n"
         f"## Done means\n{criteria}\n\n"
-        f"## You may veto it because\n{vetoes}"
+        + _rest_of_the_plan(state, task)
+        + f"## You may veto it because\n{vetoes}"
     )
+
+
+def _rest_of_the_plan(state: RunState, task: ExecutionTask) -> str:
+    """The plan's other tasks, so a task is not faulted for what a sibling does.
+
+    Measured in go-live run 18: two tasks were vetoed as `criteria_cannot_fail`
+    for not requiring the network-cut Playwright test -- which was another
+    task of the same plan, approved, carried out and verified. The reviewer
+    had been shown each task alone.
+    """
+    others = [t for t in state.tasks.values()
+              if t.id != task.id and t.status is not TaskStatus.REJECTED]
+    if not others:
+        return ""
+    lines = []
+    for other in others:
+        action = " ".join((other.action or other.title).split())
+        if len(action) > PLAN_ACTION_CHARS:
+            action = action[:PLAN_ACTION_CHARS].rsplit(" ", 1)[0] + " ..."
+        lines.append(f"- **{other.title}**: {action}")
+    return "## The rest of the plan\n" + "\n".join(lines) + "\n\n"
 
 
 def parse_ruling(arguments: dict[str, Any] | None) -> tuple[str, str] | None:
@@ -96,3 +126,52 @@ def parse_ruling(arguments: dict[str, Any] | None) -> tuple[str, str] | None:
     if verdict not in VETO_REASONS:
         return None
     return verdict, str(arguments.get("why", "")).strip()
+
+
+# -- one revision after a veto ----------------------------------------------------
+# Go-live run 21: the reviewer vetoed three of five tasks, each rightly and each
+# with the fix in its reason -- the e2e test bundled with the CI-breaking wiring,
+# a loader change whose caller no task covered, results criteria that could not
+# fail. A veto ended each one; nothing revised them. Like a definition of done
+# that cannot be enforced, a vetoed task goes back to the planner once, with the
+# veto, and the revision faces the gate and the reviewer again. A second veto
+# goes to the owner. The reviewer still only vetoes: the revision is the
+# planner's, and it can widen nothing -- its scope is held to the run's envelope.
+
+REVISION_SYSTEM = """\
+You planned a task that a reviewer has vetoed. Revise the task so the objection \
+no longer holds: change what it does, what it may change, or its definition of \
+done. Keep what the request needs from this task. If the objection is that part \
+of the task should not be done at all, leave that part out. A requirement another \
+task in the plan covers does not belong here.
+"""
+
+REVISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string",
+                   "description": "What the task will now concretely do"},
+        "scope_paths": {"type": "array", "items": {"type": "string"}},
+        "dod": {"type": "array", "items": _DOD, "minItems": 2},
+    },
+    "required": ["action", "dod"],
+}
+
+
+def revision_prompt(state: RunState, task: ExecutionTask, veto: tuple[str, str]) -> str:
+    criteria = "\n".join(
+        f"- [{c.method.value}] {c.statement}"
+        + (f" (command: `{c.command}`)" if c.command else "")
+        + (f" (expect: {c.expect})" if c.expect else "")
+        for c in task.dod) or "- (none)"
+    return (
+        f"# The vetoed task: {task.title}\n\n"
+        f"## The request\n{state.prompt}\n\n"
+        f"## What it would do\n{task.action}\n\n"
+        f"## It may change\n{', '.join(task.scope.paths) or 'the whole workspace'}\n\n"
+        f"## Done means\n{criteria}\n\n"
+        + _rest_of_the_plan(state, task)
+        + f"## The veto: `{veto[0]}` -- {VETO_REASONS.get(veto[0], '')}\n{veto[1]}\n\n"
+        "Return the revised task: its action, the paths it may change, and its "
+        "whole definition of done."
+    )

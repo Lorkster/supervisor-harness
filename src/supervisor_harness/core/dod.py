@@ -184,6 +184,15 @@ _CONCRETE_SHAPE = re.compile(
 # standing security bar asks whether a change is safe, never whether it
 # terminates: a fix that replaced a crash with an unbounded hot spin satisfied
 # every criterion it carried.
+#: Quoted text in a task: a string it adds or a message it shows, not what its
+#: code does. Go-live run 22: "Add 'needs connection' i18n strings" matched
+#: `connection` below, and a task adding two JSON strings was held to a
+#: bounded-time test of a contended path it could never have.
+_QUOTED = re.compile(
+    r"\"[^\"\n]{1,200}\"|(?<!\w)'[^'\n]{1,200}'(?!\w)"
+    "|[\u201c\u2018][^\u201d\u2019\n]{1,200}[\u201d\u2019]"
+)
+
 _LIVENESS_TASK = re.compile(
     r"""
       \b(lock|locks|locking|unlock\w*|mutex|semaphore|latch|barrier)\b
@@ -282,6 +291,20 @@ _ANCHORED_NAME = re.compile(r"\^[A-Za-z_]\w*\$")
 _SELECTION_COUNT = re.compile(
     r"\b\d+\s*(?:tests?\s+)?(?:passed|selected|ran\b|ok\b)", re.IGNORECASE
 )
+
+# A summary in which at least one test passed: pytest's "3 passed", vitest's
+# "Tests  3 passed (3)", jest's "Tests: 3 passed", cargo's "ok. 3 passed".
+_PASSED_SOME = re.compile(r"\b[1-9]\d*\s+(?:tests?\s+)?passed\b", re.IGNORECASE)
+
+# Runners whose summary says how many tests passed, so a filtered run of theirs
+# can be held to at least one. `go test` without -v prints only "ok".
+_RUNNERS_THAT_COUNT = frozenset({"pytest", "vitest", "jest", "cargo", "playwright"})
+
+
+def counts_passed(command: str) -> bool:
+    """Whether ``command`` runs a test runner whose summary counts the tests that passed."""
+    return any(executable_name(token) in _RUNNERS_THAT_COUNT for token in shell_split(command))
+
 
 # Operators that make a filter expression select for more than one reason, so a
 # count cannot say which half of it matched.
@@ -404,6 +427,13 @@ def unpinned_selection(criterion: DoDCriterion) -> str | None:
             "path/to/test_file.py::test_name"
         )
     if _SELECTION_COUNT.search(criterion.expect):
+        return None
+    if counts_passed(criterion.command):
+        # Its runner prints how many tests passed, and `verify_command` fails a
+        # filtered run in which none did -- the filter that matches nothing is
+        # caught where it runs. Go-live run 20: a task went to the owner for
+        # `vitest run tests/data/http.test.ts -t 'offline'`, kept through the
+        # send-back, though every other check of the run could be enforced.
         return None
     return (
         f"the command runs a subset chosen by {selection!r}, and nothing says what "
@@ -880,7 +910,7 @@ def apply_quality_bars(
     # Safety is not liveness. A change that cannot be tricked can still stop
     # answering: the crash this kind of task is usually written to fix was once
     # replaced by an unbounded hot spin, which every criterion on it accepted.
-    if policy.require_liveness_review and _LIVENESS_TASK.search(subject):
+    if policy.require_liveness_review and _LIVENESS_TASK.search(_QUOTED.sub(" ", subject)):
         bar(
             bool(_COVERS_LIVENESS.search(existing)),
             DoDCriterion(
@@ -1294,6 +1324,15 @@ def verify_command(
     # output tells them apart. ``unpinned_selection`` refuses this shape when
     # the criterion is written; this catches the filter that went stale after
     # it was approved, and the runner whose flag is not on that list.
+    if (ok and completed.returncode == 0 and selection_filter(command)
+            and counts_passed(command) and not _PASSED_SOME.search(output)):
+        return VerificationOutcome(
+            CriterionStatus.FAIL,
+            evidence
+            + "\n\n[supervisor] the command exited 0 but its filter selected no test "
+            "that passed, so this criterion proved nothing. Write the tests it means, "
+            "or correct the filter.",
+        )
     if ok and selection_filter(command) and _RAN_NOTHING.search(output):
         return VerificationOutcome(
             CriterionStatus.FAIL,

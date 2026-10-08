@@ -31,6 +31,7 @@ in-memory change second, which is what makes a run resumable from any point.
 from __future__ import annotations
 
 import asyncio
+import re
 import traceback
 from dataclasses import replace
 from pathlib import Path
@@ -133,8 +134,15 @@ from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
 from .review import NOW as REVIEW_NOW
+from .review import (
+    REVISION_SCHEMA,
+    REVISION_SYSTEM,
+    RULING_TOOL,
+    parse_ruling,
+    review_brief,
+    revision_prompt,
+)
 from .review import ROLE as REVIEW_ROLE
-from .review import RULING_TOOL, parse_ruling, review_brief
 
 #: Re-exported for the callers that have always imported it from here --
 #: the CLI, the MCP server and the tests. It lives in `core/responses.py`
@@ -812,6 +820,15 @@ class Supervisor:
             reasons = autonomy.gate(task, self.config.policy)
             if not reasons and self.config.policy.veto_review:
                 veto = await self._review_task(session, task)
+                if veto is not None and await self._revise_after_veto(session, task, veto):
+                    # Once: the revision faces the gate and the reviewer again,
+                    # and a second veto goes to the owner with the first named.
+                    first = veto
+                    reasons = autonomy.gate(task, self.config.policy)
+                    veto = None if reasons else await self._review_task(session, task)
+                    if veto is not None:
+                        veto = (veto[0], f"{veto[1]} (after one revision; first veto: "
+                                         f"{first[0]}: {first[1]})")
                 if veto is not None:
                     reasons = [(EscalationReason.REVIEW_VETO, f"{veto[0]}: {veto[1]}")]
             if not reasons:
@@ -2183,14 +2200,10 @@ class Supervisor:
         messages = [ChatMessage("user", brief)]
         tools = native_tool_specs(agent, self.config.policy)
         stint = Stint()
-        verdict: dict[str, Any] | None = None
-        for _ in range(VERDICT_STINTS):
-            verdict = await self._work_a_stint(session, agent, messages, tools, stint)
-            if stint.failed:
-                return
-            if verdict is not None:
-                break
-            messages.append(ChatMessage("user", VERDICT_NOW))
+        verdict = await self._read_then_finish(session, agent, messages, tools, stint,
+                                               finish="verdict", now=VERDICT_NOW)
+        if stint.failed:
+            return
         verdict = verdict or {}
         payload = {
             "output": str(verdict.get("summary", "")) or "; ".join(stint.actions[-20:]),
@@ -2202,6 +2215,39 @@ class Supervisor:
         await self._flush_assists(session, agent)
         await self.supervision._assess_drift(session, agent, turn)
         await self._report_verification(session, agent, payload)
+
+    async def _revise_after_veto(
+        self, session: RunSession, task: ExecutionTask, veto: tuple[str, str]
+    ) -> bool:
+        """Send a vetoed task back to the planner once; whether it came back revised.
+
+        See `core/review.py`. The revision is applied as an edit to the task:
+        its action and definition of done replaced -- the harness's own bars
+        re-applied, dropped criteria named -- and its scope clamped to the run's
+        envelope, so a revision can narrow or move a task but never widen what
+        the run may change. A failed call or an empty answer leaves the veto
+        standing.
+        """
+        try:
+            revised = await self.supervision._call(
+                "synthesis", REVISION_SYSTEM, revision_prompt(session.state, task, veto),
+                REVISION_SCHEMA, session)
+        except Exception as exc:  # noqa: BLE001 - the veto still stands
+            await session.anote(f"revision after veto failed; the veto stands: {exc}",
+                                task_id=task.id)
+            return False
+        edits = {k: v for k, v in revised.items() if k in ("action", "scope_paths", "dod")}
+        if not str(edits.get("action", "")).strip() or not edits.get("dod"):
+            await session.anote("revision after veto came back empty; the veto stands",
+                                task_id=task.id)
+            return False
+        notes = _apply_modifications(task, edits, self.config.policy, self.workspace,
+                                     session.state.envelope)
+        task.updated_at = now_iso()
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        await session.anote(f"task {task.title!r} revised after a {veto[0]} veto",
+                            task_id=task.id, notes=notes)
+        return True
 
     async def _review_task(
         self, session: RunSession, task: ExecutionTask
@@ -2223,13 +2269,9 @@ class Supervisor:
         tools = [t for t in native_tool_specs(reader, self.config.policy)
                  if t["name"] != "report"] + [RULING_TOOL]
         stint = Stint()
-        ruling: dict[str, Any] | None = None
-        for _ in range(2):
-            ruling = await self._work_a_stint(session, reader, messages, tools, stint,
+        ruling = await self._read_then_finish(session, reader, messages, tools, stint,
+                                              finish="ruling", now=REVIEW_NOW,
                                               role=REVIEW_ROLE, stage="review")
-            if ruling is not None or stint.failed:
-                break
-            messages.append(ChatMessage("user", REVIEW_NOW))
         veto = parse_ruling(ruling)
         if veto is not None:
             outcome = f"vetoed ({veto[0]}): {veto[1]}"
@@ -2240,6 +2282,29 @@ class Supervisor:
         await session.anote(f"veto review of {task.title!r}: {outcome}",
                             task_id=task.id, read=stint.read, tool_calls=stint.tool_calls)
         return veto
+
+    async def _read_then_finish(
+        self, session: RunSession, agent: AgentSpec, messages: list[ChatMessage],
+        tools: list[dict[str, Any]], stint: Stint, *, finish: str, now: str,
+        role: tuple[str, str, str] | None = None, stage: str = "",
+    ) -> dict[str, Any] | None:
+        """Stretches of reading, then one in which the finishing tool is all there is.
+
+        For a verifier's ``verdict`` and the reviewer's ``ruling``. Measured in
+        go-live run 17: twelve of thirteen verifiers read until a stretch's
+        tool calls ran out and never ruled, and each task they judged failed
+        with its review criteria unjudged. Reading is offered for
+        `VERDICT_STINTS` stretches; after that the model is told its time is up
+        and offered nothing but the tool that finishes.
+        """
+        only = [t for t in tools if t["name"] == finish]
+        for offered in [tools] * VERDICT_STINTS + [only]:
+            result = await self._work_a_stint(session, agent, messages, offered, stint,
+                                              role=role, stage=stage)
+            if result is not None or stint.failed:
+                return result
+            messages.append(ChatMessage("user", now))
+        return None
 
     async def _work_a_stint(
         self, session: RunSession, agent: AgentSpec, messages: list[ChatMessage],
@@ -2259,8 +2324,13 @@ class Supervisor:
         stage = stage or self.lifecycle._stage_for(agent)
         system, finish, nudge = role or CONVERSATION_ROLES[agent.kind.value]
         report: dict[str, Any] | None = None
-        idle = 0
-        while report is None and stint.tool_calls < CHECKPOINT_CALLS and idle < MAX_IDLE_ANSWERS:
+        offered = {t["name"] for t in tools}
+        # Counted from here: a verifier's stretches share one Stint, and
+        # counting its whole total ended every stretch after the first before
+        # the model was called -- the "call verdict now" was never sent.
+        start, idle = stint.tool_calls, 0
+        while (report is None and stint.tool_calls - start < CHECKPOINT_CALLS
+               and idle < MAX_IDLE_ANSWERS):
             if compact(messages):
                 await session.anote("conversation compacted: the oldest tool results "
                                     "were removed", actor=agent.id)
@@ -2292,6 +2362,9 @@ class Supervisor:
             for call in response.tool_calls:
                 if call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
+                elif call.name not in offered:
+                    text = f"{call.name} is not available now. Call {finish}."
+                    failures.append(call.name)
                 else:
                     if call.name in ("edit_file", "write_file", "delete_file"):
                         await self._widen_for_write(session, agent, toolbox,
@@ -2610,7 +2683,22 @@ def _tasks_named_by(correction: str, tasks: list[ExecutionTask]) -> set[str]:
         # title ("add a limiter" inside "add a limiter test"), so once any task
         # is named by id the titles are not consulted.
         return by_id
-    return {t.id for t in tasks if t.title.strip() and t.title.strip().lower() in text}
+    by_title = {t.id for t in tasks if t.title.strip() and t.title.strip().lower() in text}
+    if by_title:
+        return by_title
+    # Failing a name, the files it names. Go-live run 22: "implement per-shard
+    # error handling in ResultsSection.tsx" and "create e2e/offline.spec.ts"
+    # named no task, so both went to every reopened task -- and the one adding
+    # i18n strings built the work of two tasks held for the owner, by its own
+    # brief. A file only other tasks mention makes the correction theirs.
+    files = {Path(name).name.lower() for name in _FILE_IN_TEXT.findall(text)}
+    return {t.id for t in tasks if files and any(
+        name in " ".join([t.title, t.action, *(c.expect for c in t.dod)]).lower()
+        for name in files)}
+
+
+#: A file name in prose: `ResultsSection.tsx`, `e2e/offline.spec.ts`, `en.json`.
+_FILE_IN_TEXT = re.compile(r"[\w./-]*\w\.(?:[a-z]{1,4}\.)?[a-z]{1,5}\b", re.IGNORECASE)
 
 
 def _coerce_decision(raw: dict[str, Any]) -> TaskDecision:

@@ -256,6 +256,49 @@ async def test_a_verifier_judges_the_open_criteria_and_its_verdict_counts(
 
 
 
+class LongReader(NativeFake):
+    """A verifier that reads for as long as reading is offered, as twelve of thirteen
+    did in go-live run 17, and once more after it is not."""
+
+    def __init__(self, *steps: Step) -> None:
+        super().__init__(*steps)
+        self.tried_to_read_at_the_end = False
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        names = {t["name"] for t in request.tools or []}
+        if "verdict" in names and names != {"verdict"}:
+            self.verifier.append(request)
+            return _calls(READ)(request)
+        if names == {"verdict"} and not self.tried_to_read_at_the_end:
+            self.verifier.append(request)
+            self.tried_to_read_at_the_end = True
+            return _calls(READ)(request)
+        return await super().complete(request)
+
+
+async def test_a_verifier_that_keeps_reading_is_brought_to_a_verdict(
+    supervisor: Supervisor,
+) -> None:
+    """Measured (go-live run 17): the verifier's stretches shared one tool-call count,
+    so every stretch after the first ended before the model was called -- "call
+    verdict now" was never sent, and 12 of 13 verifiers left their criteria unjudged."""
+    from supervisor_harness.core.conversation import CHECKPOINT_CALLS, VERDICT_NOW
+
+    fake = LongReader(_calls(READ), _calls(EDIT), _calls(DONE))
+    response = await _conversing(supervisor, fake).run(
+        PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    (task,) = supervisor.store.load_state(response.run_id).tasks.values()
+
+    assert len(fake.verifier) > 2 * CHECKPOINT_CALLS, "the stretches after the first were worked"
+    assert any(m.content == VERDICT_NOW for m in fake.verifier[-1].messages)
+    assert [t["name"] for t in fake.verifier[-1].tools or []] == ["verdict"], (
+        "at the end, the verdict is all there is")
+    assert any(m.role == "tool" and "read_file is not available now" in m.content
+               for m in fake.verifier[-1].messages), "a read it was not offered is refused"
+    judged = [c for c in task.dod if c.verified_by and c.verified_by != "harness"]
+    assert judged and all(c.status.value == "pass" for c in judged)
+
+
 # -- widening at the moment of a write ---------------------------------------------
 
 WRITE_CACHE = ToolCall("write_file", {"path": "src/cache.py", "content": "LIMIT = 10\n"})
