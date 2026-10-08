@@ -74,11 +74,13 @@ def main() -> int:
                                 "labelled_by": ""})
 
     if args.verifier_tree and worktree.get("commit"):
+        # Bytes, not text: decoding the diff with the console's code page mangled
+        # every non-ASCII line, and the patch no longer applied.
         diff = subprocess.run(["git", "-C", str(args.verifier_tree), "diff", "--binary",
                                base, worktree["commit"]],
-                              capture_output=True, text=True, check=True).stdout
+                              capture_output=True, check=True).stdout
         patch = f"{args.name}.patch"
-        (args.out / patch).write_text(diff, encoding="utf-8", newline="\n")
+        (args.out / patch).write_bytes(diff)
         for task in tasks:
             if task["status"] != "verified":
                 continue

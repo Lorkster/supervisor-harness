@@ -18,10 +18,10 @@ from typing import Any
 from ..config import HarnessConfig
 from ..ids import now_iso
 from ..providers.router import ModelRouter
-from .cases import Case
+from .cases import Case, CaseError
 from .checks import judge
 from .fixtures import materialise
-from .roles import Variant, run_role
+from .roles import RoleOutput, Variant, run_role
 
 
 def parse_variant(spec: str) -> Variant:
@@ -55,10 +55,16 @@ async def evaluate(
     for case in cases:
         for variant in variants:
             for rep in range(1, repeat + 1):
-                with materialise(case, work / "repos") as workspace:
-                    output = await run_role(case, workspace, work / "runs", variant,
-                                            base=base, router=router)
-                    checks = judge(case, output, workspace)
+                try:
+                    with materialise(case, work / "repos") as workspace:
+                        output = await run_role(case, workspace, work / "runs", variant,
+                                                base=base, router=router)
+                        checks = judge(case, output, workspace)
+                except CaseError as exc:
+                    # A case whose workspace cannot be built is a failed case, not
+                    # the end of the evaluation: the first run stopped at one patch.
+                    output = RoleOutput(error=f"fixture: {exc}")
+                    checks = judge(case, output, Path(work))
                 record = {
                     "case": case.id, "role": case.role, "variant": variant.name,
                     "repetition": rep, "at": now_iso(),

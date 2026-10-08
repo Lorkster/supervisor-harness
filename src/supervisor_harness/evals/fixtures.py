@@ -52,7 +52,10 @@ def materialise(case: Case, cache: Path) -> Iterator[Path]:
     try:
         if fx.kind == "git":
             repo = _repository(fx.repo, cache)
-            _git("worktree", "add", "--quiet", "--detach", str(workspace), fx.commit, cwd=repo)
+            # The tree as committed: a clone that converts line endings on
+            # checkout would leave files a patch made by `git diff` cannot apply to.
+            _git("-c", "core.autocrlf=false", "worktree", "add", "--quiet", "--detach",
+                 str(workspace), fx.commit, cwd=repo)
         elif fx.kind == "dir":
             base = case.source.parent if case.source else Path.cwd()
             shutil.copytree(base / fx.path, workspace)
@@ -65,7 +68,8 @@ def materialise(case: Case, cache: Path) -> Iterator[Path]:
         if fx.patch:
             base = case.source.parent if case.source else Path.cwd()
             # Outside a repository `git apply` patches the directory it runs in.
-            _git("apply", "--whitespace=nowarn", str((base / fx.patch).resolve()),
+            _git("-c", "core.autocrlf=false", "apply", "--whitespace=nowarn",
+                 str((base / fx.patch).resolve()),
                  cwd=workspace)
         yield workspace
     finally:

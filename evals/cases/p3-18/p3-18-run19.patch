@@ -272,7 +272,7 @@ index d609ff1..4a1d844 100644
 +
  /**
   * P1-12: verdict + limiting factor per plant (disclosure level 1 only,
-  * UX-PRINCIPLES.md Â§ 2), grouped by verdict, filterable by form and use
+  * UX-PRINCIPLES.md § 2), grouped by verdict, filterable by form and use
 @@ -42,6 +56,12 @@ export function ResultsSection({ manifest, siteProfile, gardenName }: ResultsSec
    const headingId = useId();
  
@@ -401,9 +401,9 @@ index dab92aa..bd99ca6 100644
 @@ -479,5 +479,6 @@
    "data.grid.nearestClimateCell": "We have no climate data for this exact spot, so we use the nearest point we do have, about {distanceKm} km away. Treat the climate here as approximate.",
    "data.grid.uplandClimateCell": "This spot is in hilly or mountain terrain, where a valley floor can be many degrees colder than a slope a few hundred metres away. The figures are adjusted for your elevation and the land around you, but they are less certain here than on flatter ground. Where that changes a verdict, the results show the range.",
-   "data.grid.outsideRegionCountry": "This point is outside Sweden but inside the area we have climate data for. The climate still applies â€” weather does not stop at a border â€” though the corrections are fitted to Swedish stations and are less certain here. What does not apply is the Swedish part: the invasive-species register, the Swedish regulatory and legal notes, and the Swedish names. Near the border we may be a few kilometres out.",
--  "data.grid.nearestSoilCell": "We have no soil data for this exact spot, so we use the nearest point we do have, about {distanceKm} km away â€” an even rougher estimate than usual."
-+  "data.grid.nearestSoilCell": "We have no soil data for this exact spot, so we use the nearest point we do have, about {distanceKm} km away â€” an even rougher estimate than usual.",
+   "data.grid.outsideRegionCountry": "This point is outside Sweden but inside the area we have climate data for. The climate still applies — weather does not stop at a border — though the corrections are fitted to Swedish stations and are less certain here. What does not apply is the Swedish part: the invasive-species register, the Swedish regulatory and legal notes, and the Swedish names. Near the border we may be a few kilometres out.",
+-  "data.grid.nearestSoilCell": "We have no soil data for this exact spot, so we use the nearest point we do have, about {distanceKm} km away — an even rougher estimate than usual."
++  "data.grid.nearestSoilCell": "We have no soil data for this exact spot, so we use the nearest point we do have, about {distanceKm} km away — an even rougher estimate than usual.",
 +  "offline.plant.needsConnection": "This plant needs a connection to load its data."
  }
 diff --git a/src/i18n/sv.json b/src/i18n/sv.json
@@ -411,12 +411,12 @@ index 942252a..78d455d 100644
 --- a/src/i18n/sv.json
 +++ b/src/i18n/sv.json
 @@ -479,5 +479,6 @@
-   "data.grid.nearestClimateCell": "Vi har inga klimatdata fÃ¶r just den hÃ¤r punkten, sÃ¥ vi anvÃ¤nder nÃ¤rmaste punkt dÃ¤r vi har det, ungefÃ¤r {distanceKm} km bort. Se klimatet hÃ¤r som ungefÃ¤rligt.",
-   "data.grid.uplandClimateCell": "Den hÃ¤r platsen ligger i kuperad terrÃ¤ng eller fjÃ¤llterrÃ¤ng, dÃ¤r en dalbotten kan vara mÃ¥nga grader kallare Ã¤n en sluttning nÃ¥gra hundra meter bort. VÃ¤rdena Ã¤r justerade fÃ¶r din hÃ¶jd och marken omkring dig, men de Ã¤r osÃ¤krare hÃ¤r Ã¤n pÃ¥ flackare mark. DÃ¤r det Ã¤ndrar ett omdÃ¶me visar resultaten spannet.",
-   "data.grid.outsideRegionCountry": "Den hÃ¤r punkten ligger utanfÃ¶r Sverige, men innanfÃ¶r det omrÃ¥de vi har klimatdata fÃ¶r. Klimatet gÃ¤ller Ã¤ndÃ¥ â€“ vÃ¤derdata stannar inte vid en grÃ¤ns, men korrigeringarna Ã¤r gjorda mot svenska mÃ¤tstationer och Ã¤r osÃ¤krare hÃ¤r. Det som dÃ¤remot inte gÃ¤ller Ã¤r det svenska: listan Ã¶ver invasiva arter, de svenska regel- och lagnoterna och de svenska namnen. NÃ¤ra grÃ¤nsen kan vi missa med nÃ¥gra kilometer.",
--  "data.grid.nearestSoilCell": "Vi har inga markdata fÃ¶r just den hÃ¤r punkten, sÃ¥ vi anvÃ¤nder nÃ¤rmaste punkt dÃ¤r vi har det, ungefÃ¤r {distanceKm} km bort â€“ en Ã¤nnu grÃ¶vre uppskattning Ã¤n vanligt."
-+  "data.grid.nearestSoilCell": "Vi har inga markdata fÃ¶r just den hÃ¤r punkten, sÃ¥ vi anvÃ¤nder nÃ¤rmaste punkt dÃ¤r vi har det, ungefÃ¤r {distanceKm} km bort â€“ en Ã¤nnu grÃ¶vre uppskattning Ã¤n vanligt.",
-+  "offline.plant.needsConnection": "Den hÃ¤r vÃ¤xten behÃ¶ver en anslutning fÃ¶r att kunna ladda in sina data."
+   "data.grid.nearestClimateCell": "Vi har inga klimatdata för just den här punkten, så vi använder närmaste punkt där vi har det, ungefär {distanceKm} km bort. Se klimatet här som ungefärligt.",
+   "data.grid.uplandClimateCell": "Den här platsen ligger i kuperad terräng eller fjällterräng, där en dalbotten kan vara många grader kallare än en sluttning några hundra meter bort. Värdena är justerade för din höjd och marken omkring dig, men de är osäkrare här än på flackare mark. Där det ändrar ett omdöme visar resultaten spannet.",
+   "data.grid.outsideRegionCountry": "Den här punkten ligger utanför Sverige, men innanför det område vi har klimatdata för. Klimatet gäller ändå – väderdata stannar inte vid en gräns, men korrigeringarna är gjorda mot svenska mätstationer och är osäkrare här. Det som däremot inte gäller är det svenska: listan över invasiva arter, de svenska regel- och lagnoterna och de svenska namnen. Nära gränsen kan vi missa med några kilometer.",
+-  "data.grid.nearestSoilCell": "Vi har inga markdata för just den här punkten, så vi använder närmaste punkt där vi har det, ungefär {distanceKm} km bort – en ännu grövre uppskattning än vanligt."
++  "data.grid.nearestSoilCell": "Vi har inga markdata för just den här punkten, så vi använder närmaste punkt där vi har det, ungefär {distanceKm} km bort – en ännu grövre uppskattning än vanligt.",
++  "offline.plant.needsConnection": "Den här växten behöver en anslutning för att kunna ladda in sina data."
  }
 diff --git a/tests/component/ResultsSection.test.tsx b/tests/component/ResultsSection.test.tsx
 new file mode 100644

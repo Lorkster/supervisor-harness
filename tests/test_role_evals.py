@@ -265,3 +265,25 @@ def test_a_run_is_scored_by_its_record_and_by_its_tree(tmp_path: Path) -> None:
     assert "Accepted: no" in render(card) and "FAIL" in render(card)
     nowhere = scorecard(state, [ok])
     assert nowhere["acceptance"][0]["tail"] == "the run left no tree to check"
+
+
+async def test_a_case_whose_workspace_cannot_be_built_fails_alone(
+    tmp_path: Path, config: HarnessConfig,
+) -> None:
+    """The first full measurement stopped at one patch that did not apply."""
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    (cases_dir / "a-broken.json").write_text(json.dumps(_case("planner", id="a-broken", fixture={
+        "kind": "files", "files": {"x.txt": "x\n"}, "patch": "missing.patch"})),
+        encoding="utf-8")
+    (cases_dir / "b-fine.json").write_text(json.dumps(_case("planner", id="b-fine")),
+                                           encoding="utf-8")
+
+    records = await evaluate(load_cases([cases_dir]), [Variant()], 1, tmp_path / "r.jsonl",
+                             base=config, router=_router(config, FakeProvider()))
+
+    by_case = {r["case"]: r for r in records}
+    assert set(by_case) == {"a-broken", "b-fine"}, "the evaluation carried on"
+    assert not by_case["a-broken"]["passed"]
+    assert "fixture:" in by_case["a-broken"]["checks"]["answered"]["detail"]
+    assert by_case["b-fine"]["checks"]["answered"]["passed"]
