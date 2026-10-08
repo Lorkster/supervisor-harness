@@ -25,7 +25,7 @@ from .roles import RoleOutput, Variant, run_role
 
 
 def parse_variant(spec: str) -> Variant:
-    """``name:key=value,key=value`` -- keys ``route``, ``think``, ``sampling``."""
+    """``name:key=value,key=value`` -- keys ``route``, ``think``, ``sampling``, ``planner``."""
     name, _, rest = spec.partition(":")
     fields: dict[str, Any] = {"name": name or "harness"}
     for pair in filter(None, rest.split(",")):
@@ -37,9 +37,11 @@ def parse_variant(spec: str) -> Variant:
             fields["think"] = value.strip().lower() in ("1", "true", "on", "yes")
         elif key == "sampling":
             fields["model_sampling"] = value.strip().lower() in ("model", "1", "true", "on")
+        elif key == "planner":
+            fields["planner"] = value.strip()
         else:
             raise ValueError(f"variant {spec!r}: unknown key {key!r} "
-                             "(route, think, sampling)")
+                             "(route, think, sampling, planner)")
     return Variant(**fields)
 
 

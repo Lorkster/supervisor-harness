@@ -138,6 +138,15 @@ class Policy:
     # is done, not what is allowed or how it is checked.
     implementer_loop: str = "turns"
 
+    # How the synthesis that writes a run's tasks is called on the autonomous
+    # backend: "one_shot", one JSON answer with thinking off and no tools, or
+    # "conversation", a conversation with read-only native tools in which the
+    # planner can open the files a task would change before naming them, and
+    # answers by calling propose_plan. See `core/planner.py`. Only where the
+    # synthesis provider takes tools natively; anywhere else, "one_shot". Not
+    # protected, for the reason implementer_loop is not.
+    planner_loop: str = "one_shot"
+
     # Under envelope approval, a second reading of each task the gate passes,
     # by a reviewer that can only veto (`core/review.py`), routed to the
     # "review" stage. Protected: a repository able to turn it off would be

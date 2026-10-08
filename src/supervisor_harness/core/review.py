@@ -151,10 +151,10 @@ REVISION_SCHEMA: dict[str, Any] = {
     "properties": {
         "action": {"type": "string",
                    "description": "What the task will now concretely do"},
-        "scope_paths": {"type": "array", "items": {"type": "string"}},
+        "scope_paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
         "dod": {"type": "array", "items": _DOD, "minItems": 2},
     },
-    "required": ["action", "dod"],
+    "required": ["action", "scope_paths", "dod"],
 }
 
 
