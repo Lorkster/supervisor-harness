@@ -833,6 +833,17 @@ owner would merge. Measured against runs 4-9.
 > a filtered run in which no test passed fails. Other runners, and boolean
 > filters, still need node ids or a count.
 
+> **Run 21** (P3-18, 20 minutes). Both tasks that ran verified. The reviewer
+> vetoed three of five, each rightly and each with its fix in the reason: the
+> e2e test bundled with the CI-breaking wiring, a tile-loader change whose
+> caller (`grid.ts`) no task covered, and results criteria that would pass if
+> nothing said "needs connection". A veto ended each one. Now a vetoed task
+> goes back to the planner once, with the veto and the rest of the plan; the
+> revision is applied as an edit -- the harness's bars re-applied, its scope
+> held to the run's envelope -- and faces the gate and the reviewer again. A
+> second veto goes to the owner, with the first named. The reviewer still
+> only vetoes, and a revision can widen nothing.
+
 ---
 
 ## The gate between the parts

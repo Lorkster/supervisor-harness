@@ -133,8 +133,15 @@ from .placement import named_outside_scope, placed_in_tree
 from .reporting import Reporting
 from .responses import SupervisorResponse
 from .review import NOW as REVIEW_NOW
+from .review import (
+    REVISION_SCHEMA,
+    REVISION_SYSTEM,
+    RULING_TOOL,
+    parse_ruling,
+    review_brief,
+    revision_prompt,
+)
 from .review import ROLE as REVIEW_ROLE
-from .review import RULING_TOOL, parse_ruling, review_brief
 
 #: Re-exported for the callers that have always imported it from here --
 #: the CLI, the MCP server and the tests. It lives in `core/responses.py`
@@ -812,6 +819,15 @@ class Supervisor:
             reasons = autonomy.gate(task, self.config.policy)
             if not reasons and self.config.policy.veto_review:
                 veto = await self._review_task(session, task)
+                if veto is not None and await self._revise_after_veto(session, task, veto):
+                    # Once: the revision faces the gate and the reviewer again,
+                    # and a second veto goes to the owner with the first named.
+                    first = veto
+                    reasons = autonomy.gate(task, self.config.policy)
+                    veto = None if reasons else await self._review_task(session, task)
+                    if veto is not None:
+                        veto = (veto[0], f"{veto[1]} (after one revision; first veto: "
+                                         f"{first[0]}: {first[1]})")
                 if veto is not None:
                     reasons = [(EscalationReason.REVIEW_VETO, f"{veto[0]}: {veto[1]}")]
             if not reasons:
@@ -2198,6 +2214,39 @@ class Supervisor:
         await self._flush_assists(session, agent)
         await self.supervision._assess_drift(session, agent, turn)
         await self._report_verification(session, agent, payload)
+
+    async def _revise_after_veto(
+        self, session: RunSession, task: ExecutionTask, veto: tuple[str, str]
+    ) -> bool:
+        """Send a vetoed task back to the planner once; whether it came back revised.
+
+        See `core/review.py`. The revision is applied as an edit to the task:
+        its action and definition of done replaced -- the harness's own bars
+        re-applied, dropped criteria named -- and its scope clamped to the run's
+        envelope, so a revision can narrow or move a task but never widen what
+        the run may change. A failed call or an empty answer leaves the veto
+        standing.
+        """
+        try:
+            revised = await self.supervision._call(
+                "synthesis", REVISION_SYSTEM, revision_prompt(session.state, task, veto),
+                REVISION_SCHEMA, session)
+        except Exception as exc:  # noqa: BLE001 - the veto still stands
+            await session.anote(f"revision after veto failed; the veto stands: {exc}",
+                                task_id=task.id)
+            return False
+        edits = {k: v for k, v in revised.items() if k in ("action", "scope_paths", "dod")}
+        if not str(edits.get("action", "")).strip() or not edits.get("dod"):
+            await session.anote("revision after veto came back empty; the veto stands",
+                                task_id=task.id)
+            return False
+        notes = _apply_modifications(task, edits, self.config.policy, self.workspace,
+                                     session.state.envelope)
+        task.updated_at = now_iso()
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        await session.anote(f"task {task.title!r} revised after a {veto[0]} veto",
+                            task_id=task.id, notes=notes)
+        return True
 
     async def _review_task(
         self, session: RunSession, task: ExecutionTask
