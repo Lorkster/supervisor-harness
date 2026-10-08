@@ -204,6 +204,15 @@ def _check_objective_coverage(ctx: TurnContext) -> DriftSignal | None:
     objectives = [o for o in ctx.agent.objectives if o.strip()]
     if not objectives:
         return None
+    if (ctx.turn.claimed_status is AgentStatus.DONE and ctx.agent.kind is AgentKind.EXECUTION
+            and ctx.agent.task_id):
+        # An implementer's "done" is judged by its task's definition of done,
+        # which the harness and the verifier check next -- not by how many of
+        # its objectives' words the report repeats. In go-live run 19 two
+        # implementers' short, accurate reports scored 0/8 by that overlap and
+        # were sent back to deepen three times each, until their turns ran out;
+        # both tasks then verified, 7/7 and 6/6.
+        return None
     body = tokens(f"{ctx.turn.output} {ctx.turn.self_assessment} " + " ".join(
         f.title + " " + f.detail for f in ctx.turn.findings
     ))

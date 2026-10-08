@@ -1335,3 +1335,38 @@ async def test_a_machine_that_is_stuck_is_still_stopped(supervisor: Supervisor) 
 
     assert response.action == "failed" and len(steps) == limit
     assert f"made no progress in {limit} steps" in response.message
+
+
+def test_an_implementers_done_goes_to_its_definition_of_done_not_to_word_overlap() -> None:
+    """Measured (go-live run 19): two implementers' short, accurate reports scored
+    0/8 objectives by word overlap and were sent back to deepen three times each,
+    until their turns ran out -- and both tasks then verified, 7/7 and 6/6."""
+    report = ("Refactored ResultsSection to per-shard error handling with 'needs "
+              "connection' placeholders; tests in tests/component/ResultsSection.test.tsx.")
+    turn = AgentTurn(output=report, files_touched=["src/app/results/ResultsSection.tsx"],
+                     claimed_status=AgentStatus.DONE)
+    objectives = [
+        "Replace Promise.all over catalogue shards with Promise.allSettled",
+        "Classify a rejected shard as offline-unavailable through the DataError code",
+        "Keep every shard that loaded visible with its verdicts",
+        "Add component tests that reject one shard and assert the placeholder text",
+    ]
+    implementer = _agent(id="agt_impl", role="implementer", kind=AgentKind.EXECUTION,
+                         task_id="tsk_results", objectives=objectives,
+                         scope=Scope(paths=["src/", "tests/"]))
+    lens = _agent(id="agt_lens", objectives=objectives, scope=Scope(paths=["src/", "tests/"]))
+
+    assert [s.kind for s in _assess(lens, turn, index=2).signals] == ["objective_coverage"]
+    assert not _assess(implementer, turn, index=2).signals, (
+        "the same thin overlap is no signal against an implementer's done")
+    working = AgentTurn(output=report, claimed_status=AgentStatus.RUNNING)
+    assert "objective_coverage" in [s.kind for s in _assess(implementer, working,
+                                                             index=2).signals], (
+        "mid-task, it is still the budget nudge it was")
+
+    accepted = decide_directive(_assess(implementer, turn, index=2), implementer, turn,
+                                Policy(), 3)
+    sent_back = decide_directive(_assess(lens, turn, index=2), lens, turn, Policy(), 3)
+
+    assert accepted.kind is DirectiveKind.ACCEPT, "verification judges it next"
+    assert sent_back.kind is not DirectiveKind.ACCEPT, "a lens still has no other judge"

@@ -810,6 +810,19 @@ owner would merge. Measured against runs 4-9.
 > over-strict vetoes became `proceed`; the two correct ones stood, for the
 > same reasons.
 
+> **Run 19** (P3-18, 1h19m). Every task that ran was verified, four of four,
+> among them the core of P3-18 -- the results list keeps every shard that
+> loaded and says "needs connection" for the rest -- and the branch passes
+> `npm run check` (897 unit tests), `verify.ps1` and all 25 Playwright
+> journeys. The one escalation is the CI veto, right again. But two
+> implementers ran out of turns after finishing: each short, accurate "done"
+> scored 0/8 objectives by word overlap with its objectives and was sent
+> back to deepen three times, and one, sent looking for more, wandered into
+> the Playwright task. An implementer's "done" is judged by its task's
+> definition of done, which the harness checks next; the overlap no longer
+> counts against it (it still nudges an implementer mid-task, and still
+> judges a lens's "done").
+
 ---
 
 ## The gate between the parts
