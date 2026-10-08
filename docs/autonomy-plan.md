@@ -823,6 +823,16 @@ owner would merge. Measured against runs 4-9.
 > counts against it (it still nudges an implementer mid-task, and still
 > judges a lens's "done").
 
+> **Run 20** (P3-18, 38 minutes). Every task that ran verified, three of
+> three; no agent stopped or was sent back for nothing; the branch passes
+> every check the project has. Two escalations: the CI veto, and a task held
+> for `vitest run tests/data/http.test.ts -t 'offline'` with no count -- the
+> rule that a name filter must say how many tests it selects, because a
+> filter matching nothing exits 0. For a runner whose summary counts the tests
+> that passed (pytest, vitest, jest, cargo), that is now caught where it runs:
+> a filtered run in which no test passed fails. Other runners, and boolean
+> filters, still need node ids or a count.
+
 ---
 
 ## The gate between the parts

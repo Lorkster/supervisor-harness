@@ -447,11 +447,12 @@ def test_quality_bars_are_not_suppressed_by_test_data_or_security_cameras() -> N
 
 def test_a_filtered_test_command_must_say_which_tests_it_means() -> None:
     """A filter that selects nothing exits 0, certifying the absence of the
-    tests the criterion was written to demand."""
+    tests the criterion was written to demand. (A runner whose summary counts
+    the tests that passed is held to that where it runs instead; see below.)"""
     filtered = DoDCriterion(
         statement="The modification path is covered",
         method=VerifyMethod.TEST,
-        command="pytest -q -k modif",
+        command="go test -run Modif ./...",
     )
     pinned = DoDCriterion(
         statement="The stale lock path is covered",
@@ -463,7 +464,7 @@ def test_a_filtered_test_command_must_say_which_tests_it_means() -> None:
 
     flagged = [i for i in issues if i.criterion_id == filtered.id]
     assert flagged, "a -k filter matching nothing would have passed unnoticed"
-    assert "-k modif" in flagged[0].problem
+    assert "-run Modif" in flagged[0].problem
     assert flagged[0].severity is Severity.HIGH
     assert not [i for i in issues if i.criterion_id == pinned.id]
 
@@ -1370,3 +1371,30 @@ def test_an_implementers_done_goes_to_its_definition_of_done_not_to_word_overlap
 
     assert accepted.kind is DirectiveKind.ACCEPT, "verification judges it next"
     assert sent_back.kind is not DirectiveKind.ACCEPT, "a lens still has no other judge"
+
+
+def test_a_runner_that_counts_is_held_to_one_passing_test_where_it_runs(
+    tmp_path: Path,
+) -> None:
+    """Measured (go-live run 20): a task went to the owner for `vitest run
+    tests/data/http.test.ts -t 'offline'` with no count. vitest, jest, pytest and
+    cargo print how many tests passed, so the filter that matches nothing is
+    caught where it runs, and the criterion stands."""
+    (tmp_path / "test_offline.py").write_text(
+        "import pytest\n\n"
+        "def test_offline_code():\n    assert True\n\n"
+        "@pytest.mark.skip\ndef test_skipped_only():\n    assert True\n",
+        encoding="utf-8")
+
+    def run(selection: str) -> DoDCriterion:
+        return DoDCriterion(statement="s", method=VerifyMethod.TEST,
+                            command=f"python -m pytest -q test_offline.py -k {selection}")
+
+    assert unpinned_selection(run("offline_code")) is None, "enforceable as written"
+    assert unpinned_selection(run("'a or b'")) is not None, "a boolean filter still is not"
+    passed = verify_command(run("offline_code"), tmp_path, timeout=60)
+    nothing_passed = verify_command(run("skipped_only"), tmp_path, timeout=60)
+
+    assert str(passed.status) == "pass", passed.evidence
+    assert str(nothing_passed.status) == "fail", nothing_passed.evidence
+    assert "selected no test that passed" in nothing_passed.evidence
