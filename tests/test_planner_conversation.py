@@ -160,6 +160,8 @@ def test_a_list_sent_as_json_text_is_read_as_the_list() -> None:
                           "recommended_mode": "execute"}, PLAN_TOOL)
     assert fixed["tasks"] == tasks
     assert fixed["summary"] == "{\"a\": 1}", "a string the schema wants stays a string"
+    assert as_specified({"tasks": json.dumps(tasks) + "]}"}, PLAN_TOOL)["tasks"] == tasks, (
+        "a list closed with a bracket too many, as the local model sent it")
     assert as_specified({"tasks": "not json"}, PLAN_TOOL)["tasks"] == "not json"
     assert as_specified({"tasks": '{"a": 1}'}, PLAN_TOOL)["tasks"] == '{"a": 1}', (
         "decoded only to the type the schema names")

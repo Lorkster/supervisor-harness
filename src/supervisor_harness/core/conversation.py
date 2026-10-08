@@ -260,7 +260,10 @@ def as_specified(arguments: dict[str, Any], spec: dict[str, Any] | None) -> dict
         if wanted not in ("array", "object") or not isinstance(value, str):
             continue
         try:
-            decoded = json.loads(value)
+            # The first whole value, ignoring what trails it: the same model
+            # closed its list with one bracket too many ("Extra data"), and a
+            # strict decode left all of its tasks as text.
+            decoded, _ = json.JSONDecoder().raw_decode(value.strip())
         except json.JSONDecodeError:
             continue
         if isinstance(decoded, list if wanted == "array" else dict):
