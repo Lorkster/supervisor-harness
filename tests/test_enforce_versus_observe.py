@@ -77,6 +77,9 @@ BROAD_SUPPRESSION_ALLOWED = {
     "cli.py": "rendering a progress line must not fail a command",
     "config.py": "an unrecognised env override is ignored, not fatal",
     "core/consolidate.py": "a reasoner that raises leaves the library untidied, not broken",
+    # Batch F measures and decides nothing about a run.
+    "evals/fixtures.py": "removing a case's temporary worktree is tidy-up, not a result",
+    "evals/roles.py": "a role whose call fails is a measured result, not a crashed evaluation",
     # Not an observing surface: the second opinion decides a directive. It is
     # listed because the broad catch fails *closed* -- a failed opinion leaves
     # the stricter heuristic assessment standing, noted on the log.

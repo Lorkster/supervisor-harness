@@ -1,0 +1,78 @@
+{
+  "id": "greenfield-wordfreq-review-good",
+  "role": "review",
+  "fixture": {
+    "kind": "files",
+    "files": {}
+  },
+  "request": "Create a small Python command-line tool, wordfreq, that prints the ten most frequent words in a text file, case-insensitively and ignoring punctuation. Package it under src/wordfreq with a console entry point, and test it with pytest. The work is done when python -m pytest passes.",
+  "input": {
+    "task": {
+      "id": "tsk_gf_good",
+      "title": "Create the wordfreq package, its CLI and tests",
+      "action": "Write src/wordfreq/__init__.py with count_words(text) and top_words(path, n), src/wordfreq/cli.py with main(), a [project.scripts] entry in pyproject.toml, and tests/test_wordfreq.py",
+      "motivation": "The request",
+      "scope": {
+        "paths": [
+          "src/wordfreq/",
+          "tests/",
+          "pyproject.toml"
+        ]
+      },
+      "dod": [
+        {
+          "statement": "the tests pass",
+          "method": "test",
+          "command": "python -m pytest -q",
+          "mandatory": true
+        },
+        {
+          "statement": "the entry point is declared",
+          "method": "inspection",
+          "expect": "pyproject.toml: wordfreq",
+          "mandatory": true
+        }
+      ]
+    },
+    "plan": [
+      {
+        "id": "tsk_gf_off",
+        "title": "Add a Flask dashboard that draws word clouds",
+        "action": "Add a Flask web app under web/ that uploads a file and renders a word cloud",
+        "motivation": "Users may like a visual view",
+        "scope": {
+          "paths": [
+            "web/",
+            "requirements.txt"
+          ]
+        },
+        "dod": [
+          {
+            "statement": "the dashboard tests pass",
+            "method": "test",
+            "command": "python -m pytest -q tests/test_web.py",
+            "mandatory": true
+          },
+          {
+            "statement": "the app is declared",
+            "method": "inspection",
+            "expect": "web/app.py: Flask",
+            "mandatory": true
+          }
+        ]
+      }
+    ]
+  },
+  "checks": [
+    "answered",
+    "ruled",
+    "veto_cites_file",
+    {
+      "check": "verdict_in",
+      "verdicts": [
+        "proceed"
+      ]
+    }
+  ],
+  "labelled_by": "Claude (Opus 5.5), written as a green-field case: the request is all there is"
+}

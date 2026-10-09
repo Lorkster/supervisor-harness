@@ -1,0 +1,110 @@
+{
+  "id": "p3-18-run19-verifier-add-offline-unavailable-dataerrorcode-and-classify-z1mn",
+  "role": "verifier",
+  "fixture": {
+    "kind": "git",
+    "repo": "${PLANTSANDCLIMATE}",
+    "commit": "cfdb95ca1ce8",
+    "patch": "p3-18-run19.patch"
+  },
+  "request": "Do task P3-18 in docs/PLAN-PHASE-3.md: 'Offline states, and a test that actually goes offline'. Follow docs/AGENT-WORKFLOW.md and read the docs in the task's Reads column (UX-PRINCIPLES.md section 7, ARCHITECTURE.md section Progressive enhancement and offline) before changing anything. A saved garden must work with no connection; a plant or a tile that is not cached says 'needs connection' rather than guessing; user-visible strings only in src/i18n/. Add a Playwright test that drives the app with the network cut. The work is done when the phase's acceptance criteria hold: npm run check, pwsh scripts/verify.ps1 and the Playwright suite (npm run test:e2e) each pass, as separate gates, as in CI.",
+  "input": {
+    "task": {
+      "id": "tsk_01M4DGAC2SZ1MN",
+      "run_id": "run_01M4DFED8Y9Q06",
+      "title": "Add 'offline-unavailable' DataErrorCode and classify offline fetch failures",
+      "action": "Add a new value 'offline-unavailable' to the DataErrorCode union type in src/data/errors.ts. In src/data/http.ts (or its caller), when a fetch throws AND navigator.onLine is false, throw DataError with code 'offline-unavailable' instead of 'fetch-failed'. This lets components branch on the error code to render the distinct 'needs connection' state without parsing prose or checking navigator.onLine themselves.",
+      "motivation": "The data layer is the only place that fetches (ARCHITECTURE.md:94). Currently all network failures produce DataError('fetch-failed'), making it impossible for the UI to distinguish 'offline and not cached' from 'server error'. The errors.ts comment explicitly states the code field exists so UI can branch on it. Centralizing this in the data layer prevents duplicated offline-state logic across components.",
+      "rationale_refs": [
+        "fnd_01M4DFYKFFGGHH",
+        "fnd_01M4DFJBGEEY22",
+        "fnd_01M4DFM1PJFGV4",
+        "fnd_01M4DG5A3BJNBP",
+        "fnd_01M4DG91FQCY96",
+        "fnd_01M4DFYKFF9ZPR",
+        "fnd_01M4DG5A3BQ15J"
+      ],
+      "dod": [
+        {
+          "id": "dod_01M4DGAC2ST3DN",
+          "statement": "TypeScript compilation succeeds with the new error code value",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Pass only if the code and its tests show this: TypeScript compilation succeeds with the new error code value. Cite the test that proves it, by file and line, and the code it exercises. A claim with no test behind it fails.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:21:50.485Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2V7K3X",
+          "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:21:50.505Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2V3K9W",
+          "statement": "No wait, retry or lock this change adds can hang, deadlock or spin without bound",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Follow every wait, retry and lock acquisition the change adds or modifies. Pass only on a bounded-time demonstration: a named test that drives the contended or failing path to completion inside a stated wall-clock bound, with the measured time quoted. Reading the code is not a demonstration. Fail if a retry loop has neither a delay nor an attempt ceiling, if a lock is taken without a timeout, or if a failure path returns to the same wait with nothing changed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:21:50.524Z",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2V0ME2",
+          "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "2026-10-08T11:21:50.542Z",
+          "verified_by": ""
+        }
+      ],
+      "scope": {
+        "paths": [
+          "src/",
+          "tests/",
+          "playwright.config.ts",
+          "package.json",
+          "docs/"
+        ],
+        "forbidden_paths": [],
+        "topics": [],
+        "out_of_scope": []
+      },
+      "suggested_role": "",
+      "suggested_binding": null,
+      "depends_on": [],
+      "risk": "low",
+      "clamped": [],
+      "effort": "medium",
+      "status": "verified",
+      "decision": "approve",
+      "decision_note": "approved by the harness within the granted envelope",
+      "assigned_agent_id": "agt_01M4DGKYAP5J6J",
+      "attempts": 1,
+      "created_at": "2026-10-08T10:18:07.321Z",
+      "updated_at": "2026-10-08T11:21:50.582Z"
+    },
+    "change_summary": ""
+  },
+  "labelled_by": ""
+}

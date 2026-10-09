@@ -1,0 +1,628 @@
+{
+  "id": "p3-18-run19-review-wire-playwright-e2e-suite-into-npm-a0cy",
+  "role": "review",
+  "fixture": {
+    "kind": "git",
+    "repo": "${PLANTSANDCLIMATE}",
+    "commit": "cfdb95ca1ce8"
+  },
+  "request": "Do task P3-18 in docs/PLAN-PHASE-3.md: 'Offline states, and a test that actually goes offline'. Follow docs/AGENT-WORKFLOW.md and read the docs in the task's Reads column (UX-PRINCIPLES.md section 7, ARCHITECTURE.md section Progressive enhancement and offline) before changing anything. A saved garden must work with no connection; a plant or a tile that is not cached says 'needs connection' rather than guessing; user-visible strings only in src/i18n/. Add a Playwright test that drives the app with the network cut. The work is done when the phase's acceptance criteria hold: npm run check, pwsh scripts/verify.ps1 and the Playwright suite (npm run test:e2e) each pass, as separate gates, as in CI.",
+  "input": {
+    "task": {
+      "id": "tsk_01M4DGAC2SA0CY",
+      "run_id": "run_01M4DFED8Y9Q06",
+      "title": "Wire Playwright e2e suite into npm run check",
+      "action": "Add 'npm run test:e2e' to the check script in package.json so that the new offline Playwright test is part of the verification gate. The task states 'The work is green when npm run check passes' — if the e2e test is not included in check, it will not be verified by the gate and a broken offline state could ship with a green build.",
+      "motivation": "package.json:16 defines check as 'npm run typecheck && npm run lint && npm run test && npm run build'. The test script (line 14) is 'vitest run --coverage' — unit/integration tests only. The e2e tests are a separate script (test:e2e, line 15). Multiple agents flagged this gap: the new Playwright offline test will NOT be run by npm run check unless explicitly wired in.",
+      "rationale_refs": [
+        "fnd_01M4DG4CT1S8A7",
+        "fnd_01M4DG5A3B34MW",
+        "fnd_01M4DFNT36NV2N"
+      ],
+      "dod": [
+        {
+          "id": "dod_01M4DGAC2SFB3F",
+          "statement": "The check script in package.json includes the Playwright e2e suite",
+          "method": "inspection",
+          "command": "",
+          "expect": "package.json: test:e2e",
+          "rubric": "",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2SXXM3",
+          "statement": "npm run check passes with all gates including the new e2e test",
+          "method": "command",
+          "command": "npm run check",
+          "expect": "0",
+          "rubric": "",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2YDRNG",
+          "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "",
+          "verified_by": ""
+        },
+        {
+          "id": "dod_01M4DGAC2YM6RZ",
+          "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+          "method": "review",
+          "command": "",
+          "expect": "",
+          "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+          "mandatory": true,
+          "status": "unverified",
+          "evidence": "",
+          "verified_at": "",
+          "verified_by": ""
+        }
+      ],
+      "scope": {
+        "paths": [
+          "src/",
+          "tests/",
+          "playwright.config.ts",
+          "package.json",
+          "docs/"
+        ],
+        "forbidden_paths": [],
+        "topics": [],
+        "out_of_scope": []
+      },
+      "suggested_role": "",
+      "suggested_binding": null,
+      "depends_on": [],
+      "risk": "low",
+      "clamped": [],
+      "effort": "medium",
+      "status": "deferred",
+      "decision": null,
+      "decision_note": "deferred by the owner on `esc_01M4DGJ4TY5PNW`",
+      "assigned_agent_id": null,
+      "attempts": 0,
+      "created_at": "2026-10-08T10:18:07.321Z",
+      "updated_at": "2026-10-08T13:35:16.781Z"
+    },
+    "plan": [
+      {
+        "id": "tsk_01M4DGAC2SZGVK",
+        "run_id": "run_01M4DFED8Y9Q06",
+        "title": "Add 'needs connection' i18n keys to en.json and sv.json",
+        "action": "Add a dedicated offline/needs-connection key (e.g., offline.plant.needsConnection) to both src/i18n/en.json and src/i18n/sv.json. The English value must be an affordance ('This plant needs a connection to load its data'), not an error ('Failed to load'). The Swedish value must be a proper translation. Both keys must be added in the same commit so the parity test passes.",
+        "motivation": "Multiple agents (quality, ux) independently confirmed that no offline-related key exists in either locale file. formatMessage() throws on missing keys, and tests/i18n/index.test.ts enforces key parity between en and sv. The task requires user-visible strings only in src/i18n/.",
+        "rationale_refs": [
+          "fnd_01M4DFNT36392J",
+          "fnd_01M4DG6X7QMTTE",
+          "fnd_01M4DG4CT17BVD",
+          "fnd_01M4DFPJPYN3BV",
+          "fnd_01M4DFNT36YB0P",
+          "fnd_01M4DG5A3B71Y8",
+          "fnd_01M4DFJBGESNG0"
+        ],
+        "dod": [
+          {
+            "id": "dod_01M4DGAC2SMAW5",
+            "statement": "The i18n parity test passes, proving both en.json and sv.json contain the same set of keys including the new offline key",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Pass only if the code and its tests show this: The i18n parity test passes, proving both en.json and sv.json contain the same set of keys including the new offline key. Cite the test that proves it, by file and line, and the code it exercises. A claim with no test behind it fails.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "tests/i18n/index.test.ts:19-21: \"it('sv and en carry exactly the same keys', () => { expect(Object.keys(en).sort()).toEqual(Object.keys(sv).sort()); })\" with en/sv imported from src/i18n/en.json and sv.json (lines 15-16). The key exists once per file: src/i18n/en.json:483 '\"offline.plant.needsConnection\": \"This plant needs a connection to load its data.\"' and src/i18n/sv.json:483 '\"offline.plant.needsConnection\": \"Den här växten behöver en anslutning för att kunna ladda in sina data.\"'. English value is an affordance; 'Failed to load' appears nowhere in either catalogue.",
+            "verified_at": "2026-10-08T11:20:49.563Z",
+            "verified_by": "agt_01M4DKTD40GSYV"
+          },
+          {
+            "id": "dod_01M4DGAC2SWT81",
+            "statement": "en.json contains the offline.plant.needsConnection key with an English value that is an affordance, not an error",
+            "method": "inspection",
+            "command": "",
+            "expect": "src/i18n/en.json: offline.plant.needsConnection",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "src/i18n/en.json:483 contains 'offline.plant.needsConnection'",
+            "verified_at": "2026-10-08T10:23:20.881Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2SJHP0",
+            "statement": "sv.json contains the offline.plant.needsConnection key with a Swedish translation",
+            "method": "inspection",
+            "command": "",
+            "expect": "src/i18n/sv.json: offline.plant.needsConnection",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "src/i18n/sv.json:483 contains 'offline.plant.needsConnection'",
+            "verified_at": "2026-10-08T10:23:20.899Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2TR8EN",
+            "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The change consists solely of two static string entries in src/i18n/en.json:483 and src/i18n/sv.json:483. No new input paths, no secrets, no authorisation logic is introduced or modified.",
+            "verified_at": "2026-10-08T11:20:49.583Z",
+            "verified_by": "agt_01M4DKTD40GSYV"
+          },
+          {
+            "id": "dod_01M4DGAC2TZZ0N",
+            "statement": "No wait, retry or lock this change adds can hang, deadlock or spin without bound",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Follow every wait, retry and lock acquisition the change adds or modifies. Pass only on a bounded-time demonstration: a named test that drives the contended or failing path to completion inside a stated wall-clock bound, with the measured time quoted. Reading the code is not a demonstration. Fail if a retry loop has neither a delay nor an attempt ceiling, if a lock is taken without a timeout, or if a failure path returns to the same wait with nothing changed.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The change adds only i18n string data; the sole consumer is a render-time lookup at src/app/results/ResultsSection.tsx:349 \"t({ key: 'offline.plant.needsConnection' })\". No wait, retry loop, or lock acquisition is added or modified by this change.",
+            "verified_at": "2026-10-08T11:20:49.602Z",
+            "verified_by": "agt_01M4DKTD40GSYV"
+          },
+          {
+            "id": "dod_01M4DGAC2T7VPV",
+            "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "Key naming matches the existing dotted-namespace convention (e.g., src/i18n/en.json:477 '\"data.grid.noData\"', :476 '\"plantDetail.feedback.link\"'). Both entries sit at the same position (line 483, file end) in both catalogues. Not a duplicate of the pre-existing error key: src/i18n/en.json:360 '\"results.loadError\": \"Couldn't load the plant catalogue...\"' is used on the distinct non-offline branch at ResultsSection.tsx:350.",
+            "verified_at": "2026-10-08T11:20:49.625Z",
+            "verified_by": "agt_01M4DKTD40GSYV"
+          }
+        ],
+        "scope": {
+          "paths": [
+            "src/",
+            "tests/",
+            "playwright.config.ts",
+            "package.json",
+            "docs/"
+          ],
+          "forbidden_paths": [],
+          "topics": [],
+          "out_of_scope": []
+        },
+        "suggested_role": "",
+        "suggested_binding": null,
+        "depends_on": [],
+        "risk": "low",
+        "clamped": [],
+        "effort": "medium",
+        "status": "verified",
+        "decision": "approve",
+        "decision_note": "approved by the harness within the granted envelope",
+        "assigned_agent_id": "agt_01M4DGJKYX8GJW",
+        "attempts": 1,
+        "created_at": "2026-10-08T10:18:07.321Z",
+        "updated_at": "2026-10-08T11:20:49.674Z"
+      },
+      {
+        "id": "tsk_01M4DGAC2SZ1MN",
+        "run_id": "run_01M4DFED8Y9Q06",
+        "title": "Add 'offline-unavailable' DataErrorCode and classify offline fetch failures",
+        "action": "Add a new value 'offline-unavailable' to the DataErrorCode union type in src/data/errors.ts. In src/data/http.ts (or its caller), when a fetch throws AND navigator.onLine is false, throw DataError with code 'offline-unavailable' instead of 'fetch-failed'. This lets components branch on the error code to render the distinct 'needs connection' state without parsing prose or checking navigator.onLine themselves.",
+        "motivation": "The data layer is the only place that fetches (ARCHITECTURE.md:94). Currently all network failures produce DataError('fetch-failed'), making it impossible for the UI to distinguish 'offline and not cached' from 'server error'. The errors.ts comment explicitly states the code field exists so UI can branch on it. Centralizing this in the data layer prevents duplicated offline-state logic across components.",
+        "rationale_refs": [
+          "fnd_01M4DFYKFFGGHH",
+          "fnd_01M4DFJBGEEY22",
+          "fnd_01M4DFM1PJFGV4",
+          "fnd_01M4DG5A3BJNBP",
+          "fnd_01M4DG91FQCY96",
+          "fnd_01M4DFYKFF9ZPR",
+          "fnd_01M4DG5A3BQ15J"
+        ],
+        "dod": [
+          {
+            "id": "dod_01M4DGAC2SX1TC",
+            "statement": "The DataErrorCode type in errors.ts includes the new 'offline-unavailable' value",
+            "method": "inspection",
+            "command": "",
+            "expect": "src/data/errors.ts: offline-unavailable",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "src/data/errors.ts:15 contains 'offline-unavailable'",
+            "verified_at": "2026-10-08T10:25:19.211Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2SAT4Y",
+            "statement": "http.ts classifies fetch failures that occur when navigator.onLine is false as 'offline-unavailable' rather than 'fetch-failed'",
+            "method": "inspection",
+            "command": "",
+            "expect": "src/data/http.ts: offline-unavailable",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "src/data/http.ts:46 contains 'offline-unavailable'",
+            "verified_at": "2026-10-08T10:25:19.230Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2ST3DN",
+            "statement": "TypeScript compilation succeeds with the new error code value",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Pass only if the code and its tests show this: TypeScript compilation succeeds with the new error code value. Cite the test that proves it, by file and line, and the code it exercises. A claim with no test behind it fails.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "src/data/errors.ts:15 adds `| 'offline-unavailable'` to the DataErrorCode union. src/data/http.ts:46 assigns that literal directly into a parameter typed `DataErrorCode` (errors.ts:28 `code: DataErrorCode`), so tsc cannot succeed unless the value is in the union — and it did: coverage/src/data/http.ts.html:245 shows the very line `throw new DataError('offline-unavailable', ...)` was executed under istanbul during a passing vitest run (report generated at 2026-10-08T11:15:37Z). The test proving it is tests/data/offlineUnavailable.test.ts:33-46, whose `expect(error.code).toBe('offline-unavailable')` (line 43) asserts the new code and exercises http.ts:42-50.",
+            "verified_at": "2026-10-08T11:21:50.485Z",
+            "verified_by": "agt_01M4DKTD40GW54"
+          },
+          {
+            "id": "dod_01M4DGAC2VBCRD",
+            "statement": "Automated tests cover the behaviour changed by this task, including at least one failure or edge case, and the suite passes",
+            "method": "test",
+            "command": "npm test --silent",
+            "expect": "0",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "$ npm test --silent\nexit=0\n |   91.37 |    83.87 |     100 |   92.98 | 71-72,112,177     \n  profiles.ts      |     100 |     87.5 |     100 |     100 | 73                \n  site.ts          |    97.5 |    96.15 |     100 |   97.18 | 140,153           \n ...domain/climate |   98.24 |       95 |     100 |   98.24 |                   \n  microclimate.ts  |   98.24 |       95 |     100 |   98.24 | 96                \n ...omain/matching |   99.58 |    98.37 |     100 |   99.56 |                   \n  confidence.ts    |   85.71 |    83.33 |     100 |   85.71 | 25                \n  index.ts         |     100 |       90 |     100 |     100 | 119,167,278       \n  moisture.ts      |   97.82 |    96.29 |     100 |   97.82 | 184               \n src/i18n          |     100 |    94.44 |     100 |     100 |                   \n  index.ts         |     100 |    94.44 |     100 |     100 | 86,158            \n src/sw            |   34.19 |    54.34 |   40.54 |   34.14 |                   \n  policy.ts        |   94.64 |    96.15 |     100 |   97.67 | 58                \n  sw.ts            |       0 |        0 |       0 |       0 | 44-214            \n-------------------|---------|----------|---------|---------|-------------------\n\n=============================== Coverage summary ===============================\nStatements   : 63.85% ( 1862/2916 )\nBranches     : 59.3% ( 1237/2086 )\nFunctions    : 58.67% ( 389/663 )\nLines        : 64.26% ( 1701/2647 )\n================================================================================",
+            "verified_at": "2026-10-08T10:25:30.044Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2V7K3X",
+            "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The only new input path is reading `navigator.onLine`, used as a boolean classifier: src/data/http.ts:42-44 `const offline = typeof navigator !== 'undefined' && (navigator as unknown as { onLine?: boolean }).onLine === false;` — no value from it is interpolated, logged or returned. The url in the new message (http.ts:46) is the same-origin static data URL already used identically by the pre-existing `fetch-failed` and `invalid-json` throws (http.ts:51, 65); http.ts:2-6 states all fetched files are same-origin static JSON, so no user-controlled input enters. No secrets or authorisation checks exist in this module and none were added.",
+            "verified_at": "2026-10-08T11:21:50.505Z",
+            "verified_by": "agt_01M4DKTD40GW54"
+          },
+          {
+            "id": "dod_01M4DGAC2V3K9W",
+            "statement": "No wait, retry or lock this change adds can hang, deadlock or spin without bound",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Follow every wait, retry and lock acquisition the change adds or modifies. Pass only on a bounded-time demonstration: a named test that drives the contended or failing path to completion inside a stated wall-clock bound, with the measured time quoted. Reading the code is not a demonstration. Fail if a retry loop has neither a delay nor an attempt ceiling, if a lock is taken without a timeout, or if a failure path returns to the same wait with nothing changed.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The change adds no wait, retry or lock: it is a single synchronous read of `navigator.onLine` inside the existing catch block (src/data/http.ts:42-50) followed by a throw. The failing path is driven to completion by tests/data/offlineUnavailable.test.ts:33-46 (thrown fetch + onLine=false → 'offline-unavailable'), which completed successfully under vitest's default 5000 ms per-test wall-clock bound (no custom timeout in vitest.config.ts; coverage report at 2026-10-08T11:15:37Z proves the run finished green with this branch executed).",
+            "verified_at": "2026-10-08T11:21:50.524Z",
+            "verified_by": "agt_01M4DKTD40GW54"
+          },
+          {
+            "id": "dod_01M4DGAC2V0ME2",
+            "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The new throw mirrors the surrounding DataError construction exactly — same `code, message, { url, cause }` shape as src/data/http.ts:51 and :65; kebab-case code matches existing union members (errors.ts:13-17); comment style matches the file's explanatory block comments. The structural cast is justified by the actual lib surface: tsconfig.test.json:4 `\"lib\": [\"ES2022\"]` has no DOM lib, so `navigator.onLine` is untyped there — no existing helper was bypassed (search shows navigator.onLine appears nowhere else in src/). No duplicated logic: the offline check lives only in http.ts, and the UI branches on the code (src/app/results/ResultsSection.tsx:119 `outcome.reason.code === 'offline-unavailable'`) with user-visible strings as i18n keys ('offline.plant.needsConnection', ResultsSection.tsx:349), not prose.",
+            "verified_at": "2026-10-08T11:21:50.542Z",
+            "verified_by": "agt_01M4DKTD40GW54"
+          }
+        ],
+        "scope": {
+          "paths": [
+            "src/",
+            "tests/",
+            "playwright.config.ts",
+            "package.json",
+            "docs/"
+          ],
+          "forbidden_paths": [],
+          "topics": [],
+          "out_of_scope": []
+        },
+        "suggested_role": "",
+        "suggested_binding": null,
+        "depends_on": [],
+        "risk": "low",
+        "clamped": [],
+        "effort": "medium",
+        "status": "verified",
+        "decision": "approve",
+        "decision_note": "approved by the harness within the granted envelope",
+        "assigned_agent_id": "agt_01M4DGKYAP5J6J",
+        "attempts": 1,
+        "created_at": "2026-10-08T10:18:07.321Z",
+        "updated_at": "2026-10-08T11:21:50.582Z"
+      },
+      {
+        "id": "tsk_01M4DGAC2STPX6",
+        "run_id": "run_01M4DFED8Y9Q06",
+        "title": "Refactor ResultsSection to tolerate per-shard failure and render 'needs connection' for uncached shards",
+        "action": "Replace the Promise.all over all catalogue shards in ResultsSection.tsx with per-shard error handling (Promise.allSettled or individual try/catch). Collect plants from successful shards into the results array. For each failed shard, render a 'needs connection' placeholder for the plants in that shard using the i18n key added in task 1. The component should branch on DataError.code === 'offline-unavailable' to show the specific offline message, and fall back to the generic loadError for other failure types. This is the most significant structural change: it enables partial rendering where cached plants show normally and uncached ones say 'needs connection'.",
+        "motivation": "ResultsSection.tsx:78-79 loads all shards with Promise.all; a single shard failure sets loadError=true and the entire results section shows a generic error. P3-18 requires per-item availability: 'a plant or a tile that is not cached says needs connection rather than guessing'. The current all-or-nothing pattern cannot express 'plant A loaded, plant B needs connection'.",
+        "rationale_refs": [
+          "fnd_01M4DG4CT1Z0WB",
+          "fnd_01M4DFYKFFKQV7",
+          "fnd_01M4DFM1PJ58VN",
+          "fnd_01M4DFPJPY50S2",
+          "fnd_01M4DG6X7QHFPK",
+          "fnd_01M4DFJBGE0S01"
+        ],
+        "dod": [
+          {
+            "id": "dod_01M4DGAC2ST210",
+            "statement": "ResultsSection no longer uses a single Promise.all that fails the entire list; it uses per-shard error handling (Promise.allSettled or individual try/catch)",
+            "method": "inspection",
+            "command": "",
+            "expect": "src/app/results/ResultsSection.tsx: allSettled",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "src/app/results/ResultsSection.tsx:103 contains 'allSettled'",
+            "verified_at": "2026-10-08T10:37:00.869Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2STCQC",
+            "statement": "ResultsSection renders the 'needs connection' i18n string for plants in failed shards rather than a single generic error",
+            "method": "inspection",
+            "command": "",
+            "expect": "src/app/results/ResultsSection.tsx: offline.plant.needsConnection",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "src/app/results/ResultsSection.tsx:349 contains 'offline.plant.needsConnection'",
+            "verified_at": "2026-10-08T10:37:00.885Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2SA5NQ",
+            "statement": "TypeScript compilation succeeds with the refactored ResultsSection",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Pass only if the code and its tests show this: TypeScript compilation succeeds with the refactored ResultsSection. Cite the test that proves it, by file and line, and the code it exercises. A claim with no test behind it fails.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "tests/component/ResultsSection.test.tsx:103-161 ('describe ResultsSection shard failures (P3-18)') imports the refactored component (line 14) and drives all four paths of the new code: all-success render (line 104), offline-unavailable shard → 'needs connection' placeholder (lines 114-134, asserting 'needs a connection' text at line 131), fetch-failed fallback (lines 136-150), and index failure section error (lines 152-161). The component code exercised is src/app/results/ResultsSection.tsx:103-124 (Promise.allSettled, per-shard offline flag) and 343-354 (placeholder render). Execution of the refactored module is confirmed by the coverage report generated from a vitest run: coverage/src/app/results/ResultsSection.html:922 shows 'outcome.reason instanceof DataError && outcome.reason.code' as an executed line, alongside the placeholder block at 1149-1152. The test's mock (tests/component/ResultsSection.test.tsx:39-58) constructs real DataError instances from src/data/errors.ts, so the component's typed branch is genuinely exercised.",
+            "verified_at": "2026-10-08T11:22:07.557Z",
+            "verified_by": "agt_01M4DKTD401QMV"
+          },
+          {
+            "id": "dod_01M4DGAC2W1W5E",
+            "statement": "Automated tests cover the behaviour changed by this task, including at least one failure or edge case, and the suite passes",
+            "method": "test",
+            "command": "npm test --silent",
+            "expect": "0",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "$ npm test --silent\nexit=0\n |   91.37 |    83.87 |     100 |   92.98 | 71-72,112,177     \n  profiles.ts      |     100 |     87.5 |     100 |     100 | 73                \n  site.ts          |    97.5 |    96.15 |     100 |   97.18 | 140,153           \n ...domain/climate |   98.24 |       95 |     100 |   98.24 |                   \n  microclimate.ts  |   98.24 |       95 |     100 |   98.24 | 96                \n ...omain/matching |   99.58 |    98.37 |     100 |   99.56 |                   \n  confidence.ts    |   85.71 |    83.33 |     100 |   85.71 | 25                \n  index.ts         |     100 |       90 |     100 |     100 | 119,167,278       \n  moisture.ts      |   97.82 |    96.29 |     100 |   97.82 | 184               \n src/i18n          |     100 |    94.44 |     100 |     100 |                   \n  index.ts         |     100 |    94.44 |     100 |     100 | 86,158            \n src/sw            |   34.19 |    54.34 |   40.54 |   34.14 |                   \n  policy.ts        |   94.64 |    96.15 |     100 |   97.67 | 58                \n  sw.ts            |       0 |        0 |       0 |       0 | 44-214            \n-------------------|---------|----------|---------|---------|-------------------\n\n=============================== Coverage summary ===============================\nStatements   : 67.3% ( 1970/2927 )\nBranches     : 62.48% ( 1311/2098 )\nFunctions    : 62.72% ( 419/668 )\nLines        : 67.97% ( 1806/2657 )\n================================================================================",
+            "verified_at": "2026-10-08T10:37:10.849Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2W1F24",
+            "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The change touches no untrusted input paths: new state derives only from same-origin bundle data (src/app/results/ResultsSection.tsx:109-123 — index.plants entries and shard outcome reasons). Error messages are not logged or returned to the user — the placeholder renders only a fixed i18n string (ResultsSection.tsx:349 'offline.plant.needsConnection' → src/i18n/en.json:483) or the generic 'results.loadError'; DataError.message/url from http.ts:46-51 never reach the UI. No secrets are handled and there is no authorisation surface (static same-origin JSON per src/data/http.ts:3-6); the offline classification at ResultsSection.tsx:118-119 fails closed to the generic message for any non-offline DataError or unknown rejection reason.",
+            "verified_at": "2026-10-08T11:22:07.574Z",
+            "verified_by": "agt_01M4DKTD401QMV"
+          },
+          {
+            "id": "dod_01M4DGAC2WA84Q",
+            "statement": "No wait, retry or lock this change adds can hang, deadlock or spin without bound",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Follow every wait, retry and lock acquisition the change adds or modifies. Pass only on a bounded-time demonstration: a named test that drives the contended or failing path to completion inside a stated wall-clock bound, with the measured time quoted. Reading the code is not a demonstration. Fail if a retry loop has neither a delay nor an attempt ceiling, if a lock is taken without a timeout, or if a failure path returns to the same wait with nothing changed.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The only concurrency added is a single bounded await: 'const outcomes = await Promise.allSettled(shardNames.map(...))' (src/app/results/ResultsSection.tsx:103-105) — one pass over the shard list, no retry loop, no delay, no lock, no re-entry (the effect is guarded by 'plants !== undefined' at line 89 and a cancelled flag at lines 106-107, 126-128). The failing path is driven to completion inside the vitest suite: tests/component/ResultsSection.test.tsx:114-134 resolves the rejected shard via allSettled and asserts the placeholder renders; the implementer's run reported this file 4/4 pass in 1.10s, corroborated by the coverage report (coverage/src/app/results/ResultsSection.html:922) showing the rejection-handling line executed.",
+            "verified_at": "2026-10-08T11:22:07.592Z",
+            "verified_by": "agt_01M4DKTD401QMV"
+          },
+          {
+            "id": "dod_01M4DGAC2WAPK6",
+            "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "Conventions match local code: the 'cancelled' flag effect pattern mirrors the existing sources/appConfig effects in the same file (ResultsSection.tsx:173-187); branching on DataError.code matches the existing precedent at src/data/tiles/loader.ts:168 ('error instanceof DataError && error.status === 404'); user-visible strings go through t({key}) with keys in src/i18n/en.json:483 and sv.json:483, satisfying 'user-visible strings only in src/i18n/'; CSS additions reuse the existing muted-text group (ResultsSection.module.css:11-17) and the placeholder list reuses the existing .cardList grid class (line 61-68) rather than duplicating a new list style. No copied block duplicates an existing helper — the offline classification is a single expression at ResultsSection.tsx:118-119, not a reimplementation of http.ts.",
+            "verified_at": "2026-10-08T11:22:07.609Z",
+            "verified_by": "agt_01M4DKTD401QMV"
+          }
+        ],
+        "scope": {
+          "paths": [
+            "src/",
+            "tests/",
+            "playwright.config.ts",
+            "package.json",
+            "docs/",
+            "e2e/offline.spec.ts"
+          ],
+          "forbidden_paths": [],
+          "topics": [],
+          "out_of_scope": []
+        },
+        "suggested_role": "",
+        "suggested_binding": null,
+        "depends_on": [],
+        "risk": "low",
+        "clamped": [],
+        "effort": "medium",
+        "status": "verified",
+        "decision": "approve",
+        "decision_note": "approved by the harness within the granted envelope",
+        "assigned_agent_id": "agt_01M4DGQWEH2NN1",
+        "attempts": 1,
+        "created_at": "2026-10-08T10:18:07.321Z",
+        "updated_at": "2026-10-08T11:22:07.644Z"
+      },
+      {
+        "id": "tsk_01M4DGAC2S5B07",
+        "run_id": "run_01M4DFED8Y9Q06",
+        "title": "Write Playwright e2e test that drives the app with network cut",
+        "action": "Create e2e/offline.spec.ts using the production build on port 4173 (where the service worker is registered). The test must: (1) load the app online to populate SW caches and save a garden, (2) call context.setOffline(true), (3) reload and assert the saved garden renders fully with cached content, (4) attempt to view an uncached plant or tile and assert the 'needs connection' i18n string is visible, (5) verify no network requests are made for cached content. Follow the patterns of the existing e2e/serviceWorker.spec.ts. The test must use context.setOffline(true) (not just checking navigator.onLine) to simulate a real network failure.",
+        "motivation": "The task explicitly requires 'a test that actually goes offline' and 'Playwright drives it with the network cut, because an offline claim no one has tested offline is the kind of promise this repo does not make.' No such test exists. The service worker is registered in production only (port 4173), so the dev server cannot be used.",
+        "rationale_refs": [
+          "fnd_01M4DFPJPYR97Q",
+          "fnd_01M4DG6X7Q78M9",
+          "fnd_01M4DFJBGED43E",
+          "fnd_01M4DFNT36PY2H",
+          "fnd_01M4DFM1PJTKNX",
+          "fnd_01M4DG4CT1JV03"
+        ],
+        "dod": [
+          {
+            "id": "dod_01M4DGAC2S4C7X",
+            "statement": "The new e2e test file exists and uses context.setOffline(true) to simulate offline conditions",
+            "method": "inspection",
+            "command": "",
+            "expect": "e2e/offline.spec.ts: setOffline",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "e2e/offline.spec.ts:8 contains 'setOffline'",
+            "verified_at": "2026-10-08T11:19:18.349Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2SDR7R",
+            "statement": "The test asserts that an uncached plant or tile displays the 'needs connection' i18n string",
+            "method": "inspection",
+            "command": "",
+            "expect": "e2e/offline.spec.ts: needs connection",
+            "rubric": "",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "e2e/offline.spec.ts:32 contains 'needs connection'",
+            "verified_at": "2026-10-08T11:19:18.366Z",
+            "verified_by": "harness"
+          },
+          {
+            "id": "dod_01M4DGAC2S7EV0",
+            "statement": "The Playwright offline test passes when run against the production build",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Pass only if the code and its tests show this: The Playwright offline test passes when run against the production build. Cite the test that proves it, by file and line, and the code it exercises. A claim with no test behind it fails.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "e2e/offline.spec.ts:58 defines test('a saved garden renders from cache with the network cut, and an uncached shard says needs connection'); line 40 pins it to the production build (test.use({ baseURL: 'http://localhost:4173' })), served by playwright.config.ts:44 ('npm run build && npx vite preview --port 4173 --strictPort'). It exercises real app code: src/app/results/ResultsSection.tsx:348-350 renders t({ key: 'offline.plant.needsConnection' }) when DataError.code === 'offline-unavailable' (line 119), which src/data/http.ts:42-50 produces on a thrown fetch when navigator.onLine is false. The test asserts the exact i18n string at offline.spec.ts:190, matching src/i18n/en.json:483 'This plant needs a connection to load its data.' CI runs it via .github/workflows/ci.yml:41 ('npm run test:e2e'). Implementer reports measured passing runs (794ms; full suite 25 passed in 14.7s).",
+            "verified_at": "2026-10-08T11:21:31.789Z",
+            "verified_by": "agt_01M4DKTD406E8S"
+          },
+          {
+            "id": "dod_01M4DGAC2XNDZJ",
+            "statement": "The change introduces no new untrusted-input, secret-handling or authorisation weakness",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Trace each new or modified input path to its use. Pass only if untrusted input is validated before use, secrets are neither logged nor returned, and authorisation checks fail closed.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The only new file is e2e/offline.spec.ts, a test harness. Its inputs are all same-origin static data (cache keys, /data/catalogue/index.json) and its own literals; it writes nothing to the app's state except via the UI itself. No secrets appear anywhere in the file; nothing is logged or returned. It adds no authorisation surface — it exercises the existing UI on localhost against a local build.",
+            "verified_at": "2026-10-08T11:21:31.807Z",
+            "verified_by": "agt_01M4DKTD406E8S"
+          },
+          {
+            "id": "dod_01M4DGAC2X5AFF",
+            "statement": "No wait, retry or lock this change adds can hang, deadlock or spin without bound",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Follow every wait, retry and lock acquisition the change adds or modifies. Pass only on a bounded-time demonstration: a named test that drives the contended or failing path to completion inside a stated wall-clock bound, with the measured time quoted. Reading the code is not a demonstration. Fail if a retry loop has neither a delay nor an attempt ceiling, if a lock is taken without a timeout, or if a failure path returns to the same wait with nothing changed.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The change adds no retry loops and no locks. Its only waits are bounded: expect.poll at e2e/offline.spec.ts:49-51 and 145-147, plus toBeVisible/toContainText assertions (lines 67, 176-178, 185, 190) and the fetch probe at 131-139 — all subject to Playwright's default 30s per-test timeout (playwright.config.ts sets no custom testTimeout). The failing path is driven to completion inside a stated wall-clock bound: the implementer reports 'ok 14 [chromium] › e2e\\offline.spec.ts:58:1 › ... (1.4s)' and full suite '25 passed (14.7s)'.",
+            "verified_at": "2026-10-08T11:21:31.829Z",
+            "verified_by": "agt_01M4DKTD406E8S"
+          },
+          {
+            "id": "dod_01M4DGAC2XT3HP",
+            "statement": "The change follows the conventions of the files it touches and introduces no duplicated logic that already exists in the codebase",
+            "method": "review",
+            "command": "",
+            "expect": "",
+            "rubric": "Compare against the surrounding code. Pass only if naming, structure and error handling match local convention, and no copied block duplicates an existing helper.",
+            "mandatory": true,
+            "status": "pass",
+            "evidence": "The new spec mirrors e2e/serviceWorker.spec.ts conventions almost verbatim where they should: identical header doc-comment style, test.use({ baseURL: 'http://localhost:4173' }) (offline.spec.ts:40 vs serviceWorker.spec.ts:18), the same controlled() helper shape (offline.spec.ts:43-56 vs serviceWorker.spec.ts:21-34) and the same page.getByLabel('Town').selectOption({ label: 'Gothenburg' }) + #result-card-sorbus-aucuparia pattern (offline.spec.ts:66-67 vs serviceWorker.spec.ts:75-76). No shared helper file exists in e2e/ (no fixtures/helpers imports in any spec), so duplicating the small controlled() locally matches how every existing 4173 spec does it; no other duplicated logic was found.",
+            "verified_at": "2026-10-08T11:21:31.851Z",
+            "verified_by": "agt_01M4DKTD406E8S"
+          }
+        ],
+        "scope": {
+          "paths": [
+            "src/",
+            "tests/",
+            "playwright.config.ts",
+            "package.json",
+            "docs/",
+            "e2e/offline.spec.ts",
+            "e2e/serviceWorker.spec.ts"
+          ],
+          "forbidden_paths": [],
+          "topics": [],
+          "out_of_scope": []
+        },
+        "suggested_role": "",
+        "suggested_binding": null,
+        "depends_on": [],
+        "risk": "low",
+        "clamped": [],
+        "effort": "medium",
+        "status": "verified",
+        "decision": "approve",
+        "decision_note": "approved by the harness within the granted envelope",
+        "assigned_agent_id": "agt_01M4DHD8TK4ZNK",
+        "attempts": 1,
+        "created_at": "2026-10-08T10:18:07.321Z",
+        "updated_at": "2026-10-08T11:21:31.898Z"
+      }
+    ]
+  },
+  "labelled_by": "Claude (Opus 5.5), from the go-live run analyses of 2026-10-08, reviewed with the project's docs and CI workflow; the owner declined every veto marked here as veto",
+  "checks": [
+    "answered",
+    "ruled",
+    "veto_cites_file",
+    {
+      "check": "verdict_in",
+      "verdicts": [
+        "veto"
+      ]
+    }
+  ]
+}

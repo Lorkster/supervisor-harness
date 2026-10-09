@@ -1,0 +1,816 @@
+{
+  "id": "9a-run13-planner",
+  "role": "planner",
+  "fixture": {
+    "kind": "git",
+    "repo": "${SUPERVISOR_HARNESS}",
+    "commit": "ab70d7b6b33d"
+  },
+  "request": "Implement item 9a in docs/development-plan.md, 'Concurrency in the ledger, and a note when a fan-out serialises'. Read that section first. Add average concurrency (conc) for the current phase's dispatches to the ledger line Reporting.ledger builds, and record a note on the run's log when a fan-out of several agents dispatched together ran mostly one after another. Use the timing already recorded (core/timing.py, tools/where_the_time_went.py compute conc). Add tests that fail without the change. The work is done when the project's contributing checks pass, as in README.md: python -m ruff check ., python -m mypy, python tools/check_doc_refs.py, and python -m pytest -q with coverage at or above 92%.",
+  "input": {
+    "findings": [
+      {
+        "id": "fnd_01M4B9X9B5DWT2",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "high",
+        "title": "Timing has no per-phase concurrency; only run-wide",
+        "detail": "Timing.concurrency (timing.py:164-172) computes agent_seconds/busy_seconds over ALL dispatches. The ledger needs the CURRENT PHASE's conc. Timing.by_phase stores per-phase elapsed seconds but not per-phase busy or agent-seconds. A straightforward implementation would surface the wrong number.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:164-172",
+          "src/supervisor_harness/core/timing.py:137",
+          "tools/where_the_time_went.py:218-221"
+        ],
+        "recommendation": "Extend Timing with by_phase_busy and by_phase_agent_seconds (or a by_phase_concurrency dict), populated in measure() by attributing each Span to its phase. The phase attribution logic already exists in where_the_time_went.py's fold() (line 184) and can be ported.",
+        "confidence": 0.95,
+        "tags": [
+          "data-model",
+          "per-phase"
+        ],
+        "path": "src/supervisor_harness/core/timing.py",
+        "line_start": 132,
+        "line_end": 176,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9X9B5RAMG",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "Reporting is read-only; note emission requires a different code path",
+        "detail": "Reporting's docstring (reporting.py:58) states 'Reads a run; writes nothing back to it except artifacts'. The plan requires 'a note on the log when a fan-out serialises'. Either the supervisor must emit the note at dispatch-completion time (when it has session access), or Reporting must gain a write path, which violates its stated boundary.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:58",
+          "docs/development-plan.md:588-591"
+        ],
+        "recommendation": "Emit the note from the supervisor (or phases.py) when a dispatch completes and the phase's conc is computed. The ledger can still display the conc value read-only. This keeps Reporting's boundary intact.",
+        "confidence": 0.85,
+        "tags": [
+          "architecture",
+          "write-path"
+        ],
+        "path": "src/supervisor_harness/core/reporting.py",
+        "line_start": 57,
+        "line_end": 62,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9X9B5YT7C",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "No explicit threshold defined for 'serialised fan-out'",
+        "detail": "The plan gives one data point (4 agents, conc=0.98) but no formula. A test needs a deterministic threshold. The where_the_time_went.py tool computes per-phase conc and issued-over spread, which together define the detection: dispatch_count >= 3 AND conc < 1.5 AND issued_over < busy/2.",
+        "evidence": [
+          "docs/development-plan.md:570-574",
+          "tools/where_the_time_went.py:234-235"
+        ],
+        "recommendation": "Define the threshold as a named constant (e.g., SERIALISATION_THRESHOLD = 1.5) in core/timing.py or a new module, with a docstring citing the plan's measurement. Make it configurable via HarnessConfig if policy allows.",
+        "confidence": 0.8,
+        "tags": [
+          "threshold",
+          "testability"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9X9B5FFBY",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "low",
+        "title": "Ledger line format is additive-safe but untested for field count",
+        "detail": "The ledger uses ' | '.join(parts) (reporting.py:260). Adding a conc segment is safe for consumers that split on ' | ' and iterate, but any consumer that assumes a fixed number of fields will break. No test currently asserts the exact field count or order.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:260"
+        ],
+        "recommendation": "Add a test that asserts the ledger line contains 'conc' when dispatches exist, and does not contain it when there are none. Verify existing tests in test_reporting.py do not assert exact field count.",
+        "confidence": 0.75,
+        "tags": [
+          "backwards-compatibility",
+          "testing"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9YJR3EPE1",
+        "agent_id": "agt_01M4B9SJJ1MX3A",
+        "lens": "security",
+        "severity": "low",
+        "title": "Untrusted phase/kind string can flow into the serialization note",
+        "detail": "The phase name is read from event.payload.get(\"phase\") with no sanitisation (timing.py:256). If the new serialization note interpolates the phase or kind string into its text, a crafted value could inject content into the JSONL log line or mislead an operator grepping it. The note text should be a fixed harness-authored sentence; any log-derived value must be treated as data (JSON-escaped), not spliced into the message.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:256 phase_name = str(event.payload.get(\"phase\", \"\"))",
+          "src/supervisor_harness/store/runstore.py:739 def note(self, text: str, actor: str = \"supervisor\", **fields: Any)",
+          "tools/where_the_time_went.py:17-33 contract that only durations/counts/kinds/phase names are safe to surface"
+        ],
+        "recommendation": "Author the serialization note as a fixed sentence; if phase/kind must appear, pass them as structured context fields (note(**fields)) rather than splicing into text, and never interpolate untrusted strings into the message body.",
+        "confidence": 0.7,
+        "tags": [
+          "injection",
+          "log-integrity"
+        ],
+        "path": "src/supervisor_harness/core/reporting.py",
+        "line_start": 202,
+        "line_end": 260,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9YJR3KGW7",
+        "agent_id": "agt_01M4B9SJJ1MX3A",
+        "lens": "security",
+        "severity": "low",
+        "title": "Serialization note must fail closed on degenerate timing",
+        "detail": "conc is agent_seconds/busy_seconds and returns 0.0 when busy==0 (timing.py:171-172). If the 'fan-out serialised' heuristic fires on an empty or single-dispatch phase, it emits a spurious note into the audit trail that reconciliation and audit both read (development-plan.md:590-591). The detection must require dispatch-count >= a floor AND a defined conc below threshold, else emit nothing.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:171-172 busy = self.busy_seconds; return self.agent_seconds / busy if busy else 0.0",
+          "docs/development-plan.md:590-591 the reconciliation and the audit both read notes"
+        ],
+        "recommendation": "Gate the note on (dispatch_count >= floor) AND (conc < threshold) AND (busy_seconds > 0); otherwise emit no note. Add a test that a single-agent or empty phase produces no serialization note.",
+        "confidence": 0.65,
+        "tags": [
+          "integrity",
+          "false-positive"
+        ],
+        "path": "src/supervisor_harness/core/timing.py",
+        "line_start": 163,
+        "line_end": 172,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9YJR3C042",
+        "agent_id": "agt_01M4B9SJJ1MX3A",
+        "lens": "security",
+        "severity": "info",
+        "title": "No new secret or personal data is exposed by the conc field or note as specified",
+        "detail": "The ledger line (reporting.py:202-260) is printed to a terminal and echoed by a host; adding conc adds only a derived number. The note, if authored as a fixed sentence with structured context, carries no prompt, finding, file path, or token — consistent with the where_the_time_went.py safety contract. This is the expected, correct outcome; recorded so the absence of a leak is an established fact, not an assumption.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:255-260 ledger line printed to terminal, ASCII-only by design",
+          "tools/where_the_time_went.py:17-33 'prints durations, counts, phase names and agent kinds, and nothing else'"
+        ],
+        "recommendation": "Keep the note text free of any payload-derived string beyond id/kind/phase-as-data; do not add prompt, finding, or path content to the note.",
+        "confidence": 0.8,
+        "tags": [
+          "data-exposure"
+        ],
+        "path": "src/supervisor_harness/core/reporting.py",
+        "line_start": 202,
+        "line_end": 260,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9ZJDTZCM1",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "Reporting.ledger does not include concurrency in its output",
+        "detail": "The ledger method (reporting.py:202-260) builds a one-line progress report from timing data but never includes the `timing.concurrency` value. It already calls `measure()` at line 216 and has access to the Timing object, so adding conc is a single conditional append. This is the primary gap for item 9a.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:216: timing = measure(self.store.log(run_id).read_all())",
+          "src/supervisor_harness/core/reporting.py:244: parts.append(clock(timing.total_seconds))",
+          "src/supervisor_harness/core/timing.py:164-172: concurrency property already computed"
+        ],
+        "recommendation": "Add a conditional part to the ledger: if timing.dispatches and timing.concurrency, append f\"conc {timing.concurrency:.2f}\". Gate on dispatch count > 1 to avoid noise on single-agent phases.",
+        "confidence": 0.95,
+        "tags": [
+          "ledger",
+          "concurrency",
+          "9a"
+        ],
+        "path": "src/supervisor_harness/core/reporting.py",
+        "line_start": 244,
+        "line_end": 260,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9ZJDTMXNW",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "No serialization note is emitted when a fan-out runs sequentially",
+        "detail": "The development plan (docs/development-plan.md:588-591) requires a note on the run's log when a fan-out of several agents dispatched together ran mostly one after another. No such logic exists in the codebase. The note should be emitted via the existing EventType.NOTE channel (session.note or session.emit), using a stable greppable message format.",
+        "evidence": [
+          "docs/development-plan.md:588-591: 'A note on the log when a fan-out serialises'",
+          "src/supervisor_harness/core/supervisor.py:722: session.emit(EventType.NOTE, {\"text\": \"tasks proposed\", ...})",
+          "src/supervisor_harness/core/lifecycle.py:98: session.note(text, actor=spec.id, role=spec.role, kind=str(spec.kind))"
+        ],
+        "recommendation": "After a phase's dispatches complete, check if dispatch_count >= 2 and concurrency < threshold (e.g., 1.5). If so, emit a NOTE event with a stable format like 'fan-out serialised: conc {conc:.2f} across {n} dispatches'. Use the same session.note() channel as other run-level notes.",
+        "confidence": 0.9,
+        "tags": [
+          "serialization-note",
+          "9a",
+          "logging"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9ZJDTGQNQ",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "Existing tests cover conc computation but not its presence in the ledger",
+        "detail": "tests/test_observability.py:212,226 assert timing.concurrency values for parallel and sequential fan-outs. tests/test_where_the_time_went.py:203 tests the offline tool's conc column. But no test asserts that Reporting.ledger() output contains a concurrency value, and no test checks for a serialization note in the run log. These are the tests that must be added.",
+        "evidence": [
+          "tests/test_observability.py:212: assert timing.concurrency == 4.0",
+          "tests/test_observability.py:226: assert timing.concurrency == 1.0",
+          "tests/test_where_the_time_went.py:203: test_a_fan_out_that_did_not_fan_out_reads_as_concurrency_one"
+        ],
+        "recommendation": "Add tests: (a) ledger contains conc for parallel fan-out, (b) ledger contains low conc AND a NOTE event exists for sequential fan-out, (c) no NOTE event for single-agent phase, (d) all fail if the conc/note logic is removed.",
+        "confidence": 0.95,
+        "tags": [
+          "testing",
+          "9a"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9ZJDTQEP8",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "info",
+        "title": "The offline tool's conc computation is a deliberate duplication, not an accidental one",
+        "detail": "tools/where_the_time_went.py computes conc independently (line 221) because its stated design constraint is 'Standard library only, no harness import' (lines 24-29). It must run on machines where the package is not installed. The ledger change should use timing.concurrency from core/timing.py, not import from tools/. This is correct layering.",
+        "evidence": [
+          "tools/where_the_time_went.py:24-29: 'Standard library only, no harness import'",
+          "tools/where_the_time_went.py:221: conc = seconds / busy if busy else 0.0",
+          "src/supervisor_harness/core/timing.py:164-172: concurrency property"
+        ],
+        "recommendation": "Use timing.concurrency from core/timing.py in the ledger. Do not import from tools/where_the_time_went.py into core/reporting.py.",
+        "confidence": 0.95,
+        "tags": [
+          "layering",
+          "reuse"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9ZJDT65FW",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "info",
+        "title": "No existing test will break from adding conc to the ledger",
+        "detail": "tests/test_reporting.py tests _dod_summary and status(), not the ledger string format. No test asserts the exact full string of Reporting.ledger() output. The change is additive (one more part in the pipe-delimited line), so no existing assertion should fail.",
+        "evidence": [
+          "tests/test_reporting.py:45-81: tests _dod_summary and status(), not ledger()",
+          "src/supervisor_harness/core/reporting.py:260: return \" | \".join(parts)"
+        ],
+        "recommendation": "No existing test changes needed. Add new tests for the new behavior.",
+        "confidence": 0.9,
+        "tags": [
+          "testing",
+          "backward-compatibility"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4B9ZJDT1GXT",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "low",
+        "title": "The serialization note threshold and detection point need a concrete definition",
+        "detail": "The plan says 'a fan-out of several agents dispatched together ran mostly one after another' but does not specify the exact threshold. A reasonable heuristic: dispatch_count >= 2 AND concurrency < 1.5 (i.e., less than 50% overlap). The detection can be done post-hoc at ledger-build time from the Timing object, which already has both dispatches and concurrency. This avoids coupling to dispatch-time logic.",
+        "evidence": [
+          "docs/development-plan.md:570-574: 'dispatched 232 milliseconds apart... ran one after another for 23 minutes. Average concurrency 0.98'",
+          "src/supervisor_harness/core/timing.py:164-172: concurrency = agent_seconds / busy_seconds"
+        ],
+        "recommendation": "Define the threshold as a named constant (e.g., SERIALIZATION_THRESHOLD = 1.5) and check it at the point where the phase's dispatches are all complete. The Timing object already has everything needed.",
+        "confidence": 0.8,
+        "tags": [
+          "threshold",
+          "heuristic",
+          "9a"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA0R86ZNWT",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "info",
+        "title": "Timing.concurrency already computes the exact metric needed",
+        "detail": "core/timing.py:164 defines `concurrency` as agent_seconds/busy_seconds. This is the authoritative, tested computation. No new math is required for item 9a's conc field.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:164-172"
+        ],
+        "recommendation": "Use Timing.concurrency directly in the ledger line. Do not duplicate the computation.",
+        "confidence": 0.95,
+        "tags": [
+          "reuse",
+          "timing"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA0R86SBWN",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "medium",
+        "title": "tools/where_the_time_went.py is a leaf module and must not be imported by core/",
+        "detail": "The tool's docstring (lines 24-29) explicitly states it uses stdlib only with no harness import, designed to run on machines where the package is not installed. Importing it into core/reporting.py would invert the dependency direction and violate the layering.",
+        "evidence": [
+          "tools/where_the_time_went.py:24-29"
+        ],
+        "recommendation": "Do not import from tools/. Use core/timing.py's Timing object which already has concurrency.",
+        "confidence": 0.95,
+        "tags": [
+          "layering",
+          "architecture"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA0R86V4MJ",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "info",
+        "title": "Ledger line is a free-form string with no parser; adding a part is safe",
+        "detail": "reporting.py:260 joins parts with ' | '. There is no structured schema, no JSON, no parser. The line is printed to terminals and echoed by hosts. Adding a conditional part (like the existing 'harness repairs' part) is additive and breaks nothing.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:250-260"
+        ],
+        "recommendation": "Append conc as a new part in the parts list, following the same conditional pattern as repairs.",
+        "confidence": 0.9,
+        "tags": [
+          "ledger",
+          "schema"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA0R86ECA5",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "info",
+        "title": "Serialization note can be derived post-hoc from existing Timing data",
+        "detail": "The Timing object has all dispatch spans with start/end timestamps. A serialised fan-out is detectable by checking: (a) multiple dispatches started in close proximity, and (b) their concurrency is near 1.0. No new event type or dispatch-time hook is needed.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:258-279"
+        ],
+        "recommendation": "Add a helper method to Timing (e.g., serialised_fanout()) that checks burst count vs. concurrency, and emit a note from reporting.py when it triggers.",
+        "confidence": 0.85,
+        "tags": [
+          "serialization",
+          "coupling"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA0R86YWBQ",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "info",
+        "title": "status() already exposes concurrency in its structured output",
+        "detail": "reporting.py:184 includes timing.to_payload() which contains 'concurrency' (timing.py:201). The structured API already has the field; only the one-line ledger lacks it. This confirms the gap is narrow.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:184",
+          "src/supervisor_harness/core/timing.py:201"
+        ],
+        "recommendation": "The implementer should verify that status() consumers are not affected (they already see concurrency) and focus changes on the ledger string only.",
+        "confidence": 0.9,
+        "tags": [
+          "api",
+          "consistency"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA1M4HWEXC",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "No serialization note is emitted when a fan-out runs sequentially",
+        "detail": "The development plan (docs/development-plan.md:588-591) requires a note on the run's log when a fan-out of several agents dispatched together ran mostly one after another. No such logic exists in the codebase. The note should be emitted via the existing EventType.NOTE channel (session.note or session.emit), using a stable greppable message format.",
+        "evidence": [
+          "docs/development-plan.md:588-591: 'A note on the log when a fan-out serialises'",
+          "src/supervisor_harness/core/supervisor.py:722: session.emit(EventType.NOTE, {\"text\": \"tasks proposed\", ...})",
+          "src/supervisor_harness/core/lifecycle.py:98: session.note(text, actor=spec.id, role=spec.role, kind=str(spec.kind))"
+        ],
+        "recommendation": "After a phase's dispatches complete, check if dispatch_count >= 2 and concurrency < threshold (e.g. 1.5). If so, emit session.emit(EventType.NOTE, {\"text\": \"fan-out serialised: conc X.XX across N dispatches\", ...}). Use a named constant for the threshold.",
+        "confidence": 0.9,
+        "tags": [
+          "serialization-note",
+          "9a"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA1M4HM0W6",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "Test cases must assert on ledger output and note presence, not just timing internals",
+        "detail": "Existing tests (test_observability.py:212,226) verify timing.concurrency in isolation but do NOT test that Reporting.ledger() surfaces it or that a serialization note appears in the run log. The new tests must: (a) build a 4-agent parallel run, call ledger(), assert conc value is present; (b) build a 4-agent sequential run, assert both low conc in ledger AND a NOTE event with serialization text in the log; (c) build a single-agent run, assert NO serialization note; (d) these tests fail if the conc append or note emission is removed.",
+        "evidence": [
+          "tests/test_observability.py:212: assert timing.concurrency == 4.0",
+          "tests/test_observability.py:226: assert timing.concurrency == 1.0",
+          "tests/test_reporting.py: tests _dod_summary and status(), not ledger() string"
+        ],
+        "recommendation": "Add tests to test_reporting.py (for ledger conc) and a new test file or test_supervisor.py (for serialization note). Use the existing _run helper pattern from test_observability.py to build runs with controlled timing.",
+        "confidence": 0.9,
+        "tags": [
+          "tests",
+          "9a"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA1M4HN8AK",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "low",
+        "title": "Serialization note must fail closed on edge cases",
+        "detail": "Per security agent's input: when busy_seconds==0 or dispatch_count==1, the heuristic must NOT emit a note. The concurrency property in timing.py already returns 0.0 when busy_seconds is 0 (line 169-172), so the check `dispatches >= 2 and conc < threshold` naturally fails closed. Tests must verify this.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:169-172: if self.busy_seconds <= 0: return 0.0"
+        ],
+        "recommendation": "Include a test with a single-agent phase (dispatches==1) and an empty phase (busy_seconds==0) asserting no NOTE event is emitted.",
+        "confidence": 0.85,
+        "tags": [
+          "edge-case",
+          "fail-closed"
+        ],
+        "path": "src/supervisor_harness/core/timing.py",
+        "line_start": 169,
+        "line_end": 172,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA1M4HMT4V",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "info",
+        "title": "Ledger-building code will not grow unbounded special cases",
+        "detail": "The ledger method (reporting.py:238-260) uses a flat list of conditional appends. Adding conc is one more `if` + `append`. The serialization note is a separate concern emitted at dispatch-completion time, not in the ledger builder. No new branching structure is introduced in the ledger code itself.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:238-260: flat list of if/append patterns"
+        ],
+        "recommendation": "Keep the conc append as a single conditional in the existing pattern. Keep the serialization note detection in the supervisor/phases layer, not in Reporting.",
+        "confidence": 0.9,
+        "tags": [
+          "code-quality",
+          "simplicity"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA1M4HMXYJ",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "info",
+        "title": "No new logging dependency or side-effect introduced",
+        "detail": "The NOTE event type already exists (EventType.NOTE in core/store.py:24). Notes are stored via session.emit or session.note, which append to the run's events.jsonl and update state.notes. No new logger, file handle, or external service is needed. The note text should be a fixed harness-authored sentence with structured context fields (dispatch count, conc value) rather than splicing untrusted strings.",
+        "evidence": [
+          "src/supervisor_harness/core/store.py:24: NOTE = \"note\"",
+          "src/supervisor_harness/core/session.py:150-163: note() method appends to state.notes and emits event"
+        ],
+        "recommendation": "Use session.emit(EventType.NOTE, {\"text\": \"fan-out serialised\", \"conc\": 0.98, \"dispatches\": 4}) or the equivalent session.note() call. Keep the text field as a fixed string; put variable data in structured fields.",
+        "confidence": 0.9,
+        "tags": [
+          "logging",
+          "no-new-dependency"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA1M4HZJSX",
+        "agent_id": "agt_01M4B9SJJ1HMA3",
+        "lens": "quality",
+        "severity": "info",
+        "title": "Conc computation reuses existing helpers — no duplication needed for ledger",
+        "detail": "core/timing.py:164-172 computes concurrency as agent_seconds/busy_seconds. Reporting.ledger() already calls measure() and gets a Timing object with .concurrency available. The offline tool (tools/where_the_time_went.py:221) duplicates this math because it cannot import from the harness (design constraint stated at line 24-29). The ledger change uses timing.concurrency directly — no new overlap math.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:164-172: concurrency property",
+          "tools/where_the_time_went.py:24-29: 'cannot import from the harness'",
+          "tools/where_the_time_went.py:221: conc = seconds / busy if busy else 0.0"
+        ],
+        "recommendation": "Use timing.concurrency in the ledger append. Do not recompute overlap math.",
+        "confidence": 0.95,
+        "tags": [
+          "reuse",
+          "no-duplication"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA2AX6FDFK",
+        "agent_id": "agt_01M4B9SJJ1MX3A",
+        "lens": "security",
+        "severity": "low",
+        "title": "Untrusted phase/kind string can flow into the serialization note text",
+        "detail": "phase is read from event.payload.get('phase') (timing.py:256) with no sanitisation. If the new serialization note interpolates the phase name or kind verbatim, a crafted value containing newlines/markup could inject a fake line into the JSONL log or mislead a grepping operator. Contained by JSON escaping on write, but the note text should treat phase/kind as data, not message content.",
+        "evidence": [
+          "core/timing.py:256 — phase = event.payload.get(\"phase\")",
+          "store/runstore.py:739 — note() stores text as a JSON field"
+        ],
+        "recommendation": "Author the note as a fixed harness sentence; if phase/kind must appear, treat them as data (quote/escape) and never let them break the line.",
+        "confidence": 0.7,
+        "tags": [
+          "injection",
+          "log-integrity"
+        ],
+        "path": "core/timing.py",
+        "line_start": 256,
+        "line_end": 256,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA2AX6350F",
+        "agent_id": "agt_01M4B9SJJ1MX3A",
+        "lens": "security",
+        "severity": "low",
+        "title": "Serialization note must fail closed on degenerate/empty phase",
+        "detail": "If the heuristic fires when busy_seconds==0 or dispatch count is below the 'several agents' floor, it emits a spurious 'serialised' signal into the audit trail. The metric itself degrades safely to 0.0 (timing.py:69-81), but the note logic must not fire on undefined conc.",
+        "evidence": [
+          "core/timing.py:69-81 — _parsed/_at return None on bad input, math degrades to 0.0"
+        ],
+        "recommendation": "Require dispatch-count >= floor AND busy_seconds > 0 before emitting the note; otherwise skip.",
+        "confidence": 0.6,
+        "tags": [
+          "integrity",
+          "fail-closed"
+        ],
+        "path": "core/timing.py",
+        "line_start": 229,
+        "line_end": 229,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA55VPF8BV",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "high",
+        "title": "Timing.Span has no phase field; per-phase conc is not computable from core/timing.py",
+        "detail": "The Span dataclass (timing.py:92-106) has label, seconds, agent_id, kind, start, end — but no phase. The measure() function tracks phase_name during its fold (line 248, 256) but does not attach it to the Span objects it creates (line 270-278). The where_the_time_went.py tool's fold() DOES attribute spans to phases (line 184), but that code is in a standalone tool with no harness import. A straightforward implementation would surface the run-wide concurrency, which is wrong for multi-phase runs.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:92-106 (Span dataclass, no phase field)",
+          "src/supervisor_harness/core/timing.py:270-278 (Span construction in measure(), no phase attached)",
+          "tools/where_the_time_went.py:184 (fold() DOES attach phase: open_dispatch[agent_id] = (now, str(body.get(\"kind\", \"?\")), phase))",
+          "tools/where_the_time_went.py:24 (Standard library only, no harness import)"
+        ],
+        "recommendation": "Add phase: str = '' to Span. Populate it in measure() using the already-tracked phase_name. Add a by_phase_concurrency property to Timing that groups spans by phase and computes conc per group.",
+        "confidence": 0.95,
+        "tags": [
+          "data-model",
+          "per-phase",
+          "timing"
+        ],
+        "path": "src/supervisor_harness/core/timing.py",
+        "line_start": 92,
+        "line_end": 106,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA55VPVP70",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "Reporting is read-only; the serialisation note must be emitted by the supervisor, not Reporting",
+        "detail": "Reporting's docstring (reporting.py:58) says 'Reads a run; writes nothing back to it except artifacts.' The session.note()/anote() methods (runstore.py:739, 778) are the note-emission path, and they require a RunSession. Reporting has no session — it only has config and store. The note must be emitted in the supervisor's dispatch pipeline after a batch of agents completes, where session.anote() is already used extensively.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:58 (Reads a run; writes nothing back to it except artifacts)",
+          "src/supervisor_harness/store/runstore.py:739 (def note(self, text, actor='supervisor', **fields))",
+          "src/supervisor_harness/store/runstore.py:778 (async def anote(self, text, actor='supervisor', **fields))",
+          "src/supervisor_harness/core/supervisor.py:250,294,317,432 (existing session.anote call sites)"
+        ],
+        "recommendation": "Add the serialisation detection and note emission in the supervisor's turn-handling code, after the last agent in a fan-out has reported. The data (dispatch timestamps, phase attribution) is already in the log.",
+        "confidence": 0.9,
+        "tags": [
+          "architecture",
+          "note-emission",
+          "read-only"
+        ],
+        "path": "src/supervisor_harness/core/reporting.py",
+        "line_start": 58,
+        "line_end": 58,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA55VPF88F",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "No existing threshold for 'serialised fan-out' is defined in code or plan",
+        "detail": "The development plan (line 570-574) gives one data point: conc=0.98 for a 4-agent fan-out. The where_the_time_went.py tests use conc=1.00 vs 4.00 as the distinction (test_where_the_time_went.py:216-217). No code or test defines a threshold like 'conc < X means serialised.' The implementation must choose one and document it.",
+        "evidence": [
+          "docs/development-plan.md:570-574 (four lenses, conc 0.98)",
+          "tests/test_where_the_time_went.py:216-217 (conc 1.00 vs 4.00)",
+          "tests/test_observability.py:212,226 (timing.concurrency == 4.0 and == 1.0)"
+        ],
+        "recommendation": "Define the threshold as conc < dispatch_count / 2 for a phase with >= 2 dispatches. For a 4-agent fan-out, this means conc < 2.0 flags serialisation. Document it in the note text and in a test.",
+        "confidence": 0.85,
+        "tags": [
+          "threshold",
+          "heuristic",
+          "serialisation"
+        ],
+        "path": "docs/development-plan.md",
+        "line_start": 570,
+        "line_end": 574,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA55VP6R2M",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "info",
+        "title": "Ledger format is additive-safe; existing tests will not break",
+        "detail": "The ledger line is built as parts = [...] and returned as ' | '.join(parts) (reporting.py:260). Adding a new segment is additive. The existing test (test_observability.py:318-325) checks for substrings ('agents done', no newline) and will continue to pass. The status() timing payload (line 184) already includes concurrency via to_payload() (timing.py:201), so JSON consumers are unaffected.",
+        "evidence": [
+          "src/supervisor_harness/core/reporting.py:260 (return ' | '.join(parts))",
+          "tests/test_observability.py:318-325 (ledger test checks substrings, not exact format)",
+          "src/supervisor_harness/core/timing.py:201 (to_payload includes concurrency)"
+        ],
+        "recommendation": "Add the conc segment after line 244. Render 'n/a' when the phase has zero dispatches. Add a test that asserts the conc value appears in the ledger for a multi-agent phase.",
+        "confidence": 0.95,
+        "tags": [
+          "backwards-compatibility",
+          "ledger-format"
+        ],
+        "path": "src/supervisor_harness/core/reporting.py",
+        "line_start": 244,
+        "line_end": 260,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA55VPTFNT",
+        "agent_id": "agt_01M4B9SJJ08XR9",
+        "lens": "technical",
+        "severity": "low",
+        "title": "The two conc implementations (core/timing.py and tools/where_the_time_went.py) are independent and may diverge",
+        "detail": "core/timing.py computes run-wide concurrency (timing.py:164-172). tools/where_the_time_went.py computes per-phase conc (line 221). They use different union algorithms (timing.py:109-129 uses datetime.timestamp(), wtw:104-121 uses string comparison) and different data structures (Span objects vs 4-tuples). A change to one does not propagate to the other. The tests in test_observability.py and test_where_the_time_went.py are independent.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:109-129 (_union_seconds uses datetime.timestamp())",
+          "tools/where_the_time_went.py:104-121 (_union uses string comparison)",
+          "tools/where_the_time_went.py:24 (Standard library only, no harness import)"
+        ],
+        "recommendation": "After adding per-phase conc to core/timing.py, add a cross-check test that the per-phase conc from core/timing.py matches the per-phase conc from tools/where_the_time_went.py for the same event log.",
+        "confidence": 0.8,
+        "tags": [
+          "divergence",
+          "dual-implementation"
+        ],
+        "path": "src/supervisor_harness/core/timing.py",
+        "line_start": 109,
+        "line_end": 129,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA62061EZQ",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "medium",
+        "title": "Per-phase concurrency requires extending Timing's fold loop",
+        "detail": "Timing.by_phase (line 137) stores only elapsed seconds per phase. The task asks for 'average concurrency for the current phase's dispatches.' The fold loop in measure() already tracks phase_name at each event (lines 251-257), so attributing spans to phases is a small addition — but it is not currently done. The run-wide Timing.concurrency (line 164) is available now and may suffice if 'current phase' is interpreted as 'the run so far.'",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:137: by_phase: dict[str, float] = field(default_factory=dict)",
+          "src/supervisor_harness/core/timing.py:164-172: concurrency property is run-wide only",
+          "docs/development-plan.md:585-586: 'adding average concurrency to it' — does not explicitly say per-phase"
+        ],
+        "recommendation": "Clarify with the supervisor whether run-wide conc suffices or per-phase is required. If per-phase, add a by_phase_concurrency dict to Timing populated in the fold loop.",
+        "confidence": 0.85,
+        "tags": [
+          "data-flow",
+          "timing"
+        ],
+        "path": "src/supervisor_harness/core/timing.py",
+        "line_start": 137,
+        "line_end": 172,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA6206PZZY",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "info",
+        "title": "Ledger is a free-form string with no parser — adding conc is safe",
+        "detail": "All existing tests use substring assertions on the ledger line. No test asserts exact equality of the full string. The consumer contract only checks isinstance(str). Adding a 'conc X.XX' part to the parts list breaks nothing.",
+        "evidence": [
+          "tests/test_observability.py:323-325: substring assertions, newline check",
+          "tests/test_consumer_contract.py:99: isinstance check only",
+          "src/supervisor_harness/core/reporting.py:260: return \" | \".join(parts)"
+        ],
+        "recommendation": "Append conc as a new part after the elapsed-time part (line 244), before the waiting/running parts, to keep it near the timing data.",
+        "confidence": 0.95,
+        "tags": [
+          "schema",
+          "testing"
+        ],
+        "path": "src/supervisor_harness/core/reporting.py",
+        "line_start": 244,
+        "line_end": 260,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA62063PKK",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "info",
+        "title": "Serialization note should be derived post-hoc, not at dispatch time",
+        "detail": "All data needed (dispatch start timestamps, completion timestamps, concurrency) is available in the Timing object at ledger-build time. A dispatch-time detection would require a new event type and write-path coupling. The lower-coupling option is to compute it from existing spans: if N>=3 dispatches started within a small window but concurrency < 1.2, emit a note.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:258-279: AGENT_DISPATCHED and TURN_RECORDED events carry all needed timestamps",
+          "src/supervisor_harness/core/reporting.py:216: measure() is called at ledger-build time, so Timing is available"
+        ],
+        "recommendation": "Add a method to Timing (e.g., serialised_fanout() -> bool) that checks burst dispatches with low concurrency. Call it from ledger() and emit a note if true.",
+        "confidence": 0.9,
+        "tags": [
+          "coupling",
+          "design"
+        ],
+        "path": "src/supervisor_harness/core/timing.py",
+        "line_start": 164,
+        "line_end": 172,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4BA6206XGV8",
+        "agent_id": "agt_01M4B9SJJ1AAFK",
+        "lens": "architecture",
+        "severity": "low",
+        "title": "Phase names are untrusted input — do not interpolate into log notes",
+        "detail": "Phase names come from event.payload.get('phase', '') (timing.py:256), which is set by the harness but could be influenced by model output in a future design. The serialization note should use a fixed message format that does not embed the phase string, or should sanitise it.",
+        "evidence": [
+          "src/supervisor_harness/core/timing.py:256: phase_name = str(event.payload.get(\"phase\", \"\"))"
+        ],
+        "recommendation": "Use a fixed note format like 'fan-out of N agents ran serially (conc X.XX)' without interpolating the phase name, or use the phase name only in a structured field, not in free text.",
+        "confidence": 0.7,
+        "tags": [
+          "security",
+          "logging"
+        ],
+        "path": "src/supervisor_harness/core/timing.py",
+        "line_start": 256,
+        "line_end": 256,
+        "cwe": ""
+      }
+    ]
+  },
+  "labelled_by": "Claude (Opus 5.5), from the go-live run analyses of 2026-10-08, reviewed with the project's docs and CI workflow; the owner declined every veto marked here as veto; 9a's ledger line is built in core/reporting.py",
+  "checks": [
+    "answered",
+    "criteria_enforceable",
+    "mechanical_criterion",
+    "scopes_specific",
+    "scopes_grounded",
+    "inspections_grounded",
+    {
+      "check": "some_scope_covers",
+      "path": "src/supervisor_harness/core/reporting.py"
+    },
+    {
+      "check": "task_count",
+      "min": 1,
+      "max": 6
+    }
+  ]
+}

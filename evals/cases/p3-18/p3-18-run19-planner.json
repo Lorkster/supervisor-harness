@@ -1,0 +1,1069 @@
+{
+  "id": "p3-18-run19-planner",
+  "role": "planner",
+  "fixture": {
+    "kind": "git",
+    "repo": "${PLANTSANDCLIMATE}",
+    "commit": "cfdb95ca1ce8"
+  },
+  "request": "Do task P3-18 in docs/PLAN-PHASE-3.md: 'Offline states, and a test that actually goes offline'. Follow docs/AGENT-WORKFLOW.md and read the docs in the task's Reads column (UX-PRINCIPLES.md section 7, ARCHITECTURE.md section Progressive enhancement and offline) before changing anything. A saved garden must work with no connection; a plant or a tile that is not cached says 'needs connection' rather than guessing; user-visible strings only in src/i18n/. Add a Playwright test that drives the app with the network cut. The work is done when the phase's acceptance criteria hold: npm run check, pwsh scripts/verify.ps1 and the Playwright suite (npm run test:e2e) each pass, as separate gates, as in CI.",
+  "input": {
+    "findings": [
+      {
+        "id": "fnd_01M4DFJBGEEY22",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "medium",
+        "title": "No first-class offline/unavailable state exists in the data layer's error taxonomy",
+        "detail": "DataError codes are 'fetch-failed', 'invalid-json', 'schema-validation-failed', 'unsupported-schema-version'. There is no code that distinguishes 'offline and not cached' from 'server error' or 'corrupt data'. The offline state must be added as a new code, not bolted on as a UI-layer check.",
+        "evidence": [
+          "src/data/errors.ts:12-16 (DataErrorCode union type)",
+          "src/data/http.ts:36 (fetch-failed thrown for network errors)"
+        ],
+        "recommendation": "Add 'offline-unavailable' to DataErrorCode. In fetchJson or a wrapper, when fetch throws AND navigator.onLine is false, throw with this code instead of 'fetch-failed'. Components branch on this code to render the 'needs connection' state.",
+        "confidence": 0.9,
+        "tags": [
+          "architecture",
+          "data-layer",
+          "offline"
+        ],
+        "path": "src/data/errors.ts",
+        "line_start": 12,
+        "line_end": 16,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFJBGE6RWT",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "medium",
+        "title": "The service worker boundary must not be crossed for offline state",
+        "detail": "src/sw/ is a separate program that imports nothing from app code and is not imported by anything (enforced by lint rules). The offline UI state must not be implemented in the SW or communicated via postMessage. The SW's role is transparent response serving; the app layer's role is rendering based on data availability.",
+        "evidence": [
+          "docs/ARCHITECTURE.md:108-112 (enforced dependency direction, lint rule)",
+          "docs/ARCHITECTURE.md:438-443 (SW is separate program)"
+        ],
+        "recommendation": "Keep all offline-state logic in src/data/ and src/app/. Do not add postMessage channels or SW-to-app communication for availability.",
+        "confidence": 0.95,
+        "tags": [
+          "architecture",
+          "boundary",
+          "service-worker"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFJBGE0S01",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "medium",
+        "title": "The 'needs connection' state must be a first-class UI state, not an error-handling branch",
+        "detail": "If components catch DataError and check navigator.onLine to decide whether to show 'needs connection' vs. a generic error, the offline state becomes an afterthought. The correct shape: the data layer reports 'unavailable' (a typed condition), and the UI renders it as a distinct visual state with its own i18n string, separate from error states.",
+        "evidence": [
+          "docs/ARCHITECTURE.md:509-512 ('degrades to a clear needs connection state rather than a wrong answer')",
+          "docs/UX-PRINCIPLES.md:113 ('the app remaining useful offline for a saved garden')"
+        ],
+        "recommendation": "Design the component API so that 'unavailable' is a renderable state alongside 'loading', 'loaded', and 'error'. The i18n string for 'needs connection' is distinct from error messages.",
+        "confidence": 0.85,
+        "tags": [
+          "architecture",
+          "ux",
+          "offline"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFJBGESNG0",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "low",
+        "title": "i18n integration is low-risk but must follow existing conventions",
+        "detail": "The i18n module (src/i18n/index.ts, en.json, sv.json) already provides the formatter used by components. Adding a new key for 'needs connection' follows the existing pattern. No changes to the i18n module itself are needed.",
+        "evidence": [
+          "src/i18n/ (en.json, sv.json, index.ts exist)",
+          "docs/PLAN-PHASE-3.md:71 ('user-visible strings only in src/i18n/')"
+        ],
+        "recommendation": "Add the key to both en.json and sv.json. Verify the key-naming convention by reading an existing key before adding.",
+        "confidence": 0.8,
+        "tags": [
+          "i18n",
+          "offline"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFJBGED43E",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "medium",
+        "title": "The Playwright test must drive the app with network cut, not just check navigator.onLine",
+        "detail": "The task explicitly requires 'a test that actually goes offline' and 'Playwright drives it with the network cut.' This means the test must use Playwright's context.setOffline(true) or route interception to simulate a real network failure, then assert that (a) a saved garden renders fully, (b) an uncached plant/tile shows the 'needs connection' string. A test that only checks navigator.onLine without actually cutting the network would not prove the offline path works.",
+        "evidence": [
+          "docs/PLAN-PHASE-3.md:71 ('Playwright drives it with the network cut, because an offline claim no one has tested offline is the kind of promise this repo does not make')"
+        ],
+        "recommendation": "The Playwright test should: (1) load the app online and save a garden, (2) set context offline, (3) reload or navigate to the saved garden, (4) assert it renders fully, (5) attempt to load an uncached plant/tile, (6) assert the 'needs connection' i18n string is visible.",
+        "confidence": 0.9,
+        "tags": [
+          "testing",
+          "playwright",
+          "offline"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFM1PJFGV4",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "high",
+        "title": "No UI-level distinction between 'not cached' and 'network error'",
+        "detail": "src/data/http.ts:31-52 throws DataError('fetch-failed') for both 'file was never fetched' and 'network is down.' The app has no code path that checks the SW cache before attempting a fetch, so an offline user gets a generic error rather than the spec'd 'needs connection' state. A new DataErrorCode or a pre-fetch cache check is required.",
+        "evidence": [
+          "src/data/http.ts:36: throw new DataError('fetch-failed', `Could not reach ${url}.`, { url, cause });",
+          "src/data/catalogue.ts:48-62: loadCatalogueShard calls fetchJson directly with no cache check"
+        ],
+        "recommendation": "Add a 'not-cached' or 'offline' DataErrorCode, and in the UI layer (ResultsSection, PlantDetailView) catch it specifically to render the i18n 'needs connection' string. Alternatively, add a helper that checks caches.match() before fetching.",
+        "confidence": 0.92,
+        "tags": [
+          "offline",
+          "data-layer",
+          "error-handling"
+        ],
+        "path": "src/data/http.ts",
+        "line_start": 31,
+        "line_end": 52,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFM1PJ58VN",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "high",
+        "title": "Partial cache within a single results grid is the hardest edge case",
+        "detail": "A saved garden references N plants across M shards. The SW may have cached some shards and not others. The UI must render cached plants with full verdicts and uncached plants as 'needs connection' placeholders in the same grid, maintaining layout integrity. A section-level try/catch would fail this.",
+        "evidence": [
+          "src/data/catalogue.ts:71-91: loadPlant fetches index then shard — each is a separate network request that can independently succeed or fail",
+          "docs/PLAN-PHASE-3.md:71: 'a plant or a tile that is not cached says needs connection rather than guessing'"
+        ],
+        "recommendation": "Implement per-plant cache status checking at the card level. The results assembly (assembleResults.ts) should accept a set of 'available' plant IDs and render placeholders for the rest.",
+        "confidence": 0.85,
+        "tags": [
+          "offline",
+          "partial-cache",
+          "ui"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFM1PJZTZX",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "i18n keys must be added to both sv.json and en.json before any UI code references them",
+        "detail": "formatMessage() throws on missing keys (src/i18n/index.ts:116). verify.ps1 checks key parity. Adding a new 'needs connection' string requires entries in both catalogue files, following the existing dotted-namespace convention.",
+        "evidence": [
+          "src/i18n/index.ts:113-118: formatMessage throws Error on missing key",
+          "src/i18n/index.ts:9-10: 'Key parity between the two... is checked mechanically by scripts/verify.ps1'"
+        ],
+        "recommendation": "Add the offline message key to sv.json and en.json first, then reference it from UI code. Run verify.ps1 to confirm parity.",
+        "confidence": 0.95,
+        "tags": [
+          "i18n",
+          "conventions"
+        ],
+        "path": "src/i18n/index.ts",
+        "line_start": 113,
+        "line_end": 118,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFM1PJTKNX",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "Playwright test must populate the SW cache before cutting the network",
+        "detail": "The test needs a two-phase approach: (1) load the app online so the SW precaches the shell and fetches at least one plant shard, (2) set offline, (3) assert cached content renders and uncached content shows 'needs connection.' A single-phase test that starts offline would have no cached data to verify.",
+        "evidence": [
+          "docs/PLAN-PHASE-3.md:70: P3-17 precaches shell + catalogue index; data files are cached on demand",
+          "src/sw/policy.ts:15-17: 'The shell is cache-first... Data is keyed on dataVersion'"
+        ],
+        "recommendation": "Playwright test: navigate to app, wait for SW registration, trigger a plant detail view (to cache one shard), then context.setOffline(true), reload, and assert.",
+        "confidence": 0.88,
+        "tags": [
+          "testing",
+          "playwright",
+          "service-worker"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFM1PJ0VYH",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "Photographs are explicitly not cached — offline plant cards will lack images",
+        "detail": "ARCHITECTURE.md:472-473 states 'Photographs are not cached (/images/): a cache that grows with every plant viewed has no natural bound. What offline does about them is P3-18's decision.' This means offline plant cards will show a broken image or placeholder. The UI must handle this gracefully — it is in scope for P3-18.",
+        "evidence": [
+          "docs/ARCHITECTURE.md:472-473: 'Photographs are not cached... What offline does about them is P3-18's decision.'"
+        ],
+        "recommendation": "Decide and implement: show a neutral placeholder (leaf icon, solid block) for images when offline. Add an i18n string if the placeholder needs a label. This is a small but visible UX detail that a straightforward implementation would miss.",
+        "confidence": 0.9,
+        "tags": [
+          "offline",
+          "images",
+          "ux"
+        ],
+        "path": "docs/ARCHITECTURE.md",
+        "line_start": 472,
+        "line_end": 473,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFNT36392J",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "high",
+        "title": "No 'needs connection' i18n key exists yet",
+        "detail": "The full en.json (484 lines) contains no key for an offline/needs-connection state. The existing error handling in src/data/http.ts throws DataError('fetch-failed') which is a generic network error, not a user-facing 'needs connection' message. P3-18 must add this key to both en.json and sv.json following the existing dot-notation convention (e.g., data.needsConnection or offline.plantNeedsConnection).",
+        "evidence": [
+          "src/i18n/en.json:1-484 — no 'needs connection', 'offline', or 'no connection' key found",
+          "src/data/http.ts:36 — throw new DataError('fetch-failed', `Could not reach ${url}.`, { url, cause })"
+        ],
+        "recommendation": "Add a dedicated i18n key (e.g., data.needsConnection) to both en.json and sv.json. The key should be specific: 'This plant needs a connection to load its data' rather than a generic error. Verify the key passes tests/i18n/index.test.ts parity checks.",
+        "confidence": 0.95,
+        "tags": [
+          "i18n",
+          "offline-state",
+          "missing-implementation"
+        ],
+        "path": "src/i18n/en.json",
+        "line_start": 1,
+        "line_end": 484,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFNT36HNX1",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "No centralized cached-vs-uncached decision in the data layer",
+        "detail": "The service worker (src/sw/sw.ts:176-190) handles cache-first logic, but the app code in src/data/http.ts has no awareness of whether a fetch was served from cache or network. When offline, the fetch fails and throws DataError — the same error as a 404 or a server error. Components cannot distinguish 'offline' from 'data not found' without inspecting the error cause. P3-18 should introduce a typed result (e.g., { kind: 'cached', data } | { kind: 'needsConnection' }) at the data layer so components render the correct state without parsing exceptions.",
+        "evidence": [
+          "src/sw/sw.ts:176-190 — dataCacheFirst returns cached or fetches, but throws on offline",
+          "src/data/http.ts:31-52 — fetchJson collapses all failure modes into DataError",
+          "src/data/grid.ts:170-180 — firstPresent propagates errors without distinguishing offline from missing"
+        ],
+        "recommendation": "Introduce a typed result in the data layer that distinguishes 'cached' from 'needsConnection' from 'notFound'. Components should render based on this type, not by catching DataError and inspecting its cause. This prevents duplicated offline-state logic across ResultsSection, PlantDetailView, and any other component that fetches data.",
+        "confidence": 0.85,
+        "tags": [
+          "architecture",
+          "offline-state",
+          "data-layer"
+        ],
+        "path": "src/data/http.ts",
+        "line_start": 31,
+        "line_end": 52,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFNT36PY2H",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "Playwright test must use the production build (port 4173), not the dev server",
+        "detail": "The service worker is registered in production only (src/main.tsx, per P3-17 plan row). The dev server on port 5173 has no service worker, so an offline test against it would test nothing. The existing e2e/serviceWorker.spec.ts already uses the 4173 production build. The new offline test must follow the same pattern: load online on 4173 to populate caches, then setOffline(true) and assert cached content renders.",
+        "evidence": [
+          "playwright.config.ts:38-48 — second web server runs npm run build && npx vite preview --port 4173",
+          "src/sw/sw.ts:1-19 — service worker registered in production only",
+          "e2e/serviceWorker.spec.ts:14 — 'Going offline is P3-18's test. This one only checks what is in the caches'"
+        ],
+        "recommendation": "Write e2e/offline.spec.ts using the 4173 production build. The test should: (1) load a saved garden online to populate tile caches, (2) context.setOffline(true), (3) reload and assert the garden renders identically, (4) navigate to an uncached coordinate and assert the 'needs connection' string appears.",
+        "confidence": 0.95,
+        "tags": [
+          "testing",
+          "playwright",
+          "offline"
+        ],
+        "path": "playwright.config.ts",
+        "line_start": 38,
+        "line_end": 48,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFNT36YB0P",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "The 'needs connection' state must be distinguishable from existing NO_DATA and OUT_OF_COVERAGE states",
+        "detail": "src/data/tiles/cells.ts defines absence states (NO_DATA, OUT_OF_COVERAGE) for cells that exist in the tile but have no data, or are outside the region. A tile that is not cached at all is a different failure mode: the file was never fetched. The UI must show 'needs connection' for the latter and the existing no-data message for the former. Conflating these would mislead the user into thinking their garden has no data when it actually just needs a connection.",
+        "evidence": [
+          "src/data/grid.ts:37-46 — imports NO_DATA, OUT_OF_COVERAGE from tiles/cells.ts",
+          "src/data/grid.ts:182-194 — climateCellForCoordinate returns OUT_OF_COVERAGE for out-of-bbox points"
+        ],
+        "recommendation": "Ensure the 'needs connection' state is a distinct type in the data layer, not an overload of NO_DATA or OUT_OF_COVERAGE. The i18n string should be different: 'This plant needs a connection to load its data' vs. the existing no-data message.",
+        "confidence": 0.8,
+        "tags": [
+          "offline-state",
+          "data-model",
+          "ux"
+        ],
+        "path": "src/data/tiles/cells.ts",
+        "line_start": 1,
+        "line_end": 50,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFNT36NV2N",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "high",
+        "title": "npm run check must include the new Playwright test",
+        "detail": "The task brief says 'the work is green when npm run check passes.' I could not read package.json to verify whether npm run check includes the Playwright suite. If it does not, the new offline test will not be gated by the standard check command, and a broken offline state could ship with a green build. This is the exact failure mode the lesson from previous runs warns about: 'the gate does not naturally capture the new work.'",
+        "evidence": [
+          "Task brief: 'The work is green when npm run check passes'",
+          "Lesson from previous runs: 'check if the project's standard check command automatically includes the new test file. If not, add a specific mandatory criterion'"
+        ],
+        "recommendation": "Verify that npm run check includes the Playwright e2e suite (or at least the new offline spec). If it does not, add the offline test to the check command or create a dedicated npm script that runs it. The supervisor should verify this as a mandatory criterion before marking P3-18 done.",
+        "confidence": 0.7,
+        "tags": [
+          "ci",
+          "testing",
+          "gate"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFPJPY50S2",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "high",
+        "title": "No offline UI state exists in the application code",
+        "detail": "The service worker (P3-17) caches content, but no React component, conditional branch, or CSS class handles the case where a plant or tile is not cached. The app has no concept of 'needs connection' as a user-facing state. A user who goes offline with an uncached plant will see an unhandled error or blank state.",
+        "evidence": [
+          "search for 'offline|needs connection|needsConnection' in src/**/*.ts* returns only src/sw/policy.ts:11 (comment) and src/sw/sw.ts:138 (internal error throw)",
+          "src/i18n/sv.json and src/i18n/en.json contain no offline-related keys"
+        ],
+        "recommendation": "Add a 'needs connection' i18n key to both sv.json and en.json, create a component or state that renders when a plant/tile is not cached, and wire it into the plant detail and results views.",
+        "confidence": 0.95,
+        "tags": [
+          "offline",
+          "ux",
+          "i18n"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFPJPYN3BV",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "medium",
+        "title": "No connectivity state detection or visual indicator",
+        "detail": "The app does not listen for navigator.onLine changes or online/offline events. A user who loses signal mid-session has no indication that the problem is connectivity. There is no banner, no status bar, no change in UI affordances when offline.",
+        "evidence": [
+          "No search matches for 'onLine', 'online', 'offline' event listeners in src/ (only in sw/)"
+        ],
+        "recommendation": "Add a navigator.onLine listener that sets a global state, and render a subtle indicator (e.g., a banner or icon) when offline. This helps the user understand why some items show 'needs connection'.",
+        "confidence": 0.9,
+        "tags": [
+          "offline",
+          "ux",
+          "accessibility"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFPJPYR97Q",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "high",
+        "title": "No Playwright test drives the app with the network cut",
+        "detail": "The task requires a Playwright test that simulates offline conditions and verifies that (a) a saved garden renders fully, (b) uncached items show the 'needs connection' i18n string, and (c) no network requests are made for cached content. No such test exists.",
+        "evidence": [
+          "tests/ directory contains unit and component tests but no e2e test that uses context.setOffline(true) or network interception to simulate offline conditions"
+        ],
+        "recommendation": "Write a Playwright test that: (1) sets up a saved garden in localStorage, (2) loads the app online to cache the garden's plants and tiles, (3) calls context.setOffline(true), (4) navigates to the garden view and asserts it renders fully, (5) attempts to view an uncached plant and asserts the 'needs connection' string appears, (6) verifies no network requests were made for cached content.",
+        "confidence": 0.95,
+        "tags": [
+          "testing",
+          "offline",
+          "playwright"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFPJPYVVBN",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "medium",
+        "title": "Wording for 'needs connection' state is undefined",
+        "detail": "When the feature is built, the string must be an affordance (\"This plant needs a connection to load\") rather than an error (\"Failed to load plant\"). It should tell the user what to do (reconnect) and that the item will appear once they do. The current i18n files have no such key.",
+        "evidence": [
+          "src/i18n/sv.json: no keys matching 'offline', 'connection', 'needs'"
+        ],
+        "recommendation": "Add keys like `offline.plant.needsConnection` and `offline.tile.needsConnection` to both sv.json and en.json. Swedish: \"Den här växten behöver en anslutning för att laddas.\" English: \"This plant needs a connection to load.\" Consider a global banner key as well.",
+        "confidence": 0.85,
+        "tags": [
+          "i18n",
+          "ux",
+          "wording"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFYKFFGGHH",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "medium",
+        "title": "No offline-specific error code exists in DataError taxonomy",
+        "detail": "DataErrorCode (errors.ts:12-16) has four values: 'fetch-failed', 'invalid-json', 'schema-validation-failed', 'unsupported-schema-version'. None distinguishes 'offline and not cached' from 'server error' or 'corrupt data'. P3-18 requires the UI to show a specific 'needs connection' message for uncached items, which requires the data layer to classify this condition distinctly. Without a new code value, components cannot branch on it without parsing prose out of the error message — exactly what errors.ts:5-7 says the code field exists to prevent.",
+        "evidence": [
+          "src/data/errors.ts:12-16: DataErrorCode type definition",
+          "src/data/http.ts:36: throws DataError('fetch-failed', ...) for all network failures",
+          "src/data/errors.ts:5-7: comment explaining code field exists so UI can branch on it"
+        ],
+        "recommendation": "Add a new DataErrorCode value (e.g., 'offline-unavailable') and classify fetch failures that occur when navigator.onLine is false as this code in http.ts or its callers. This is the minimum structural change that lets components render a distinct offline state.",
+        "confidence": 0.95,
+        "tags": [
+          "data-layer",
+          "error-handling",
+          "offline"
+        ],
+        "path": "src/data/errors.ts",
+        "line_start": 12,
+        "line_end": 16,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFYKFFKQV7",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "high",
+        "title": "ResultsSection loads all plants in one batch; a single shard failure kills the entire results view",
+        "detail": "ResultsSection.tsx:74-89 loads the catalogue index, then ALL shards via Promise.all. If any shard fails (e.g., offline and not cached), the catch block sets loadError=true and the entire results section renders a generic error (line 223-224). P3-18 requires that 'a plant or a tile that is not cached says needs connection rather than guessing' — this implies per-item availability, not all-or-nothing. The current pattern cannot express 'plant A loaded, plant B needs connection' because it never gets to the point of rendering individual plants.",
+        "evidence": [
+          "src/app/results/ResultsSection.tsx:74-89: Promise.all over all shards, single catch sets loadError",
+          "src/app/results/ResultsSection.tsx:223-224: loadError renders a single generic message"
+        ],
+        "recommendation": "Change the loading pattern to tolerate partial failure: load shards individually (or in parallel with per-shard error handling), render plants from successful shards, and mark plants from failed shards as 'needs connection'. This is a structural change to the data consumption pattern, not just an error message swap.",
+        "confidence": 0.9,
+        "tags": [
+          "data-consumption",
+          "offline",
+          "results-view"
+        ],
+        "path": "src/app/results/ResultsSection.tsx",
+        "line_start": 68,
+        "line_end": 95,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFYKFF7YJE",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "info",
+        "title": "The service worker already provides transparent offline caching; the app layer is unaware of it",
+        "detail": "The SW (sw/policy.ts, sw/sw.ts) caches shell files cache-first and data files under data-<dataVersion> with SHA-256 verification. The manifest is network-first with cached fallback (ARCHITECTURE.md:468-470). From the app's perspective, a successful fetchJson means 'data available' regardless of whether it came from network or SW cache. This is correct and should not change. The offline STATE (what to show when data is NOT available) is a separate concern that belongs in the app layer, informed by the data layer's error classification.",
+        "evidence": [
+          "src/sw/policy.ts:1-32: SW rules documented",
+          "docs/ARCHITECTURE.md:459-470: data caching and manifest fallback",
+          "src/data/http.ts:31-51: fetchJson is the only fetch point, transparent to cache source"
+        ],
+        "recommendation": "Do not add app-layer cache awareness. The SW's transparent caching is the correct mechanism. The offline state is about what happens when the SW has nothing to serve, which is a data-layer error classification problem.",
+        "confidence": 0.95,
+        "tags": [
+          "service-worker",
+          "caching",
+          "architecture"
+        ],
+        "path": "src/sw/policy.ts",
+        "line_start": 1,
+        "line_end": 32,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFYKFF1F51",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "info",
+        "title": "i18n integration for 'needs connection' is low-risk and follows existing conventions",
+        "detail": "The i18n module (src/i18n/index.ts) provides formatMessage() which looks up a key in the locale catalogue and throws if missing. Keys follow a dot-namespace convention (e.g., 'results.loadError', 'shell.footer.creditsLoadError'). Adding a new key like 'offline.needsConnection' to both sv.json and en.json follows the existing pattern. verify.ps1 checks key parity mechanically. No changes to the i18n module itself are needed.",
+        "evidence": [
+          "src/i18n/index.ts:113-119: formatMessage throws on missing key",
+          "src/i18n/en.json:1-50: existing key naming conventions",
+          "src/app/results/ResultsSection.tsx:224: t({ key: 'results.loadError' }) usage pattern"
+        ],
+        "recommendation": "Add 'offline.needsConnection' (or similar) to both sv.json and en.json. Use the existing useT() hook in components that render the offline state.",
+        "confidence": 0.95,
+        "tags": [
+          "i18n",
+          "strings"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DFYKFF9ZPR",
+        "agent_id": "agt_01M4DFF6747Q1D",
+        "lens": "architecture",
+        "severity": "medium",
+        "title": "The data layer is the correct owner of offline availability; the app layer should not check navigator.onLine directly",
+        "detail": "ARCHITECTURE.md:94 states src/data/ is 'the only place that fetches or parses.' The enforced dependency direction is app → data → domain (line 107). If components check navigator.onLine directly, they couple to browser network state rather than to the app's data availability. The correct boundary: the data layer reports 'available' or 'unavailable' for each item; the UI renders accordingly. This keeps the matching engine (src/domain/) free of network concerns and preserves testability.",
+        "evidence": [
+          "docs/ARCHITECTURE.md:94: 'the only place that fetches or parses'",
+          "docs/ARCHITECTURE.md:107: 'Enforced dependency direction: app → data → domain'",
+          "src/data/index.ts:1-7: public entry point, the only module boundary src/app/ should import across"
+        ],
+        "recommendation": "Centralize offline detection in src/data/. Components should branch on DataError.code (or a new availability type), not on navigator.onLine.",
+        "confidence": 0.95,
+        "tags": [
+          "architecture",
+          "boundaries",
+          "coupling"
+        ],
+        "path": "src/data/index.ts",
+        "line_start": 1,
+        "line_end": 7,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG4CT1Z0WB",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "high",
+        "title": "Promise.all in ResultsSection fails the entire list if one shard is missing",
+        "detail": "ResultsSection.tsx:78-79 loads all catalogue shards with Promise.all. If any single shard fetch fails (e.g., offline and not cached), the entire results list shows a generic error. For offline support with partial cache, each shard must be loaded independently so that cached plants render normally and uncached ones show 'needs connection'. This is the most significant structural change required.",
+        "evidence": [
+          "src/app/results/ResultsSection.tsx:78-79: `const shards = await Promise.all(shardNames.map((shard) => loadCatalogueShard(currentManifest, shard)));`",
+          "src/app/results/ResultsSection.tsx:84-88: `catch { if (!cancelled) { setLoadError(true); } }` — single error state for all shards"
+        ],
+        "recommendation": "Replace Promise.all with per-shard try/catch. Collect successful plants into an array, track failed shard names separately. Render available plants normally; render a 'needs connection' placeholder for each plant in a failed shard (the index is cached, so the app knows which plants are in which shard).",
+        "confidence": 0.95,
+        "tags": [
+          "structural-change",
+          "partial-cache",
+          "results-section"
+        ],
+        "path": "src/app/results/ResultsSection.tsx",
+        "line_start": 68,
+        "line_end": 95,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG4CT17BVD",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "No offline-specific i18n key exists; the generic loadError message is shown for all failures",
+        "detail": "The codebase has no 'needs connection' or 'offline' string. All data-loading failures show a generic error (results.loadError, siteSetup.location.loadError, shell.footer.creditsLoadError). The task requires a distinct 'needs connection' message that communicates a connectivity issue rather than a data error. New keys must be added to both sv.json and en.json.",
+        "evidence": [
+          "src/app/results/ResultsSection.tsx:224: `<p className={styles.loadError}>{t({ key: 'results.loadError' })}</p>`",
+          "Search for 'offline|needs.connection|not.cached' in src/**/*.ts* returned zero matches in app components"
+        ],
+        "recommendation": "Add a key like `results.offline.needsConnection` to both i18n JSON files. Use it in the per-shard error rendering instead of the generic `results.loadError`.",
+        "confidence": 0.95,
+        "tags": [
+          "i18n",
+          "offline-state"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG4CT1BZ09",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "info",
+        "title": "The SW precaches the catalogue index but not plant shards or climate tiles",
+        "detail": "sw.ts:53 calls precacheCatalogueIndex() at install. Plant shards and climate/soil tiles are cached on demand when first fetched (policy.ts data route). This means a first-visit offline user has the index (knows which plants exist) but no plant records or climate data. A returning user who has visited a garden has both. The 'needs connection' state is only relevant for the former case and for plants/tiles that were never fetched.",
+        "evidence": [
+          "src/sw/sw.ts:53: `await precacheCatalogueIndex().catch(() => undefined);`",
+          "src/sw/policy.ts:73-78: data route caches on demand, keyed on dataVersion"
+        ],
+        "recommendation": "The Playwright test must account for this: load the app online first (to populate the cache), then go offline. A first-visit offline test would show 'needs connection' for everything, which is correct but less interesting.",
+        "confidence": 0.9,
+        "tags": [
+          "service-worker",
+          "cache-strategy"
+        ],
+        "path": "src/sw/sw.ts",
+        "line_start": 53,
+        "line_end": 53,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG4CT1JV03",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "The e2e test directory contents are unknown; existing Playwright patterns must be matched",
+        "detail": "playwright.config.ts:13 sets testDir to './e2e' and line 42 references 'e2e/serviceWorker.spec.ts'. The list_files glob for e2e/**/* returned no matches (possibly a glob issue). The new offline test must follow the patterns of existing e2e tests, which I have not read.",
+        "evidence": [
+          "playwright.config.ts:13: `testDir: './e2e'`",
+          "playwright.config.ts:42: comment referencing 'e2e/serviceWorker.spec.ts'",
+          "list_files e2e/**/* returned '(no files matched)'"
+        ],
+        "recommendation": "Read the existing e2e test files before writing the offline test. Match their setup patterns (how they start the server, how they wait for the app to be ready, how they assert on DOM state).",
+        "confidence": 0.85,
+        "tags": [
+          "playwright",
+          "test-infrastructure"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG4CT1N84S",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "medium",
+        "title": "SiteSetupPage has a separate loadError path for climate/soil tile failures",
+        "detail": "SiteSetupPage.tsx:311-313 catches tile-loading errors and sets loadError. Line 339 shows `.catch((): SoilLookup => ({ kind: 'unavailable' }))` — soil lookup failure is handled as an 'unavailable' state, not a hard error. The offline 'needs connection' message must also cover this path: if the climate/soil tiles for a saved garden's location aren't cached, the site profile can't be computed and no results can be shown.",
+        "evidence": [
+          "src/app/site-setup/SiteSetupPage.tsx:311-313: `catch { setLoadError(true); }`",
+          "src/app/site-setup/SiteSetupPage.tsx:339: `.catch((): SoilLookup => ({ kind: 'unavailable' }))`"
+        ],
+        "recommendation": "The offline state must cover both the results section (plant data) and the site setup page (climate/soil data). The i18n key may need to be shared or there may need to be two keys.",
+        "confidence": 0.8,
+        "tags": [
+          "site-setup",
+          "offline-state"
+        ],
+        "path": "src/app/site-setup/SiteSetupPage.tsx",
+        "line_start": 311,
+        "line_end": 339,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG4CT1S8A7",
+        "agent_id": "agt_01M4DFF674CFPB",
+        "lens": "technical",
+        "severity": "high",
+        "title": "npm run check does not include Playwright e2e tests",
+        "detail": "package.json:16 defines check as `npm run typecheck && npm run lint && npm run test && npm run build`. The `test` script (line 14) is `vitest run --coverage` — unit/integration tests only. The e2e tests are a separate script: `test:e2e` (line 15). This means the new Playwright offline test will NOT be run by `npm run check`. The task says 'The work is green when npm run check passes' — if the e2e test isn't part of check, it won't be verified by the gate.",
+        "evidence": [
+          "package.json:14: `\"test\": \"vitest run --coverage\"`",
+          "package.json:15: `\"test:e2e\": \"playwright test\"`",
+          "package.json:16: `\"check\": \"npm run typecheck && npm run lint && npm run test && npm run build\"`"
+        ],
+        "recommendation": "Either add `npm run test:e2e` to the check script, or explicitly note that the e2e test is verified separately. Per the lesson learned ('Wire [test_file] into [check_command]'), the e2e test should be part of the verification gate. However, adding it to check may significantly increase CI time (the production build web server has a 180s timeout). The supervisor should decide.",
+        "confidence": 0.95,
+        "tags": [
+          "ci-gate",
+          "playwright",
+          "verification"
+        ],
+        "path": "package.json",
+        "line_start": 14,
+        "line_end": 16,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG5A3B34MW",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "high",
+        "title": "npm run check does not include Playwright tests",
+        "detail": "package.json:16 defines check as 'npm run typecheck && npm run lint && npm run test && npm run build'. The Playwright suite (test:e2e) is a separate script and is NOT included in the check gate. This means the new offline Playwright test will not be captured by npm run check unless it is explicitly wired in. The existing e2e/serviceWorker.spec.ts is also not part of npm run check. This is a gap that must be addressed: either add test:e2e to the check script, or document that the Playwright suite is a separate CI gate.",
+        "evidence": [
+          "package.json:16: \"check\": \"npm run typecheck && npm run lint && npm run test && npm run build\""
+        ],
+        "recommendation": "Add 'npm run test:e2e' to the check script in package.json, or document that the Playwright suite is a separate CI gate and ensure it runs in CI.",
+        "confidence": 0.95,
+        "tags": [
+          "test-coverage",
+          "ci-gate"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG5A3BQ15J",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "No centralized 'needs connection' state exists",
+        "detail": "The current codebase has NO centralized 'is this data cached?' check. Each data-fetching path independently calls fetchJson and handles DataError. The search for DataError|fetch-failed|offline|needsConnection in src/app/**/*.tsx found only generic loadError state variables in Footer.tsx:28, ResultsSection.tsx:45, SiteSetupPage.tsx:126, and LocationStatus.tsx:179. If P3-18 adds a 'needs connection' state by wrapping each component's error handling separately, the logic will be duplicated. The correct approach is to centralize the cached-vs-uncached decision at the data layer (src/data/) so that components receive either a resolved value or a typed NeedsConnection state.",
+        "evidence": [
+          "src/app/components/Footer.tsx:28: const [loadError, setLoadError] = useState(false);",
+          "src/app/results/ResultsSection.tsx:45: const [loadError, setLoadError] = useState(false);",
+          "src/app/site-setup/SiteSetupPage.tsx:126: const [loadError, setLoadError] = useState(false);"
+        ],
+        "recommendation": "Create a centralized 'needs connection' state in src/data/ that components can check, rather than duplicating the logic in each component.",
+        "confidence": 0.9,
+        "tags": [
+          "maintainability",
+          "error-handling"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG5A3B71Y8",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "low",
+        "title": "i18n key parity test will catch missing keys",
+        "detail": "tests/i18n/index.test.ts:19-21 validates that sv and en carry exactly the same keys. The new 'needs connection' key must be added to BOTH en.json and sv.json, or this test will fail. This is a good guardrail, but it means the key must be added to both files in the same commit.",
+        "evidence": [
+          "tests/i18n/index.test.ts:19-21: expect(Object.keys(en).sort()).toEqual(Object.keys(sv).sort());"
+        ],
+        "recommendation": "Add the new i18n key to both en.json and sv.json in the same commit.",
+        "confidence": 0.95,
+        "tags": [
+          "i18n",
+          "test-coverage"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG5A3BJNBP",
+        "agent_id": "agt_01M4DFF674AXJ0",
+        "lens": "quality",
+        "severity": "medium",
+        "title": "The 'cached vs uncached' distinction is currently implicit",
+        "detail": "In src/sw/policy.ts, the route() function decides whether a request is shell, data, manifest, or passthrough. But the app code in src/data/http.ts has no way to distinguish 'the file doesn't exist' from 'the network is down.' Both throw DataError('fetch-failed'). P3-18 must make this distinction explicit so the UI can show different messages ('not available' vs. 'needs connection').",
+        "evidence": [
+          "src/data/http.ts:31-52: fetchJson throws DataError('fetch-failed') for both network errors and non-2xx responses"
+        ],
+        "recommendation": "Add a new DataErrorCode (e.g., 'offline') or a separate error type that distinguishes between 'file not found' and 'network down', so the UI can show different messages.",
+        "confidence": 0.85,
+        "tags": [
+          "error-handling",
+          "maintainability"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG6X7QHFPK",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "high",
+        "title": "No offline UI state exists in the application code",
+        "detail": "The service worker (P3-17) caches content, but no React component, conditional branch, or CSS class handles the case where a plant or tile is not cached. The app has no concept of 'needs connection' as a user-facing state. A user who goes offline with an uncached plant will see an unhandled error or blank state.",
+        "evidence": [
+          "search for 'offline|navigator.onLine|online event|offline event' in src/app/**/*.ts* returned 0 results",
+          "src/sw/sw.ts:138 throws Error('offline, and no manifest has been cached yet') — internal error, not user-facing"
+        ],
+        "recommendation": "Add a 'needs connection' i18n key to both sv.json and en.json, create a component or state that renders when a plant/tile is not cached, and wire it into the plant detail and results views",
+        "confidence": 0.95,
+        "tags": [
+          "offline",
+          "ux",
+          "i18n"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG6X7QMTTE",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "high",
+        "title": "No 'needs connection' i18n string exists in either locale",
+        "detail": "The i18n catalogue has no offline-related keys. When the feature is built, the string must be added to src/i18n/sv.json and src/i18n/en.json. The wording should be an affordance (\"This plant needs a connection to load\") rather than an error (\"Failed to load plant\"). It must be distinguishable from NO_DATA and OUT_OF_COVERAGE states.",
+        "evidence": [
+          "search for 'offline|needs connection|needsConnection|no signal|poor signal' in src/i18n/*.json returned 0 results"
+        ],
+        "recommendation": "Add keys like offline.plant.needsConnection and offline.tile.needsConnection to both sv.json and en.json, with wording that is specific, actionable, and non-alarming",
+        "confidence": 0.95,
+        "tags": [
+          "i18n",
+          "offline",
+          "ux"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG6X7QZ3WK",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "medium",
+        "title": "No online/offline transition detection exists",
+        "detail": "There is no navigator.onLine listener, no online/offline event handler, and no visual indicator of connectivity state. The app does not detect when the network drops, so there is no graceful transition to manage. A user who loses signal mid-session will see failed fetches with no explanation.",
+        "evidence": [
+          "search for 'offline|navigator.onLine|online event|offline event' in src/app/**/*.ts* returned 0 results"
+        ],
+        "recommendation": "Add a navigator.onLine listener and online/offline event handlers to detect connectivity changes, and render a global indicator (banner or status bar) when offline",
+        "confidence": 0.9,
+        "tags": [
+          "offline",
+          "ux",
+          "accessibility"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG6X7Q1QNW",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "medium",
+        "title": "Images are not cached — offline cards will have no image",
+        "detail": "P3-17's plan row states 'photographs not cached (P3-18's call).' Offline plant cards will have no image. The UX needs a graceful placeholder (not a broken-image icon). This is in scope for P3-18.",
+        "evidence": [
+          "docs/PLAN-PHASE-3.md:70 — 'photographs not cached (P3-18's call)'"
+        ],
+        "recommendation": "Design a graceful placeholder for offline plant cards that does not use a broken-image icon. Consider a leaf icon or a neutral card background with the plant name and verdict still visible.",
+        "confidence": 0.9,
+        "tags": [
+          "offline",
+          "ux",
+          "images"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG6X7Q78M9",
+        "agent_id": "agt_01M4DFF674MTD3",
+        "lens": "ux",
+        "severity": "high",
+        "title": "No Playwright test drives the app with the network cut",
+        "detail": "The tests/ directory contains unit and component tests but no e2e test that simulates offline conditions. The existing service worker tests (tests/sw/policy.test.ts) test the caching policy in isolation, not the user experience of being offline. P3-18 requires a Playwright test that drives the app with the network cut.",
+        "evidence": [
+          "docs/PLAN-PHASE-3.md:71 — 'Playwright drives it with the network cut, because an offline claim no one has tested offline is the kind of promise this repo does not make.'"
+        ],
+        "recommendation": "Add a Playwright test that uses context.setOffline(true) to simulate offline conditions, sets up a saved garden, and asserts that (a) the saved garden renders fully offline, (b) uncached plants/tiles show the 'needs connection' i18n string, and (c) no network requests are made for cached content",
+        "confidence": 0.95,
+        "tags": [
+          "testing",
+          "offline",
+          "playwright"
+        ],
+        "path": "",
+        "line_start": 0,
+        "line_end": 0,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG8CE1AMBA",
+        "agent_id": "agt_01M4DFF6745V2P",
+        "lens": "security",
+        "severity": "medium",
+        "title": "Service worker cache read path lacks re-verification",
+        "detail": "The `dataCacheFirst()` function (sw.ts:176-190) returns cached responses without re-verifying their SHA-256 hash. While the write path (`storeVerified()`, sw.ts:198-215) verifies hashes, a compromised page context could inject malicious data into the cache via `caches.put()`. The offline read path would serve this poisoned data without detection.",
+        "evidence": [
+          "src/sw/sw.ts:176-190 — dataCacheFirst returns cached response directly",
+          "src/sw/sw.ts:211-213 — SHA-256 verification only at write time"
+        ],
+        "recommendation": "Add re-verification of cached data hashes against the manifest when serving offline, or document that the threat model assumes no untrusted writers to the cache (same-origin, app-controlled writes).",
+        "confidence": 0.7,
+        "tags": [
+          "cache-poisoning",
+          "service-worker"
+        ],
+        "path": "src/sw/sw.ts",
+        "line_start": 176,
+        "line_end": 190,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG8CE1ZBTB",
+        "agent_id": "agt_01M4DFF6745V2P",
+        "lens": "security",
+        "severity": "low",
+        "title": "Offline error messages may leak infrastructure details",
+        "detail": "The `fetchJson()` function (http.ts:31-52) includes URLs and status codes in error messages. If these are rendered directly in the UI without sanitization, they could reveal internal paths or HTTP status codes to an attacker observing the error state.",
+        "evidence": [
+          "src/data/http.ts:36 — error message includes URL",
+          "src/data/http.ts:42 — error message includes status code"
+        ],
+        "recommendation": "Ensure the \"needs connection\" i18n strings are generic and do not include URLs, status codes, or response bodies. Use a fixed string like \"This content requires a connection.\" rather than interpolating error details.",
+        "confidence": 0.6,
+        "tags": [
+          "information-disclosure",
+          "error-handling"
+        ],
+        "path": "src/data/http.ts",
+        "line_start": 31,
+        "line_end": 52,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG8CE19VGB",
+        "agent_id": "agt_01M4DFF6745V2P",
+        "lens": "security",
+        "severity": "info",
+        "title": "Garden coordinates stored in localStorage without encryption",
+        "detail": "The gardens store (gardens.ts:77) persists user-provided coordinates (lat/lon) in localStorage under the key `plantsandclimate:gardens`. While this is same-origin only and not a direct security risk, it could be exposed to other scripts running in the page context or to browser extensions with storage access.",
+        "evidence": [
+          "src/app/site-setup/gardens.ts:77 — STORAGE_KEY = 'plantsandclimate:gardens'",
+          "src/app/site-setup/gardens.ts:330 — localStorage.setItem(STORAGE_KEY, ...)"
+        ],
+        "recommendation": "Document that garden coordinates are stored in plaintext in localStorage. If this is a concern, consider encrypting the data before storage or using IndexedDB with encryption. For most use cases, same-origin localStorage is acceptable.",
+        "confidence": 0.5,
+        "tags": [
+          "data-storage",
+          "privacy"
+        ],
+        "path": "src/app/site-setup/gardens.ts",
+        "line_start": 77,
+        "line_end": 77,
+        "cwe": ""
+      },
+      {
+        "id": "fnd_01M4DG91FQSJ28",
+        "agent_id": "agt_01M4DFF6745V2P",
+        "lens": "security",
+        "severity": "medium",
+        "title": "Service worker cache read path lacks re-verification",
+        "detail": "The `dataCacheFirst()` function (sw.ts:176-190) returns cached responses without re-verifying their SHA-256 hash. While the write path (`storeVerified`)",
+        "evidence": [
+          "src/sw/sw.ts:176-190 — dataCacheFirst returns cache.match() result directly",
+          "src/sw/sw.ts:198-215 — storeVerified checks SHA-256 at write time only"
+        ],
+        "recommendation": "Add optional re-verification on read for defense-in-depth, or document that same-origin trust model makes this unnecessary",
+        "confidence": 0.7,
+        "tags": [
+          "cache-poisoning",
+          "service-worker"
+        ],
+        "path": "src/sw/sw.ts",
+        "line_start": 176,
+        "line_end": 190,
+        "cwe": "CWE-345"
+      },
+      {
+        "id": "fnd_01M4DG91FQCY96",
+        "agent_id": "agt_01M4DFF6745V2P",
+        "lens": "security",
+        "severity": "low",
+        "title": "No distinction between offline and server error in DataError",
+        "detail": "All network failures produce `DataError('fetch-failed')` (http.ts:36). The offline implementation must distinguish 'not cached' from 'network down' to show the correct UI state. A naive implementation might conflate these, leading to misleading error messages or unnecessary retries.",
+        "evidence": [
+          "src/data/http.ts:31-52 — fetchJson catches all network errors as 'fetch-failed'",
+          "src/data/errors.ts:12-16 — DataErrorCode has no offline-specific value"
+        ],
+        "recommendation": "Add an `isOffline` boolean or a new error code to distinguish offline from server error, so the UI can show 'needs connection' vs 'server unavailable'",
+        "confidence": 0.8,
+        "tags": [
+          "error-handling",
+          "offline"
+        ],
+        "path": "src/data/http.ts",
+        "line_start": 31,
+        "line_end": 52,
+        "cwe": "CWE-754"
+      },
+      {
+        "id": "fnd_01M4DG91FQQGZP",
+        "agent_id": "agt_01M4DFF6745V2P",
+        "lens": "security",
+        "severity": "low",
+        "title": "Garden coordinates stored in localStorage without encryption",
+        "detail": "Garden records include lat/lon coordinates (gardens.ts:112-166) stored in plaintext in localStorage. While same-origin only, this is personal data that could be exposed via XSS or browser sync features.",
+        "evidence": [
+          "src/app/gardens.ts:77 — localStorage key 'plantsandclimate:gardens'",
+          "src/app/gardens.ts:112-166 — coordinate fields validated and stored"
+        ],
+        "recommendation": "Document that coordinates are user-provided and same-origin only; consider obfuscation if the app is deployed in high-risk environments",
+        "confidence": 0.6,
+        "tags": [
+          "data-exposure",
+          "localstorage"
+        ],
+        "path": "src/app/gardens.ts",
+        "line_start": 77,
+        "line_end": 77,
+        "cwe": "CWE-312"
+      },
+      {
+        "id": "fnd_01M4DG91FQXZHT",
+        "agent_id": "agt_01M4DFF6745V2P",
+        "lens": "security",
+        "severity": "low",
+        "title": "i18n interpolation could render untrusted HTML if params are not sanitized",
+        "detail": "The `interpolate()` function (i18n/index.ts:171-179) substitutes `{name}` placeholders with param values. If a param contains HTML and is rendered in a context that does not escape it, this could lead to XSS. Currently safe because React escapes JSX strings, but the i18n system itself does not enforce escaping.",
+        "evidence": [
+          "src/i18n/index.ts:171-179 — interpolate() does no sanitization",
+          "src/i18n/index.ts:113-118 — formatMessage() throws on missing keys but does not sanitize values"
+        ],
+        "recommendation": "Document that all i18n params must be plain text (no HTML), and add a lint rule or test to verify this",
+        "confidence": 0.5,
+        "tags": [
+          "xss",
+          "i18n"
+        ],
+        "path": "src/i18n/index.ts",
+        "line_start": 171,
+        "line_end": 179,
+        "cwe": "CWE-79"
+      }
+    ]
+  },
+  "labelled_by": "Claude (Opus 5.5), from the go-live run analyses of 2026-10-08, reviewed with the project's docs and CI workflow; the owner declined every veto marked here as veto; the pattern is the label, not a harness rule",
+  "checks": [
+    "answered",
+    "criteria_enforceable",
+    "mechanical_criterion",
+    "scopes_specific",
+    "scopes_grounded",
+    "inspections_grounded",
+    {
+      "check": "no_task_matches",
+      "pattern": "(add|wire|include|extend|append|put)\\w*\\b[^.\\n]{0,80}(test:e2e|playwright|e2e)[^.\\n]{0,60}\\b(into|to|in)\\b[^.\\n]{0,40}\\bcheck\\b|check['\\\"`]? script (now )?includes?[^.\\n]{0,40}(test:e2e|playwright|e2e)|extend\\w*\\b[^.\\n]{0,30}\\bcheck\\b[^.\\n]{0,40}(test:e2e|playwright|e2e)|\\bcheck\\b[^.\\n]{0,30}\\binclud\\w*\\b[^.\\n]{0,40}(test:e2e|playwright|e2e)"
+    },
+    {
+      "check": "task_count",
+      "min": 2,
+      "max": 8
+    }
+  ]
+}

@@ -1417,6 +1417,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_commands(sub, common)
     _add_read_commands(sub, common)
     _add_store_commands(sub, common)
+    from .evals.cli import add_eval_commands
+
+    add_eval_commands(sub, common)
 
     return parser
 

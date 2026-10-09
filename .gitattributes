@@ -1,0 +1,2 @@
+# A batch F case carries its change as a patch; git apply needs it byte for byte.
+evals/**/*.patch -text

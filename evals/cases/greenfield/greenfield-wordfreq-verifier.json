@@ -1,0 +1,57 @@
+{
+  "id": "greenfield-wordfreq-verifier",
+  "role": "verifier",
+  "fixture": {
+    "kind": "files",
+    "files": {
+      "src/wordfreq/__init__.py": "\"\"\"Word frequencies.\"\"\"\nfrom collections import Counter\n\n\ndef count_words(text):\n    return Counter(word.lower() for word in text.split())\n",
+      "tests/test_wordfreq.py": "from wordfreq import count_words\n\n\ndef test_case_is_ignored():\n    assert count_words(\"The the\")[\"the\"] == 2\n"
+    }
+  },
+  "request": "Create a small Python command-line tool, wordfreq, that prints the ten most frequent words in a text file, case-insensitively and ignoring punctuation. Package it under src/wordfreq with a console entry point, and test it with pytest. The work is done when python -m pytest passes.",
+  "input": {
+    "task": {
+      "id": "tsk_gf_verify",
+      "title": "Count words case-insensitively, ignoring punctuation",
+      "action": "Implement count_words in src/wordfreq/__init__.py",
+      "motivation": "The request",
+      "scope": {
+        "paths": [
+          "src/wordfreq/",
+          "tests/"
+        ]
+      },
+      "status": "awaiting_verification",
+      "dod": [
+        {
+          "id": "dod_gf_case",
+          "statement": "count_words counts 'The' and 'the' as the same word",
+          "method": "review",
+          "rubric": "Pass only if the code lowercases before counting; cite the line.",
+          "mandatory": true
+        },
+        {
+          "id": "dod_gf_punct",
+          "statement": "count_words ignores punctuation, so 'end.' counts as 'end'",
+          "method": "review",
+          "rubric": "Pass only if punctuation is stripped before counting; cite the line.",
+          "mandatory": true
+        }
+      ]
+    },
+    "change_summary": "Implemented count_words in src/wordfreq/__init__.py; it lowercases and strips punctuation."
+  },
+  "checks": [
+    "answered",
+    "all_ruled",
+    "evidence_cites_file",
+    {
+      "check": "statuses",
+      "expect": {
+        "'The' and 'the'": "pass",
+        "ignores punctuation": "fail"
+      }
+    }
+  ],
+  "labelled_by": "Claude (Opus 5.5), written as a green-field case: the request is all there is; the code lowercases but does not strip punctuation, whatever the implementer's summary claims"
+}
