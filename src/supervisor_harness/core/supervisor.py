@@ -113,7 +113,7 @@ from .conversation import (
 from .conversation import ROLE as CONVERSATION_ROLES
 from .dod import (
     VerificationOutcome,
-    fill_suite_commands,
+    fill_what_the_harness_can,
     quotes_the_file,
     verify_criterion,
     verify_inspection,
@@ -716,11 +716,11 @@ class Supervisor:
                 and str(plan.get("recommended_mode", "")).lower() == "execute")):
             proposed = parse_tasks(plan, state.id, state.workspace)
             for task in proposed:
-                fill_suite_commands(task, self.workspace)
+                fill_what_the_harness_can(task, self.workspace)
             weak = phases.unenforceable_criteria(proposed, self.config.policy)
             if weak:
                 await session.anote("synthesis sent back once: criteria it proposed cannot "
-                                    "be enforced", criteria=len(weak))
+                                    "be enforced", criteria=len(weak), weak=weak)
                 messages.append(ChatMessage("user", planner_send_back(weak)))
                 revised = await self._read_then_finish(
                     session, planner, messages, tools, stint, finish="propose_plan",
@@ -756,12 +756,12 @@ class Supervisor:
         proposed = parse_tasks(data, state.id, state.workspace)
         # What the harness fills in itself is not the model's to fix.
         for task in proposed:
-            fill_suite_commands(task, self.workspace)
+            fill_what_the_harness_can(task, self.workspace)
         weak = phases.unenforceable_criteria(proposed, self.config.policy)
         if not weak:
             return data
         await session.anote("synthesis sent back once: criteria it proposed cannot be "
-                            "enforced", criteria=len(weak))
+                            "enforced", criteria=len(weak), weak=weak)
         try:
             revised = await self.supervision._call(
                 "synthesis", system, phases.revision_prompt(user, weak),

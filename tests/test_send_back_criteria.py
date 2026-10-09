@@ -75,6 +75,10 @@ async def test_weak_criteria_are_sent_back_once_and_the_revision_is_used(
     assert "no command given" in revision, "and what is wrong with it"
     assert [t.title for t in state.tasks.values()] == ["Add rate limiting, revised"]
     assert any("sent back once" in n.text for n in state.notes)
+    # Which criteria, and why: the baseline runs' notes said only how many.
+    sent = next(e.payload for e in sup.store.open(response.run_id).events()
+                if "sent back once" in str(e.payload.get("text", "")))
+    assert any("rejects the eleventh attempt" in line for line in sent["weak"])
 
 
 async def test_a_revision_that_is_still_weak_is_used_and_not_sent_back_again(

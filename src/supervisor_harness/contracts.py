@@ -104,16 +104,19 @@ _DOD = {
         "command": {
             "type": "string",
             "description": (
-                "Exact command for method=command|test. If it selects part of a suite "
-                "(-k, -run, -t), name test node ids or set expect to a minimum count: "
-                "a filter that matches nothing exits 0 and proves nothing"
+                "Exact command for method=command|test, one command with no &&, | or ;. "
+                "Empty for inspection and review: the harness reads files itself. If it "
+                "selects part of a suite (-k, -run, -t), name test node ids or set expect "
+                "to a minimum count: a filter that matches nothing exits 0 and proves "
+                "nothing"
             ),
         },
         "expect": {
             "type": "string",
             "description": (
                 "What proves it: an exit code or output substring for a command; for "
-                "method=inspection, 'path/to/file: text that must be present'"
+                "method=inspection, 'path/to/file: text that must be present' -- the "
+                "file and the exact text, not a grep"
             ),
         },
         "rubric": {"type": "string", "description": "For method=review: what a pass looks like"},

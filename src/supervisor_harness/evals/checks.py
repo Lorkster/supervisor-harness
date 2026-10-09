@@ -24,7 +24,7 @@ from typing import Any
 
 from ..config import Policy
 from ..core import phases
-from ..core.dod import fill_suite_commands, inspectable
+from ..core.dod import fill_what_the_harness_can, inspectable
 from ..core.paths import _META
 from ..models import CriterionStatus, ExecutionTask, VerifyMethod
 from .cases import Case
@@ -74,7 +74,7 @@ def criteria_enforceable(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any
 
 
 def _filled(task: ExecutionTask, ws: Path) -> ExecutionTask:
-    fill_suite_commands(task, ws)   # what the harness fills in is not the model's miss
+    fill_what_the_harness_can(task, ws)   # what the harness fills in is not the model's miss
     return task
 
 

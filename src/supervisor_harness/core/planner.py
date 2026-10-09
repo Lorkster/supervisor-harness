@@ -47,7 +47,10 @@ scope cannot be kept apart.
 - Build a task on code you have read. If it changes a function, find the \
 function; if it changes a caller, find the callers.
 - An inspection criterion's expect reads `path/to/file: text that must be \
-present`, and the path is one the task creates or one you have seen.
+present`, and the path is one the task creates or one you have seen. It has no \
+command: the harness reads the file itself, so write no grep.
+- A command or test criterion runs one command, with no `&&`, `|` or `;`. Three \
+gates are three criteria.
 - Do not change how the project is built, tested or released -- its scripts, \
 its CI -- unless the request asks for exactly that change. If the request and the \
 project disagree about how the work is checked, say so in open_questions.
@@ -65,5 +68,6 @@ def send_back(weak: list[str]) -> str:
     """The criteria the harness cannot enforce, returned in the conversation."""
     listed = "\n".join(f"- {line}" for line in weak)
     return ("These definition-of-done criteria cannot be checked by the harness:\n\n"
-            f"{listed}\n\nFix each one -- a command the harness can run, or an inspection "
-            "that reads `path: text` -- and call propose_plan again with the whole plan.")
+            f"{listed}\n\nFix each one -- one command the harness can run, with no `&&` or "
+            "`|`, or an inspection whose expect reads `path: text` and which has no "
+            "command -- and call propose_plan again with the whole plan.")
