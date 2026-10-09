@@ -960,6 +960,8 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `max_unreported_dispatches` | 3 | Packets to a silent host agent before abandoning it |
 | `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |
 | `allow_command_execution` | false | Let the harness run commands itself |
+| `command_timeout_seconds` | 300 | Bound on one command an agent runs |
+| `check_timeout_seconds` | 1800 | Bound on one of the harness's own checks: a criterion's command, its baseline run, the fails-before run |
 | `approval` | "task" | **Protected.** `"envelope"` lets `supervisor run --grant-envelope` approve tasks within the run's envelope by a deterministic gate, sending what it refuses to you; it needs command execution, tests, `fails_before` and `execution_worktree` |
 | `execution_worktree` | true | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
 | `apply_lessons` | true | Inject past lessons into briefs |

@@ -923,11 +923,12 @@ def apply_quality_bars(
                     "Follow every wait, retry and lock acquisition the change adds or "
                     "modifies. Pass only on a bounded-time demonstration: a named test "
                     "that drives the contended or failing path to completion inside a "
-                    "stated wall-clock bound, with the measured time quoted. Reading "
-                    "the code is not a demonstration. Fail if a retry loop has neither "
-                    "a delay nor an attempt ceiling, if a lock is taken without a "
-                    "timeout, or if a failure path returns to the same wait with "
-                    "nothing changed."
+                    "stated wall-clock bound, with the measured time quoted from a run "
+                    "of it -- one the harness recorded, listed with what it ran, or one "
+                    "you ran. Reading the code alone is not a demonstration. Fail if a "
+                    "retry loop has neither a delay nor an attempt ceiling, if a lock is "
+                    "taken without a timeout, or if a failure path returns to the same "
+                    "wait with nothing changed."
                 ),
                 mandatory=True,
             ),
@@ -966,6 +967,9 @@ class VerificationOutcome:
     status: CriterionStatus
     evidence: str
     verified_by: str = "harness"
+    # A failed inspection whose file exists but lacks the expected text: what
+    # was missing is the planner's guess at the wording, not the statement.
+    wording_only: bool = False
 
 
 def unquoted_metacharacter(command: str, characters: str = _METACHARACTERS) -> str | None:
@@ -1381,8 +1385,38 @@ def verify_inspection(criterion: DoDCriterion, workspace: Path) -> VerificationO
             CriterionStatus.PASS, f"{raw_path.strip()}:{line_no} contains {needle!r}"
         )
     return VerificationOutcome(
-        CriterionStatus.FAIL, f"{raw_path.strip()} does not contain {needle!r}"
+        CriterionStatus.FAIL, f"{raw_path.strip()} does not contain {needle!r}",
+        wording_only=True,
     )
+
+
+#: A quoted span in a verifier's evidence: backticks, straight or curly quotes.
+_EVIDENCE_QUOTE = re.compile(
+    r"`([^`\n]{8,400})`|\"([^\"\n]{8,400})\"|'([^'\n]{8,400})'"
+    "|[\u201c\u2018]([^\u201d\u2019\n]{8,400})[\u201d\u2019]"
+)
+
+
+def quotes_the_file(criterion: DoDCriterion, evidence: str, workspace: Path) -> bool:
+    """Whether ``evidence`` quotes text that is in the file the inspection names.
+
+    An inspection whose expected text is missing goes to the verifier to judge
+    the statement itself -- in go-live baselines the planner had guessed the
+    wording (English words in the Swedish locale, a keyword argument the code
+    spells differently) and tasks that did what they said failed on it. A pass
+    there must carry the lines that show it: a verifier that says "the
+    decorator is present" and quotes nothing from the file is not believed.
+    """
+    raw_path, _, _ = criterion.expect.strip().partition(":")
+    path = (workspace / raw_path.strip()).resolve()
+    try:
+        path.relative_to(workspace.resolve())
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except (ValueError, OSError):
+        return False
+    flat = " ".join(content.split())
+    return any(" ".join(next(g for g in m.groups() if g).split()) in flat
+               for m in _EVIDENCE_QUOTE.finditer(evidence))
 
 
 def verify_criterion(
@@ -1399,12 +1433,15 @@ def verify_criterion(
     permitted. Those go to the host or a verification agent instead.
     """
     if criterion.method is VerifyMethod.INSPECTION:
-        return verify_inspection(criterion, workspace)
+        outcome = verify_inspection(criterion, workspace)
+        # The file is there and the guessed wording is not: the verifier's to
+        # judge, held to quoting the file (`quotes_the_file`).
+        return None if outcome.wording_only else outcome
 
     if criterion.method in (VerifyMethod.COMMAND, VerifyMethod.TEST):
         if not allow_commands:
             return None
-        return verify_command(criterion, workspace)
+        return verify_command(criterion, workspace, policy.check_timeout_seconds)
 
     return None
 
