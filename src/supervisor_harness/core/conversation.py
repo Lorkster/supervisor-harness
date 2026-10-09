@@ -271,6 +271,71 @@ def as_specified(arguments: dict[str, Any], spec: dict[str, Any] | None) -> dict
     return fixed
 
 
+#: How many problems a refused answer is told about: enough to fix, not a wall.
+SHAPE_PROBLEMS = 6
+
+
+def shape_problems(value: Any, schema: dict[str, Any], where: str = "") -> list[str]:
+    """Where an answer misses its tool's schema: required fields, structure, enums.
+
+    The finishing call ends a conversation, and was taken as sent. In batch F,
+    ten of 21 planner conversations called ``propose_plan`` and were read as
+    proposing no tasks: a plan the harness cannot read was accepted as the
+    answer, and the model never heard that it was unreadable. Structural only --
+    an object, a list, a required field, a listed value; a scalar the model
+    sends as text is left to the reader that already copes with it.
+    """
+    at = where or "the answer"
+    wanted = schema.get("type")
+    if wanted == "object":
+        if not isinstance(value, dict):
+            return [f"{at} must be an object"]
+        props = schema.get("properties") or {}
+        problems = [f"{where + '.' if where else ''}{key} is required"
+                    for key in schema.get("required", [])
+                    if key not in value and _needs_a_value(props.get(key) or {})]
+        for key, sub in (schema.get("properties") or {}).items():
+            if key in value:
+                problems += shape_problems(value[key], sub, f"{where + '.' if where else ''}{key}")
+        return problems
+    if wanted == "array":
+        if not isinstance(value, list):
+            return [f"{at} must be a list"]
+        problems = ([f"{at} needs at least {schema['minItems']} item(s)"]
+                    if len(value) < schema.get("minItems", 0) else [])
+        for i, item in enumerate(value):
+            problems += shape_problems(item, schema.get("items") or {}, f"{at}[{i}]")
+        return problems
+    if "enum" in schema and isinstance(value, str) and value not in schema["enum"]:
+        return [f"{at} must be one of {', '.join(map(str, schema['enum']))}"]
+    return []
+
+
+def _needs_a_value(schema: dict[str, Any]) -> bool:
+    """Whether a missing field has no empty value to stand for it.
+
+    The schemas require every field so that grammar-constrained decoding does not
+    drop them; the readers fill an absent list or text with an empty one. A plan
+    refused for a review criterion without a ``command`` would be a turn lost.
+    """
+    wanted = schema.get("type")
+    if wanted == "array":
+        return bool(schema.get("minItems"))
+    if wanted == "string":
+        return bool(schema.get("minLength") or schema.get("enum"))
+    return wanted not in ("boolean", "number", "integer")
+
+
+def refusal(finish: str, problems: list[str]) -> str:
+    """What a finishing call that cannot be read is told, so it can be sent again."""
+    shown = problems[:SHAPE_PROBLEMS]
+    more = len(problems) - len(shown)
+    listed = "\n".join(f"- {p}" for p in shown) + (f"\n- and {more} more" if more else "")
+    return (f"Not received: this {finish} cannot be read.\n{listed}\n"
+            f"Call {finish} again with the whole answer, each list and object as itself, "
+            "not as text.")
+
+
 def stint_payload(stint: Stint, report: dict[str, Any] | None) -> dict[str, Any]:
     """The stretch as a turn the supervision path already knows how to judge.
 

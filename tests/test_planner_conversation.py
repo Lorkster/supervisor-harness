@@ -13,6 +13,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
+from supervisor_harness.core.conversation import shape_problems
 from supervisor_harness.core.planner import PLANNER_TOOLS
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import RunMode
@@ -183,3 +184,73 @@ async def test_a_plan_whose_tasks_came_as_text_still_plans(supervisor: Superviso
     state = supervisor.store.load_state(response.run_id)
     assert [t.title for t in state.tasks.values()] == ["Add rate limiting to the login endpoint"]
     assert not any("ended without a plan" in n.text for n in state.notes)
+
+
+class Garbled(Planner):
+    """Sends its plan's tasks as broken text first, as the local model did."""
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        names = {t["name"] for t in request.tools or []}
+        refused = any(m.role == "tool" and m.content.startswith("Not received")
+                      for m in request.messages)
+        if "propose_plan" in names and not refused and any(
+                m.role == "tool" for m in request.messages):
+            self.planner.append(request)
+            garbled = dict(self.plan(False), tasks='[{"title": "Add rate limiting",')
+            return _calls(ToolCall("propose_plan", garbled))(request)
+        return await super().complete(request)
+
+
+async def test_a_plan_that_cannot_be_read_is_refused_and_sent_again(
+    supervisor: Supervisor,
+) -> None:
+    """Batch F: ten of 21 conversations ended in a plan read as having no tasks."""
+    fake = Garbled()
+    response = await _planning(supervisor, fake).run(PROMPT, mode=RunMode.EXECUTE,
+                                                     auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+
+    told = [m.content for m in fake.planner[-1].messages if m.role == "tool"]
+    assert any("tasks must be a list" in t for t in told), told
+    assert [t.title for t in state.tasks.values()] == ["Add rate limiting to the login endpoint"]
+    events = supervisor.store.open(response.run_id).events()
+    assert any("tasks must be a list" in str(e.payload.get("unreadable")) for e in events)
+
+
+def test_shape_problems_name_what_is_missing_and_where() -> None:
+    schema = {"type": "object", "required": ["tasks", "mode"], "properties": {
+        "mode": {"type": "string", "enum": ["plan", "execute"]},
+        "tasks": {"type": "array", "minItems": 1, "items": {
+            "type": "object", "required": ["title"], "properties": {
+                "scope_paths": {"type": "array", "items": {"type": "string"}}}}}}}
+
+    assert shape_problems({"mode": "execute", "tasks": [{"title": "t"}]}, schema) == []
+    assert shape_problems("plan", schema) == ["the answer must be an object"]
+    assert shape_problems({"mode": "later", "tasks": []}, schema) == [
+        "mode must be one of plan, execute", "tasks needs at least 1 item(s)"]
+    assert shape_problems({"tasks": [{"scope_paths": "src/"}]}, schema) == [
+        "mode is required", "tasks[0].title is required", "tasks[0].scope_paths must be a list"]
+
+
+class NeverReadable(Planner):
+    """Sends an unreadable plan however often it is refused."""
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        names = {t["name"] for t in request.tools or []}
+        if "propose_plan" in names and any(m.role == "tool" for m in request.messages):
+            self.planner.append(request)
+            return _calls(ToolCall("propose_plan", dict(self.plan(False), tasks="none")))(request)
+        return await super().complete(request)
+
+
+async def test_a_planner_that_never_answers_readably_ends_and_falls_back(
+    supervisor: Supervisor,
+) -> None:
+    """Refusals count toward the stretch, or the conversation never ends."""
+    fake = NeverReadable()
+    response = await _planning(supervisor, fake).run(PROMPT, mode=RunMode.EXECUTE,
+                                                     auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+
+    assert any("ended without a plan" in n.text for n in state.notes)
+    assert [t.title for t in state.tasks.values()] == ["Add rate limiting to the login endpoint"]

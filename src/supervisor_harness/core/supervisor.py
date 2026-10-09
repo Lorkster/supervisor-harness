@@ -106,6 +106,8 @@ from .conversation import (
     as_specified,
     compact,
     native_tool_specs,
+    refusal,
+    shape_problems,
     stint_payload,
 )
 from .conversation import ROLE as CONVERSATION_ROLES
@@ -2441,11 +2443,23 @@ class Supervisor:
                 continue
             idle = 0
             failures: list[str] = []
+            unreadable: list[str] = []
             specs = {t["name"]: t for t in tools}
             for call in response.tool_calls:
                 call = replace(call, arguments=as_specified(call.arguments,
                                                             specs.get(call.name)))
-                if call.name == finish:
+                problems = (shape_problems(call.arguments,
+                                           specs[finish].get("parameters") or {})
+                            if call.name == finish and finish in specs else [])
+                if call.name == finish and problems:
+                    # Taken as sent, an unreadable plan was a plan of no tasks.
+                    text = refusal(finish, problems)
+                    failures.append(call.name)
+                    unreadable += problems
+                    # Counted, or a model that never sends a readable answer
+                    # would be refused for ever: the stretch ends on its calls.
+                    stint.tool_calls += 1
+                elif call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
                 elif call.name not in offered:
                     text = f"{call.name} is not available now. Call {finish}."
@@ -2462,7 +2476,8 @@ class Supervisor:
                 messages.append(ChatMessage("tool", text, tool_name=call.name,
                                             tool_call_id=call.id))
             await session.anote("tools called", actor=agent.id,
-                                tools=[c.name for c in response.tool_calls], failures=failures)
+                                tools=[c.name for c in response.tool_calls], failures=failures,
+                                **({"unreadable": unreadable} if unreadable else {}))
         return report
 
     def _remember_named(self, state: RunState, agent: AgentSpec, call: ToolCall,
