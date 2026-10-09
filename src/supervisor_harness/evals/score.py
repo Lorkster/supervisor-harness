@@ -96,6 +96,7 @@ def _run(command: str, cwd: Path) -> dict[str, Any]:
         # its own checks, so the scorer's SUPERVISOR_HOME is not the project's.
         done = subprocess.run(command, cwd=cwd, shell=True,  # noqa: S602
                               env=child_environment(), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
                               timeout=ACCEPT_TIMEOUT, check=False)
         tail = (done.stdout + done.stderr).strip()[-800:]
         return {"command": command, "passed": done.returncode == 0,

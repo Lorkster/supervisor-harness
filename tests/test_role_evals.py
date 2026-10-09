@@ -280,6 +280,16 @@ def test_acceptance_runs_without_the_scorers_harness_settings(
     assert card["accepted"] is True, card["acceptance"][0]["tail"]
 
 
+def test_acceptance_output_is_read_as_utf8(tmp_path: Path) -> None:
+    """Playwright's report on Windows: bytes the locale's code page cannot decode."""
+    marks = (f'"{sys.executable}" -c '
+             '"import sys; sys.stdout.buffer.write(bytes([0xe2, 0x9d, 0x8c]) + b\' ok\')"')
+
+    card = scorecard(RunState(prompt="p"), [marks], workspace=tmp_path)
+
+    assert card["accepted"] is True and card["acceptance"][0]["tail"].endswith("❌ ok")
+
+
 async def test_a_case_whose_workspace_cannot_be_built_fails_alone(
     tmp_path: Path, config: HarnessConfig,
 ) -> None:
