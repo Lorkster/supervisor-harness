@@ -2765,6 +2765,14 @@ def _files_named(text: str, toolbox: Toolbox) -> set[str]:
     """The workspace files ``text`` names that exist and the floor lets be written."""
     named = set()
     for raw in _PATH_IN_OUTPUT.findall(text):
+        # A check prints absolute paths; the toolbox reads a leading slash as the
+        # workspace root, as an agent means it, so a POSIX path is made relative
+        # here first. (A Windows path kept its drive and worked: CI on Linux did not.)
+        if Path(raw).is_absolute():
+            try:
+                raw = Path(raw).resolve().relative_to(toolbox.workspace).as_posix()
+            except (ValueError, OSError):
+                continue
         rel = toolbox.writable_path(raw)
         if rel is not None and (toolbox.workspace / rel).is_file():
             named.add(rel)
