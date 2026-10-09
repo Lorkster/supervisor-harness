@@ -65,8 +65,8 @@ def add_eval_commands(sub: Any, common: argparse.ArgumentParser) -> None:
     r.add_argument("cases", nargs="+", help="case files, or directories of them")
     r.add_argument("--variant", action="append", default=[],
                    help="name:key=value,...  keys: route, think (on/off), sampling "
-                        "(model/harness); repeatable; default is how the harness calls "
-                        "each role today")
+                        "(model/harness), planner (conversation); repeatable; default is "
+                        "how the harness calls each role today")
     r.add_argument("--route", default="", help="model route for variants that set none")
     r.add_argument("--repeat", type=int, default=3, help="runs per case and variant")
     r.add_argument("--role", action="append", default=[], help="only this role (repeatable)")

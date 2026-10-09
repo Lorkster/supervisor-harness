@@ -111,12 +111,19 @@ _DOD = {
         },
         "expect": {
             "type": "string",
-            "description": "What proves it: exit code, output substring, or file state",
+            "description": (
+                "What proves it: an exit code or output substring for a command; for "
+                "method=inspection, 'path/to/file: text that must be present'"
+            ),
         },
         "rubric": {"type": "string", "description": "For method=review: what a pass looks like"},
         "mandatory": {"type": "boolean"},
     },
-    "required": ["statement", "method", "mandatory"],
+    # `command` and `expect` are required, and empty where they do not apply. A
+    # model decoding against this schema leaves an optional field out: in batch
+    # F's first measurement no `test` criterion of the one-shot planner carried
+    # a command, and every one went back as unenforceable.
+    "required": ["statement", "method", "command", "expect", "mandatory"],
 }
 
 
@@ -337,14 +344,32 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                         "minItems": 1,
                     },
                     "dod": {"type": "array", "items": _DOD, "minItems": 2},
-                    "scope_paths": {"type": "array", "items": {"type": "string"}},
+                    "scope_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "description": (
+                            "The files this task changes or creates, or the directories "
+                            "it works in. Never empty: an empty scope lets the task "
+                            "change the whole workspace"
+                        ),
+                    },
                     "out_of_scope": {"type": "array", "items": {"type": "string"}},
                     "suggested_role": {"type": "string"},
-                    "depends_on": {"type": "array", "items": {"type": "string"}},
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Titles of the tasks that must finish first; [] if none",
+                    },
                     "risk": {"type": "string", "enum": SEVERITIES},
                     "effort": {"type": "string", "enum": ["small", "medium", "large"]},
                 },
-                "required": ["title", "action", "motivation", "rationale_refs", "dod"],
+                # `scope_paths` and `depends_on` are required for the reason a
+                # criterion's command is: decoding against the schema, the
+                # one-shot planner left every task's scope empty -- read as the
+                # whole workspace, in 39 of 70 go-live tasks -- and declared no order.
+                "required": ["title", "action", "motivation", "rationale_refs", "dod",
+                             "scope_paths", "depends_on"],
             },
         },
     },

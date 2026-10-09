@@ -103,8 +103,11 @@ from .conversation import (
     VERDICT_NOW,
     VERDICT_STINTS,
     Stint,
+    as_specified,
     compact,
     native_tool_specs,
+    refusal,
+    shape_problems,
     stint_payload,
 )
 from .conversation import ROLE as CONVERSATION_ROLES
@@ -137,6 +140,10 @@ from .lifecycle import Lifecycle
 from .packets import Packets
 from .paths import globs_may_overlap, globs_within, matches_any, relative_patterns
 from .placement import named_outside_scope, placed_in_tree
+from .planner import NOW as PLANNER_NOW
+from .planner import NUDGE as PLANNER_NUDGE
+from .planner import PLAN_TOOL, PLANNER_TOOLS
+from .planner import send_back as planner_send_back
 from .reporting import Reporting
 from .responses import SupervisorResponse
 from .review import NOW as REVIEW_NOW
@@ -662,10 +669,67 @@ class Supervisor:
                 packets=[packet],
             )
 
-        data = await self.supervision._call(stage, system, user, SYNTHESIS_SCHEMA, session)
-        data = await self._send_back_weak_criteria(session, system, user, data)
+        conversed = (await self._converse_synthesis(session, system, user)
+                     if self._plans_in_conversation() else None)
+        if conversed is not None:
+            data = conversed
+        else:
+            data = await self.supervision._call(stage, system, user, SYNTHESIS_SCHEMA, session)
+            data = await self._send_back_weak_criteria(session, system, user, data)
         self._apply_synthesis(session, data)
         return None
+
+    def _plans_in_conversation(self) -> bool:
+        """Whether the synthesis is a conversation with read-only tools (`core/planner.py`)."""
+        return (self.config.policy.planner_loop == "conversation"
+                and self.router.native_tools(self.config.binding_for("synthesis")))
+
+    async def _converse_synthesis(
+        self, session: RunSession, system: str, user: str, *, send_back: bool = True,
+    ) -> dict[str, Any] | None:
+        """The synthesis as a conversation that reads before it plans, and ends in a plan.
+
+        Returns the plan -- the synthesis schema, as the one-shot call returns
+        it -- or None when no plan came, for the caller to fall back to the
+        one-shot call. ``send_back`` returns criteria the harness cannot enforce
+        to the planner, in the conversation, once; batch F turns it off to judge
+        the first answer alone.
+        """
+        planner = AgentSpec(id=f"planner_{session.state.id}", kind=AgentKind.ANALYSIS,
+                            role="planner", title="Planner", scope=Scope(),
+                            binding=self.config.binding_for("synthesis"))
+        tools = [t for t in native_tool_specs(planner, self.config.policy)
+                 if t["name"] != "report"] + [PLAN_TOOL]
+        role = (system + PLANNER_TOOLS, "propose_plan", PLANNER_NUDGE)
+        messages = [ChatMessage("user", user)]
+        stint = Stint()
+        plan = await self._read_then_finish(session, planner, messages, tools, stint,
+                                            finish="propose_plan", now=PLANNER_NOW,
+                                            role=role, stage="synthesis")
+        if plan is None:
+            await session.anote("planner conversation ended without a plan; the one-shot "
+                                "synthesis is used instead", read=stint.read)
+            return None
+        state = session.state
+        if send_back and (state.mode is RunMode.EXECUTE or (
+                state.mode is RunMode.AUTO
+                and str(plan.get("recommended_mode", "")).lower() == "execute")):
+            proposed = parse_tasks(plan, state.id, state.workspace)
+            for task in proposed:
+                fill_suite_commands(task, self.workspace)
+            weak = phases.unenforceable_criteria(proposed, self.config.policy)
+            if weak:
+                await session.anote("synthesis sent back once: criteria it proposed cannot "
+                                    "be enforced", criteria=len(weak))
+                messages.append(ChatMessage("user", planner_send_back(weak)))
+                revised = await self._read_then_finish(
+                    session, planner, messages, tools, stint, finish="propose_plan",
+                    now=PLANNER_NOW, role=role, stage="synthesis")
+                if revised and revised.get("tasks"):
+                    plan = revised
+        await session.anote("planned in a conversation", read=stint.read,
+                            tool_calls=stint.tool_calls)
+        return plan
 
     async def _send_back_weak_criteria(
         self, session: RunSession, system: str, user: str, data: dict[str, Any]
@@ -2379,8 +2443,23 @@ class Supervisor:
                 continue
             idle = 0
             failures: list[str] = []
+            unreadable: list[str] = []
+            specs = {t["name"]: t for t in tools}
             for call in response.tool_calls:
-                if call.name == finish:
+                call = replace(call, arguments=as_specified(call.arguments,
+                                                            specs.get(call.name)))
+                problems = (shape_problems(call.arguments,
+                                           specs[finish].get("parameters") or {})
+                            if call.name == finish and finish in specs else [])
+                if call.name == finish and problems:
+                    # Taken as sent, an unreadable plan was a plan of no tasks.
+                    text = refusal(finish, problems)
+                    failures.append(call.name)
+                    unreadable += problems
+                    # Counted, or a model that never sends a readable answer
+                    # would be refused for ever: the stretch ends on its calls.
+                    stint.tool_calls += 1
+                elif call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
                 elif call.name not in offered:
                     text = f"{call.name} is not available now. Call {finish}."
@@ -2397,7 +2476,8 @@ class Supervisor:
                 messages.append(ChatMessage("tool", text, tool_name=call.name,
                                             tool_call_id=call.id))
             await session.anote("tools called", actor=agent.id,
-                                tools=[c.name for c in response.tool_calls], failures=failures)
+                                tools=[c.name for c in response.tool_calls], failures=failures,
+                                **({"unreadable": unreadable} if unreadable else {}))
         return report
 
     def _remember_named(self, state: RunState, agent: AgentSpec, call: ToolCall,

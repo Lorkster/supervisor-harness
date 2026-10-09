@@ -963,6 +963,9 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `command_timeout_seconds` | 300 | Bound on one command an agent runs |
 | `check_timeout_seconds` | 1800 | Bound on one of the harness's own checks: a criterion's command, its baseline run, the fails-before run |
 | `approval` | "task" | **Protected.** `"envelope"` lets `supervisor run --grant-envelope` approve tasks within the run's envelope by a deterministic gate, sending what it refuses to you; it needs command execution, tests, `fails_before` and `execution_worktree` |
+| `implementer_loop` | "turns" | `"conversation"`: implementers and verifiers are each one conversation with native tool calls (`core/conversation.py`), where the provider takes tools natively |
+| `planner_loop` | "one_shot" | `"conversation"`: the synthesis that writes tasks reads the workspace with read-only tools before it plans, and answers through `propose_plan` (`core/planner.py`) |
+| `veto_review` | true | **Protected.** Under envelope approval, a reviewer that can only veto reads each task the gate passed (`core/review.py`) |
 | `execution_worktree` | true | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
 | `apply_lessons` | true | Inject past lessons into briefs |
 | `lesson_decay_after_runs` | 10 | Runs a lesson may go unconfirmed before its confidence falls |
@@ -1030,6 +1033,7 @@ src/supervisor_harness/
     journal.py     the decision journal `supervisor explain` renders
     tools.py       sandboxed workspace tools for autonomous agents
     conversation.py an implementer driven as one conversation, through native tool calls
+    planner.py     the synthesis as a conversation that reads before it plans
     review.py      batch G: a second reading of each task, which can only veto
     paths.py       path normalisation and scope matching
     placement.py   a model's paths placed in the tree, when they name no file

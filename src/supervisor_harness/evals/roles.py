@@ -56,6 +56,9 @@ class Variant:
     route: str = ""
     think: bool | None = None
     model_sampling: bool = False
+    #: The planner only: "conversation" calls it as `Supervisor._converse_synthesis`
+    #: does in a run, with read-only tools; anything else, the one-shot call.
+    planner: str = ""
 
 
 @dataclass
@@ -122,6 +125,12 @@ async def _planner(sup: Supervisor, case: Case, variant: Variant) -> RoleOutput:
         finding = from_jsonable(raw, Finding)
         state.findings.append(finding)
     system, user = phases.synthesis_prompt(state, RunMode.EXECUTE)
+    if variant.planner == "conversation":
+        session = sup.store.create(state)
+        plan = await sup._converse_synthesis(session, system, user, send_back=False)
+        if plan is None:
+            return RoleOutput(error="the planner conversation ended without a plan")
+        return RoleOutput(tasks=parse_tasks(plan, state.id, str(sup.workspace)))
     extra: dict[str, Any] = {} if variant.think is None else {"think": variant.think}
     response = await sup.router.complete("synthesis", CompletionRequest(
         system=system, messages=[ChatMessage("user", user)], json_schema=SYNTHESIS_SCHEMA,
