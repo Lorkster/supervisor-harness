@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..core.dod import child_environment
 from ..models import AgentKind, AgentStatus, RunState
 
 ACCEPT_TIMEOUT = 1800.0
@@ -91,9 +92,10 @@ def _tree(state: RunState, workspace: Path | None) -> Iterator[Path | None]:
 def _run(command: str, cwd: Path) -> dict[str, Any]:
     try:
         # The owner's own acceptance command, typed on the command line, never a
-        # model's: run as they would run it.
+        # model's: run as they would run it -- in the environment the harness gives
+        # its own checks, so the scorer's SUPERVISOR_HOME is not the project's.
         done = subprocess.run(command, cwd=cwd, shell=True,  # noqa: S602
-                              capture_output=True, text=True,
+                              env=child_environment(), capture_output=True, text=True,
                               timeout=ACCEPT_TIMEOUT, check=False)
         tail = (done.stdout + done.stderr).strip()[-800:]
         return {"command": command, "passed": done.returncode == 0,

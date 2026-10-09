@@ -267,6 +267,19 @@ def test_a_run_is_scored_by_its_record_and_by_its_tree(tmp_path: Path) -> None:
     assert nowhere["acceptance"][0]["tail"] == "the run left no tree to check"
 
 
+def test_acceptance_runs_without_the_scorers_harness_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Baseline run 2: three of the project's CLI tests read the scorer's SUPERVISOR_HOME."""
+    monkeypatch.setenv("SUPERVISOR_HOME", str(tmp_path / "store"))
+    leaks = (f'"{sys.executable}" -c '
+             '"import os; raise SystemExit(\'SUPERVISOR_HOME\' in os.environ)"')
+
+    card = scorecard(RunState(prompt="p"), [leaks], workspace=tmp_path)
+
+    assert card["accepted"] is True, card["acceptance"][0]["tail"]
+
+
 async def test_a_case_whose_workspace_cannot_be_built_fails_alone(
     tmp_path: Path, config: HarnessConfig,
 ) -> None:
