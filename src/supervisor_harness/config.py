@@ -104,7 +104,14 @@ class Policy:
     # in host-delegated mode the host runs them under the user's own permission
     # model, which is where that decision belongs.
     allow_command_execution: bool = False
+    # An agent's own commands: a bound on one turn of its shell.
     command_timeout_seconds: int = 300
+    # The harness's own checks -- a criterion's command, the same command on the
+    # baseline, the fails-before run. A check cut short is a failure nobody
+    # caused: in a baseline run on this repository the full suite took about 330
+    # seconds in the run's worktree, and a task whose every other criterion had
+    # passed failed on "command timed out after 300s: pytest -q".
+    check_timeout_seconds: int = 1800
 
     # An execute-mode run on the autonomous backend works in a git worktree on
     # its own branch, never in the owner's tree, and ends with that branch.

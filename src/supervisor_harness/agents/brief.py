@@ -24,6 +24,7 @@ from ..models import (
     Lesson,
     Message,
     RunState,
+    VerifyMethod,
 )
 from .roles import Role
 
@@ -503,6 +504,41 @@ def _held_tasks(run: RunState, task: ExecutionTask) -> str:
             "say so in your report.\n" + _bullets(held))
 
 
+#: An inspection a verifier sees is one the harness could not settle: the file is
+#: there and the expected text is not. Go-live baselines: the planner had guessed
+#: the wording -- English words in the Swedish locale -- and tasks that did what
+#: they said failed on the guess.
+INSPECTION_HANDED_OVER = (
+    "An inspection criterion still open here is one whose expected text the harness "
+    "looked for and did not find: that wording was the planner's guess. Judge whether "
+    "the statement itself holds, and quote the lines of that file that show it. A pass "
+    "that quotes nothing from that file is not accepted."
+)
+
+#: How much of a recorded run's output a verifier is shown: enough for a test
+#: runner's summary line and its timing.
+RUN_TAIL = 600
+
+
+def _runs_block(task: ExecutionTask) -> str:
+    """The commands the harness ran for this task, with how they ended.
+
+    The verifier is a reader; the harness is what runs the task's commands. A
+    liveness rubric asks for a bounded-time run, quoted, and in two baseline runs
+    the harness had run exactly that test -- its output was never shown to the
+    verifier, who could only fail the criterion for want of it.
+    """
+    lines = []
+    for crit in task.dod:
+        if (crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.FAILS_BEFORE)
+                and crit.status in (CriterionStatus.PASS, CriterionStatus.FAIL)
+                and crit.evidence):
+            tail = crit.evidence[-RUN_TAIL:].strip()
+            lines += [f"- [{crit.status.value}] **{crit.statement}**", "  ```",
+                      *(f"  {line}" for line in tail.splitlines()), "  ```"]
+    return "\n".join(lines)
+
+
 def build_verifier_brief(run: RunState, task: ExecutionTask, change_summary: str = "") -> str:
     """The opening message of a verifier's conversation: what is still to be judged.
 
@@ -517,13 +553,16 @@ def build_verifier_brief(run: RunState, task: ExecutionTask, change_summary: str
                  f"{task.action}\n\n{task.motivation}".strip()),
         _section("What the implementer reports", change_summary),
         _section("Criteria to judge", _dod_block(still_open or task.dod)),
+        _section("What the harness already ran", _runs_block(task)),
         _section(
             "How to judge",
             _bullets([
                 "Read the files the criteria are about, and quote the lines that "
                 "settle each one.",
                 "For a review criterion, judge against its rubric and cite the code "
-                "that meets or fails it.",
+                "that meets or fails it. A run the harness recorded above is evidence "
+                "you may quote.",
+                INSPECTION_HANDED_OVER,
                 "Finding a genuine failure is a successful verification.",
             ]),
         ),
@@ -569,6 +608,7 @@ def build_verification_brief(
                     "pass, whatever the exit code said.",
                     "For inspection criteria, read the file and quote the lines that "
                     "settle the question.",
+                    INSPECTION_HANDED_OVER,
                     "For review criteria, judge against the rubric and cite the specific "
                     "code that meets or fails it.",
                     "Mark `blocked` only when the check itself cannot run, and say why.",

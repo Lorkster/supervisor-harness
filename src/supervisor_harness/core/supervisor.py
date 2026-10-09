@@ -88,7 +88,7 @@ from ..models import (
     Usage,
     VerifyMethod,
 )
-from ..providers.base import ChatMessage, CompletionRequest, ProviderRefusal
+from ..providers.base import ChatMessage, CompletionRequest, ProviderRefusal, ToolCall
 from ..providers.router import ModelRouter
 from ..serde import to_jsonable
 from ..store.events import EventType
@@ -108,7 +108,13 @@ from .conversation import (
     stint_payload,
 )
 from .conversation import ROLE as CONVERSATION_ROLES
-from .dod import VerificationOutcome, fill_suite_commands, verify_criterion
+from .dod import (
+    VerificationOutcome,
+    fill_suite_commands,
+    quotes_the_file,
+    verify_criterion,
+    verify_inspection,
+)
 from .envelope import (
     Ceiling,
     attenuate,
@@ -150,7 +156,7 @@ from .review import ROLE as REVIEW_ROLE
 #: module that imports *that* would be a cycle.
 __all__ = ["Supervisor", "SupervisorResponse"]
 from .supervision import Supervision
-from .tools import Toolbox, render_results
+from .tools import Toolbox, ToolResult, render_results
 
 # Stage agents are ordinary agents so that planning, synthesis, the checkpoint
 # and the improvement pass all flow through the same report/supervise path.
@@ -242,6 +248,8 @@ class Supervisor:
         self._toolboxes: dict[Path, Toolbox] = {self.workspace: self.toolbox}
         #: (baseline commit, command) -> what that command does on the baseline.
         self._baseline_verdicts: dict[tuple[str, str], str] = {}
+        #: agent id -> files a failing run of one of the run's checks named.
+        self._named_by_checks: dict[str, set[str]] = {}
         # The layers below the phase machine. Neither calls back into it, which
         # is what made them separable at all -- see docs/history/quality-assessment.md.
         self.reporting = Reporting(self.config, self.store)
@@ -1084,7 +1092,7 @@ class Supervisor:
         if key not in self._baseline_verdicts:
             self._baseline_verdicts[key] = baseline_verdict(
                 crit.command, self.workspace, baseline,
-                self.config.policy.command_timeout_seconds)
+                self.config.policy.check_timeout_seconds)
         verdict = self._baseline_verdicts[key]
         if not verdict:
             return outcome
@@ -1123,7 +1131,7 @@ class Supervisor:
                    if (rel := safe_relative(raw, tree)) is not None}
         only_tests = bool(changed) and all(is_test_path(rel) for rel in changed)
         return verify_fails_before(crit, files, tree, baseline,
-                                   timeout=self.config.policy.command_timeout_seconds,
+                                   timeout=self.config.policy.check_timeout_seconds,
                                    only_tests=only_tests)
 
     def _settle_tasks(self, session: RunSession) -> None:
@@ -1678,6 +1686,18 @@ class Supervisor:
                 status = CriterionStatus.FAIL
                 evidence = "marked passed without evidence; rejected by the supervisor"
 
+            # An inspection handed over because its guessed wording was missing:
+            # the verifier may judge the statement, but a pass must quote the
+            # file, or the harness's own finding stands.
+            actor = agent.id
+            if status is CriterionStatus.PASS and crit.method is VerifyMethod.INSPECTION:
+                tree = self._tree(state)
+                found = verify_inspection(crit, tree)
+                if found.wording_only and not quotes_the_file(crit, evidence, tree):
+                    status, actor = CriterionStatus.FAIL, "harness"
+                    evidence = (f"{found.evidence}, and the verifier's pass quotes nothing "
+                                f"that is in that file: {evidence[:300]}")
+
             # A verdict the harness proved by running the real check outranks an
             # agent's account of it. Only a criterion the harness could not
             # settle -- blocked or never checked -- is open to judgement.
@@ -1712,7 +1732,7 @@ class Supervisor:
                 EventType.CRITERION_VERIFIED,
                 {"task_id": task.id, "criterion_id": crit.id,
                  "status": str(status), "evidence": evidence},
-                actor=agent.id,
+                actor=actor,
             )
             applied += 1
 
@@ -2370,6 +2390,7 @@ class Supervisor:
                         await self._widen_for_write(session, agent, toolbox,
                                                     str(call.arguments.get("path", "")))
                     result = toolbox.call(call.name, call.arguments, agent, whole_files=True)
+                    self._remember_named(session.state, agent, call, result, toolbox)
                     stint.record(call, result.ok, result.path)
                     failures += [] if result.ok else [call.name]
                     text = render_results([result], limit=TOOL_RESULT_CHARS)
@@ -2378,6 +2399,18 @@ class Supervisor:
             await session.anote("tools called", actor=agent.id,
                                 tools=[c.name for c in response.tool_calls], failures=failures)
         return report
+
+    def _remember_named(self, state: RunState, agent: AgentSpec, call: ToolCall,
+                        result: ToolResult, toolbox: Toolbox) -> None:
+        """Keep the files a failing run of one of the run's own checks named.
+
+        In baseline run 2 the agents found the stale document by running the
+        doc-reference check themselves; `_widen_for_write` reads this.
+        """
+        if (call.name == "run_command" and not result.ok
+                and _is_a_check(state, str(call.arguments.get("command", "")))):
+            self._named_by_checks.setdefault(agent.id, set()).update(
+                _files_named(result.output, toolbox))
 
     async def _widen_for_write(
         self, session: RunSession, agent: AgentSpec, toolbox: Toolbox, raw: str
@@ -2421,6 +2454,19 @@ class Supervisor:
                                 f"{holder.title!r}, which is held for the owner",
                                 actor=agent.id, task_id=task.id)
             return
+        # A file one of the run's own checks named when it failed is the change's
+        # consequence, not new ground: a baseline run's code edits moved the lines
+        # a document cites, the owner's doc-reference gate named that document,
+        # and three agents escalated for it one after another. The plan's
+        # envelope left it out; the owner's grant may cover it.
+        failed = " ".join(c.evidence for c in task.dod if c.status is CriterionStatus.FAIL)
+        named = self._named_by_checks.get(agent.id, set()) | _files_named(failed, toolbox)
+        if rel in named and not globs_within([rel], effective(state.envelope).paths):
+            granted, _ = self._widen_within_grant(session, task, [rel])
+            if granted:
+                await session.anote(f"{rel} was named by a failing check of this run; the "
+                                    "envelope widened within the owner's grant to let "
+                                    f"{agent.id} change it", actor=agent.id, task_id=task.id)
         current = effective(state.envelope)
         grant = state.envelope_grant
         plan = Ceiling("the run's plan", list(current.paths),
@@ -2699,6 +2745,38 @@ def _tasks_named_by(correction: str, tasks: list[ExecutionTask]) -> set[str]:
 
 #: A file name in prose: `ResultsSection.tsx`, `e2e/offline.spec.ts`, `en.json`.
 _FILE_IN_TEXT = re.compile(r"[\w./-]*\w\.(?:[a-z]{1,4}\.)?[a-z]{1,5}\b", re.IGNORECASE)
+
+#: A path in a command's output: relative, or absolute with a drive, either slash.
+_PATH_IN_OUTPUT = re.compile(r"(?:[A-Za-z]:)?[\w.\\/-]*\w\.[A-Za-z0-9]{1,8}\b")
+
+
+def _is_a_check(state: RunState, command: str) -> bool:
+    """Whether ``command`` is one of the run's own criteria, as written there.
+
+    Only those: a file named by any failing command would let a model widen its
+    reach by printing a path.
+    """
+    wanted = " ".join(command.split())
+    return bool(wanted) and any(" ".join(c.command.split()) == wanted
+                                for t in state.tasks.values() for c in t.dod if c.command)
+
+
+def _files_named(text: str, toolbox: Toolbox) -> set[str]:
+    """The workspace files ``text`` names that exist and the floor lets be written."""
+    named = set()
+    for raw in _PATH_IN_OUTPUT.findall(text):
+        # A check prints absolute paths; the toolbox reads a leading slash as the
+        # workspace root, as an agent means it, so a POSIX path is made relative
+        # here first. (A Windows path kept its drive and worked: CI on Linux did not.)
+        if Path(raw).is_absolute():
+            try:
+                raw = Path(raw).resolve().relative_to(toolbox.workspace).as_posix()
+            except (ValueError, OSError):
+                continue
+        rel = toolbox.writable_path(raw)
+        if rel is not None and (toolbox.workspace / rel).is_file():
+            named.add(rel)
+    return named
 
 
 def _coerce_decision(raw: dict[str, Any]) -> TaskDecision:

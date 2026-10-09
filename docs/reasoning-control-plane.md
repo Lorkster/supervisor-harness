@@ -97,8 +97,8 @@ alone, and relaxes it to the workspace rather than to the machine.
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:344](../src/supervisor_harness/config.py:344)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:390](../src/supervisor_harness/config.py:390))
+([config.py:351](../src/supervisor_harness/config.py:351)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:397](../src/supervisor_harness/config.py:397))
 are the list of what it may not set: command execution, provider `base_url`, API
 keys, the AWS `region` and `profile` a Bedrock route would use, the store
 location. The principle is the same one in a different costume —
@@ -108,7 +108,7 @@ about work done on it.
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:1238](../src/supervisor_harness/core/dod.py:1238)) holds a runner to
+([core/dod.py:1242](../src/supervisor_harness/core/dod.py:1242)) holds a runner to
 an allow-list. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.
@@ -151,11 +151,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:744](../src/supervisor_harness/core/supervisor.py:744)), when an
+[supervisor.py:753](../src/supervisor_harness/core/supervisor.py:753)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:2718](../src/supervisor_harness/core/supervisor.py:2718)). It
+[supervisor.py:2796](../src/supervisor_harness/core/supervisor.py:2796)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
