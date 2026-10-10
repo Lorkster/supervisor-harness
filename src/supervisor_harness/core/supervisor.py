@@ -1270,16 +1270,50 @@ class Supervisor:
                     "checkpoint not passed and remediation budget exhausted",
                     iteration=merged.iteration,
                 )
-            self._leave_execution(session)
+            self._leave_or_release(session)
             return
 
         # Send the failing tasks back with the checkpoint's own corrections.
         remediated = await self._remediate(session, merged)
         if not remediated:
             await session.anote("checkpoint failed but produced no actionable remediation")
-            self._leave_execution(session)
+            self._leave_or_release(session)
             return
         self._transition(session, Phase.EXECUTING)
+
+    def _leave_or_release(self, session: RunSession) -> None:
+        """Start what waited only on tasks that failed for good; otherwise wrap up.
+
+        A dependency orders work; it does not cancel it. Baseline 2: with the
+        planner naming its dependencies, one failed task left everything after it
+        approved and never started -- in three runs of five, among them the task
+        whose job was to bring the project's checks back to green. Each such task
+        now runs on the tree as it stands and is judged by its own criteria. A
+        dependency held for the owner still holds it: that is the owner's to
+        decide.
+        """
+        state = session.state
+        failed = {t.id for t in state.tasks.values() if t.status is TaskStatus.FAILED}
+        settled = failed | {t.id for t in state.tasks.values()
+                            if t.status is TaskStatus.VERIFIED}
+        released = False
+        for task in state.tasks.values():
+            if (task.status is not TaskStatus.APPROVED or task.attempts
+                    or not set(task.depends_on) & failed
+                    or not set(task.depends_on) <= settled):
+                continue
+            gone = [state.tasks[d].title for d in task.depends_on if d in failed]
+            task.depends_on = [d for d in task.depends_on if d not in failed]
+            task.updated_at = now_iso()
+            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+            session.note(f"{task.title!r} runs although {', '.join(map(repr, gone))} failed: "
+                         "on the tree as it stands, judged by its own criteria",
+                         task_id=task.id)
+            released = True
+        if released:
+            self._transition(session, Phase.EXECUTING)
+        else:
+            self._leave_execution(session)
 
     def _leave_execution(self, session: RunSession) -> None:
         """Wrap up, or wait for the owner if anything is waiting on them.
