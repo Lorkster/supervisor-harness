@@ -75,7 +75,11 @@ class RoleOutput:
     def summary(self) -> dict[str, Any]:
         return {
             "tasks": [{"title": t.title, "scope": t.scope.paths,
-                       "dod": [c.statement for c in t.dod]} for t in self.tasks],
+                       "dod": [c.statement for c in t.dod],
+                       # What a criterion's enforceability turns on, to read back.
+                       "criteria": [{"method": c.method.value, "expect": c.expect,
+                                     "command": c.command} for c in t.dod]}
+                      for t in self.tasks],
             "ruling": self.ruling, "why": self.why[:600], "criteria": self.criteria,
             "error": self.error, "seconds": round(self.seconds, 1),
         }

@@ -97,8 +97,8 @@ alone, and relaxes it to the workspace rather than to the machine.
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:360](../src/supervisor_harness/config.py:360)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:406](../src/supervisor_harness/config.py:406))
+([config.py:363](../src/supervisor_harness/config.py:363)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:409](../src/supervisor_harness/config.py:409))
 are the list of what it may not set: command execution, provider `base_url`, API
 keys, the AWS `region` and `profile` a Bedrock route would use, the store
 location. The principle is the same one in a different costume —
@@ -108,7 +108,7 @@ about work done on it.
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:1242](../src/supervisor_harness/core/dod.py:1242)) holds a runner to
+([core/dod.py:1395](../src/supervisor_harness/core/dod.py:1395)) holds a runner to
 an allow-list. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.
@@ -155,13 +155,13 @@ authority is handed on — when synthesis creates a task (`attenuate` at
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:2876](../src/supervisor_harness/core/supervisor.py:2876)). It
+[supervisor.py:2929](../src/supervisor_harness/core/supervisor.py:2929)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
 **The grant has a shelf life.** An envelope carries a date, and a stale one is
 re-asked rather than silently honoured (`stale_reason`,
-[envelope.py:194](../src/supervisor_harness/core/envelope.py:194)). Renewal
+[envelope.py:219](../src/supervisor_harness/core/envelope.py:219)). Renewal
 renews the *date*, never the paths.
 
 **Two decisions worth not re-deriving:**

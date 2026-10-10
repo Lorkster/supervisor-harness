@@ -113,7 +113,7 @@ from .conversation import (
 from .conversation import ROLE as CONVERSATION_ROLES
 from .dod import (
     VerificationOutcome,
-    fill_suite_commands,
+    fill_what_the_harness_can,
     quotes_the_file,
     verify_criterion,
     verify_inspection,
@@ -125,6 +125,7 @@ from .envelope import (
     establish,
     render,
     stale_reason,
+    what_was_taken,
     widen_within,
 )
 from .fails_before import (
@@ -163,7 +164,7 @@ from .review import ROLE as REVIEW_ROLE
 #: module that imports *that* would be a cycle.
 __all__ = ["Supervisor", "SupervisorResponse"]
 from .supervision import Supervision
-from .tools import Toolbox, ToolResult, render_results
+from .tools import Toolbox, ToolResult, normal_command, render_results
 
 # Stage agents are ordinary agents so that planning, synthesis, the checkpoint
 # and the improvement pass all flow through the same report/supervise path.
@@ -716,11 +717,11 @@ class Supervisor:
                 and str(plan.get("recommended_mode", "")).lower() == "execute")):
             proposed = parse_tasks(plan, state.id, state.workspace)
             for task in proposed:
-                fill_suite_commands(task, self.workspace)
+                fill_what_the_harness_can(task, self.workspace)
             weak = phases.unenforceable_criteria(proposed, self.config.policy)
             if weak:
                 await session.anote("synthesis sent back once: criteria it proposed cannot "
-                                    "be enforced", criteria=len(weak))
+                                    "be enforced", criteria=len(weak), weak=weak)
                 messages.append(ChatMessage("user", planner_send_back(weak)))
                 revised = await self._read_then_finish(
                     session, planner, messages, tools, stint, finish="propose_plan",
@@ -756,12 +757,12 @@ class Supervisor:
         proposed = parse_tasks(data, state.id, state.workspace)
         # What the harness fills in itself is not the model's to fix.
         for task in proposed:
-            fill_suite_commands(task, self.workspace)
+            fill_what_the_harness_can(task, self.workspace)
         weak = phases.unenforceable_criteria(proposed, self.config.policy)
         if not weak:
             return data
         await session.anote("synthesis sent back once: criteria it proposed cannot be "
-                            "enforced", criteria=len(weak))
+                            "enforced", criteria=len(weak), weak=weak)
         try:
             revised = await self.supervision._call(
                 "synthesis", system, phases.revision_prompt(user, weak),
@@ -821,7 +822,7 @@ class Supervisor:
             # declared none inherits the envelope, and the clamp's note for that
             # ("taken from the run envelope") is not the task asking for more:
             # read as narrowing, it sent every such task to the owner.
-            task.clamped = list(clamped) if declared else []
+            task.clamped = what_was_taken(clamped) if declared else []
             scope_notes[task.id] = [*placed, *clamped]
         # The bars after the scope, because whether a task touches code is read
         # partly from its paths. Before, a task that declared no scope had none
@@ -1084,7 +1085,13 @@ class Supervisor:
                 active = fresh
             else:
                 self._settle_tasks(session)
-                self._transition(session, Phase.CHECKPOINT)
+                # A task that waited on one just verified starts now; the
+                # checkpoint judges the run once nothing more can start.
+                # Measured: with the planner naming its dependencies, four runs
+                # of five ran their first task, checkpointed with the rest still
+                # approved, found nothing failed to send back, and ended.
+                self._transition(session, Phase.EXECUTING if phases.runnable_tasks(state)
+                                 else Phase.CHECKPOINT)
                 return None
 
         if state.backend is Backend.AUTONOMOUS:
@@ -1263,16 +1270,50 @@ class Supervisor:
                     "checkpoint not passed and remediation budget exhausted",
                     iteration=merged.iteration,
                 )
-            self._leave_execution(session)
+            self._leave_or_release(session)
             return
 
         # Send the failing tasks back with the checkpoint's own corrections.
         remediated = await self._remediate(session, merged)
         if not remediated:
             await session.anote("checkpoint failed but produced no actionable remediation")
-            self._leave_execution(session)
+            self._leave_or_release(session)
             return
         self._transition(session, Phase.EXECUTING)
+
+    def _leave_or_release(self, session: RunSession) -> None:
+        """Start what waited only on tasks that failed for good; otherwise wrap up.
+
+        A dependency orders work; it does not cancel it. Baseline 2: with the
+        planner naming its dependencies, one failed task left everything after it
+        approved and never started -- in three runs of five, among them the task
+        whose job was to bring the project's checks back to green. Each such task
+        now runs on the tree as it stands and is judged by its own criteria. A
+        dependency held for the owner still holds it: that is the owner's to
+        decide.
+        """
+        state = session.state
+        failed = {t.id for t in state.tasks.values() if t.status is TaskStatus.FAILED}
+        settled = failed | {t.id for t in state.tasks.values()
+                            if t.status is TaskStatus.VERIFIED}
+        released = False
+        for task in state.tasks.values():
+            if (task.status is not TaskStatus.APPROVED or task.attempts
+                    or not set(task.depends_on) & failed
+                    or not set(task.depends_on) <= settled):
+                continue
+            gone = [state.tasks[d].title for d in task.depends_on if d in failed]
+            task.depends_on = [d for d in task.depends_on if d not in failed]
+            task.updated_at = now_iso()
+            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+            session.note(f"{task.title!r} runs although {', '.join(map(repr, gone))} failed: "
+                         "on the tree as it stands, judged by its own criteria",
+                         task_id=task.id)
+            released = True
+        if released:
+            self._transition(session, Phase.EXECUTING)
+        else:
+            self._leave_execution(session)
 
     def _leave_execution(self, session: RunSession) -> None:
         """Wrap up, or wait for the owner if anything is waiting on them.
@@ -2147,7 +2188,9 @@ class Supervisor:
                     break
 
                 toolbox = self._toolbox_for(session.state)
-                results = [toolbox.call(name, args, agent) for name, args in calls]
+                checks = _run_checks(session.state)
+                results = [toolbox.call(name, args, agent, checks=checks)
+                           for name, args in calls]
                 tools_called += len(calls)
                 files_read.update(r.path for r in results if r.ok and r.path)
                 await session.anote(
@@ -2468,7 +2511,8 @@ class Supervisor:
                     if call.name in ("edit_file", "write_file", "delete_file"):
                         await self._widen_for_write(session, agent, toolbox,
                                                     str(call.arguments.get("path", "")))
-                    result = toolbox.call(call.name, call.arguments, agent, whole_files=True)
+                    result = toolbox.call(call.name, call.arguments, agent, whole_files=True,
+                                          checks=_run_checks(session.state))
                     self._remember_named(session.state, agent, call, result, toolbox)
                     stint.record(call, result.ok, result.path)
                     failures += [] if result.ok else [call.name]
@@ -2487,8 +2531,12 @@ class Supervisor:
         In baseline run 2 the agents found the stale document by running the
         doc-reference check themselves; `_widen_for_write` reads this.
         """
-        if (call.name == "run_command" and not result.ok
-                and _is_a_check(state, str(call.arguments.get("command", "")))):
+        command = str(call.arguments.get("command", ""))
+        # Ran and failed: a refusal names the path it refused, not one a check
+        # found broken -- read as a finding, it named the check's own script.
+        ran = result.output.startswith(f"$ {command}\nexit=")
+        if (call.name == "run_command" and not result.ok and ran
+                and _is_a_check(state, command)):
             self._named_by_checks.setdefault(agent.id, set()).update(
                 _files_named(result.output, toolbox))
 
@@ -2830,15 +2878,20 @@ _FILE_IN_TEXT = re.compile(r"[\w./-]*\w\.(?:[a-z]{1,4}\.)?[a-z]{1,5}\b", re.IGNO
 _PATH_IN_OUTPUT = re.compile(r"(?:[A-Za-z]:)?[\w.\\/-]*\w\.[A-Za-z0-9]{1,8}\b")
 
 
+def _run_checks(state: RunState) -> frozenset[str]:
+    """The run's own criterion commands, as `tools.normal_command` compares them."""
+    return frozenset(normal_command(c.command) for t in state.tasks.values()
+                     for c in t.dod if c.command.strip())
+
+
 def _is_a_check(state: RunState, command: str) -> bool:
     """Whether ``command`` is one of the run's own criteria, as written there.
 
     Only those: a file named by any failing command would let a model widen its
-    reach by printing a path.
+    reach by printing a path. ``python -m pytest -q`` is ``pytest -q``.
     """
-    wanted = " ".join(command.split())
-    return bool(wanted) and any(" ".join(c.command.split()) == wanted
-                                for t in state.tasks.values() for c in t.dod if c.command)
+    wanted = normal_command(command)
+    return bool(wanted) and wanted in _run_checks(state)
 
 
 def _files_named(text: str, toolbox: Toolbox) -> set[str]:

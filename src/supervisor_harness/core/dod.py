@@ -739,6 +739,159 @@ def review_what_cannot_inspect(task: ExecutionTask) -> list[str]:
     return lines
 
 
+#: grep flags that leave "is this text in this file" the question: quiet, line
+#: numbers, fixed strings, no messages, file names, case-insensitive (stricter as a
+#: substring, and a wording the file lacks goes to the verifier, not to a failure).
+_PLAIN_GREP_FLAGS = frozenset({"-q", "-n", "-F", "-s", "-H", "-i", "-qF", "-Fq", "-qn",
+                               "-nq", "-qi", "-iq", "-Fi", "-iF", "-in", "-ni", "--quiet",
+                               "--fixed-strings", "--ignore-case", "--line-number"})
+#: Characters that make a basic grep pattern more than its own text. A `.` is
+#: left out: read literally it asks for more, never less.
+_GREP_PATTERN_META = re.compile(r"[*\[\]^$\\|+?(){}]")
+
+
+def _grep_target(tokens: list[str]) -> tuple[str, str] | None:
+    """``(path, text)`` for ``grep [plain flags] TEXT PATH``; ``None`` for anything else."""
+    if not tokens or tokens[0] != "grep":
+        return None
+    args = tokens[1:]
+    flags = [a for a in args if a.startswith("-")]
+    rest = [a for a in args if not a.startswith("-")]
+    if any(f not in _PLAIN_GREP_FLAGS for f in flags) or len(rest) != 2:
+        return None
+    text, path = rest
+    fixed = any("F" in f or f == "--fixed-strings" for f in flags)
+    if not text.strip() or any(ch in path for ch in "*?[{") or (
+            not fixed and _GREP_PATTERN_META.search(text)):
+        return None
+    return path, text
+
+
+def _exists_target(tokens: list[str]) -> str | None:
+    """The path of ``test -f PATH`` / ``test -e PATH`` / ``[ -f PATH ]``."""
+    if tokens[:1] == ["["] and tokens[-1:] == ["]"]:
+        tokens = ["test", *tokens[1:-1]]
+    if len(tokens) == 3 and tokens[0] == "test" and tokens[1] in ("-f", "-e", "-s"):
+        return tokens[2]
+    return None
+
+
+def _links(command: str) -> list[list[str]] | None:
+    """A command's links when ``&&`` is the only thing joining them; otherwise ``None``."""
+    tokens = shell_split(command)
+    if not tokens or any(t in (";", "||", "|", "&", ">", ">>", "<") for t in tokens):
+        return None
+    links: list[list[str]] = [[]]
+    for word in tokens:
+        if word == "&&":
+            links.append([])
+        else:
+            links[-1].append(word)
+    return links if all(links) else None
+
+
+def read_grep_inspections(task: ExecutionTask) -> list[str]:
+    """An inspection written as a shell ``grep``, read as the file and text it names.
+
+    The schema asks every criterion for a ``command`` and an ``expect``, so that
+    a model decoding against it does not drop them; for an inspection a local
+    model fills them as it would at a terminal -- ``grep -q 'setOffline'
+    e2e/offline.spec.ts`` with "exit 0". In a measurement after that change
+    every one-shot plan carried such inspections, and each was sent back as
+    unenforceable though it said exactly what to look for and where. Only the
+    shapes that lose nothing: a plain-text ``grep`` of one file, a ``test -f``,
+    either joined by ``&&``. A second text becomes a criterion of its own; a
+    negation, a regular expression, a count or a pipe is left for the send-back.
+    """
+    lines: list[str] = []
+    for crit in list(task.dod):
+        # A `command` or `test` that is nothing but file checks is an inspection
+        # too -- `test -s styles.css`, refused as a runner -- when it asks only for
+        # success: a grep expected to fail is a claim of absence, not of content.
+        if crit.method is VerifyMethod.INSPECTION:
+            if inspectable(crit.expect):
+                continue
+        elif crit.method not in (VerifyMethod.COMMAND, VerifyMethod.TEST) or not _clean_exit(
+                crit.expect):
+            continue
+        links = _links(crit.command)
+        greps = [_grep_target(link) for link in links or []]
+        exists = [_exists_target(link) for link in links or []]
+        if not links or any(g is None and e is None for g, e in zip(greps, exists, strict=True)):
+            continue
+        found = [g for g in greps if g is not None]
+        found += [(e, "") for e in exists if e and e not in {path for path, _ in found}]
+        written = crit.command
+        (path, text), *more = found
+        crit.expect, crit.command = (f"{path}: {text}" if text else f"{path}:"), ""
+        crit.method = VerifyMethod.INSPECTION
+        at = task.dod.index(crit)
+        for offset, (extra_path, extra_text) in enumerate(more, 1):
+            task.dod.insert(at + offset, DoDCriterion(
+                statement=(f"{crit.statement} ({extra_path} contains {extra_text!r})"
+                           if extra_text else f"{crit.statement} ({extra_path} exists)"),
+                method=VerifyMethod.INSPECTION,
+                expect=f"{extra_path}: {extra_text}" if extra_text else f"{extra_path}:",
+                mandatory=crit.mandatory))
+        lines.append(f"criterion {crit.statement!r} was written as `{written}`; the harness "
+                     f"reads {len(found)} file check(s) from it instead")
+    return lines
+
+
+def split_chained_commands(task: ExecutionTask) -> list[str]:
+    """``a && b && c`` as three criteria, each run by the harness without a shell.
+
+    Measured: "npm run check && pwsh scripts/verify.ps1 && npm run test:e2e" for
+    "all three gates pass", refused for its ``&`` -- criterion commands run
+    without a shell -- in plans whose every gate the harness would have run one
+    at a time. Each link becomes a criterion of its own, so all must pass. Only
+    where every link is a command the harness would run, and the criterion
+    expects no more than a clean exit: an output to look for belongs to one
+    link, and which one is not for the harness to guess.
+    """
+    lines: list[str] = []
+    for crit in list(task.dod):
+        if crit.method not in (VerifyMethod.COMMAND, VerifyMethod.TEST):
+            continue
+        links = _links(crit.command)
+        if links is None or len(links) < 2:
+            continue
+        parts = [shlex.join(link) for link in links]
+        if any(unsafe_command(part) for part in parts) or not _clean_exit(crit.expect):
+            continue
+        written = crit.command
+        crit.command, crit.expect = parts[0], ""
+        statement = crit.statement
+        crit.statement = f"{statement} (`{parts[0]}`)"
+        at = task.dod.index(crit)
+        for offset, part in enumerate(parts[1:], 1):
+            task.dod.insert(at + offset, DoDCriterion(
+                statement=f"{statement} (`{part}`)", method=crit.method, command=part,
+                mandatory=crit.mandatory))
+        lines.append(f"criterion {statement!r} chained {len(parts)} commands in `{written}`; "
+                     "each is now a criterion of its own")
+    return lines
+
+
+#: An ``expect`` that asks only for success: "exit 0", "all commands exit 0", "0".
+_CLEAN_EXIT = re.compile(r"(?:all\s+(?:commands?\s+)?)?(?:exits?\s*(?:code)?\s*[= ]?\s*)?0"
+                         r"|passes|pass|succeeds?|ok|green", re.IGNORECASE)
+
+
+def _clean_exit(expect: str) -> bool:
+    return not expect.strip() or bool(_CLEAN_EXIT.fullmatch(expect.strip()))
+
+
+def fill_what_the_harness_can(task: ExecutionTask, workspace: Path | None) -> list[str]:
+    """Every repair the harness makes to proposed criteria before judging them.
+
+    Run before a synthesis is judged for a send-back as well as when tasks are
+    prepared: what the harness can read for itself is not the model's miss.
+    """
+    return [*read_grep_inspections(task), *split_chained_commands(task),
+            *fill_suite_commands(task, workspace)]
+
+
 #: A check runner's command at the start of a statement, or anywhere in
 #: backticks: "npm run typecheck passes after the change", "`pytest -q tests/x.py`
 #: exits 0". Only runners the harness would run anyway; the result still goes

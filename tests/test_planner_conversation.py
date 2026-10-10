@@ -254,3 +254,16 @@ async def test_a_planner_that_never_answers_readably_ends_and_falls_back(
 
     assert any("ended without a plan" in n.text for n in state.notes)
     assert [t.title for t in state.tasks.values()] == ["Add rate limiting to the login endpoint"]
+
+
+def test_the_conversation_is_the_default_where_the_model_takes_tools(
+    supervisor: Supervisor,
+) -> None:
+    """Measured: every planner check passed in 15/21 plans, against 3/21 one-shot."""
+    from supervisor_harness.config import Policy
+
+    assert Policy().planner_loop == "conversation"
+    supervisor.router.register("fake", Planner())
+    assert supervisor._plans_in_conversation()
+    supervisor.router.register("fake", FakeProvider())
+    assert not supervisor._plans_in_conversation(), "no native tools: one-shot"

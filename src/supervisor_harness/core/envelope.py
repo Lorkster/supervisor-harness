@@ -50,7 +50,7 @@ from dataclasses import dataclass, replace
 
 from ..ids import age_days, older_than
 from ..models import Scope, ScopeEnvelope
-from .paths import NOTHING, globs_within, matches_any, narrow_globs
+from .paths import NOTHING, globs_within, matches_any, minimal_globs, narrow_globs, pattern_within
 
 
 @dataclass(frozen=True)
@@ -167,7 +167,10 @@ def attenuate(scope: Scope, ceilings: list[Ceiling | None]) -> tuple[Scope, list
         if ceiling is None:
             continue
         narrowed = narrow_globs(paths, ceiling.paths)
-        if set(narrowed) != set(paths):
+        # Compared by what they cover: baseline 2 recorded `src/`, `e2e/` as
+        # narrowed to `src/`, `e2e/offline.spec.ts`, `e2e/` -- nothing taken, the
+        # envelope having named a file under `e2e/` as well -- and held the task.
+        if set(minimal_globs(narrowed)) != set(minimal_globs(paths)):
             # Two different facts, and the run should not report them in the
             # same words. A scope that proposed paths has had some taken away;
             # a scope that proposed none was never narrowed at all, it was
@@ -185,10 +188,32 @@ def attenuate(scope: Scope, ceilings: list[Ceiling | None]) -> tuple[Scope, list
         if added:
             forbidden.extend(added)
             notes.append(
-                f"forbidden paths inherited from the {ceiling.label}: {render(added)}"
+                f"{INHERITED} the {ceiling.label}: {render(added)}"
             )
+            # The fence is the run's, and inheriting it takes nothing a task
+            # asked for -- unless the task named a path wholly inside it.
+            # Baseline 2: every task of a run was held for the owner because the
+            # plan had forbidden README.md and the lint configs, which none of
+            # them named.
+            cut = [p for p in paths if any(pattern_within(p, f) for f in added)]
+            if cut:
+                notes.append(f"scope narrowed by the {ceiling.label}'s forbidden paths: "
+                             f"{render(cut)}")
 
     return replace(scope, paths=paths, forbidden_paths=forbidden), notes
+
+
+#: How the note recording a fence handed down begins; `what_was_taken` leaves it out.
+INHERITED = "forbidden paths inherited from"
+
+
+def what_was_taken(notes: list[str]) -> list[str]:
+    """The notes of an `attenuate` that record something taken from the scope.
+
+    Not the fence it inherited: that note is for the agent's brief, and read as
+    a narrowing it sent a task to the owner for asking nothing beyond its run.
+    """
+    return [n for n in notes if not n.startswith(INHERITED)]
 
 
 def stale_reason(

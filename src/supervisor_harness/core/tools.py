@@ -73,6 +73,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -753,7 +754,8 @@ class Toolbox:
                 return refusal
         return None
 
-    def _scope_refusal(self, command: str, scope: Scope) -> str | None:
+    def _scope_refusal(self, command: str, scope: Scope, *,
+                       a_check: bool = False) -> str | None:
         """Why this command escapes the agent's fence, or ``None`` if it does not.
 
         A shell writes as well as reads, so every path a command names is a
@@ -843,7 +845,11 @@ class Toolbox:
                 "write_file to change a file"
             )
 
-        for token in self._path_candidates(tokens):
+        # One of the run's own checks, as the plan wrote it, may name what it
+        # checks wherever that is: the harness runs it anyway, and baseline 2's
+        # implementer was refused `python tools/check_doc_refs.py` for the path
+        # of the script, then could not learn which document its edit had broken.
+        for token in [] if a_check else self._path_candidates(tokens):
             rel = scope_relative(token, self.workspace.as_posix())
             if rel is None or rel.startswith("../"):
                 return f"{token} is outside the workspace"
@@ -856,7 +862,8 @@ class Toolbox:
                 )
         return None
 
-    def run_command(self, command: str, scope: Scope | None = None) -> ToolResult:
+    def run_command(self, command: str, scope: Scope | None = None,
+                    checks: Collection[str] = ()) -> ToolResult:
         if not self.policy.allow_command_execution:
             return ToolResult(
                 "run_command", False,
@@ -867,7 +874,8 @@ class Toolbox:
         # An absent scope is an empty one, not an exemption. This used to skip
         # the fence entirely, which made `run_command(cmd)` -- the direct call,
         # not the dispatched one -- the widest hole in the toolbox.
-        refusal = self._scope_refusal(command, scope if scope is not None else Scope())
+        refusal = self._scope_refusal(command, scope if scope is not None else Scope(),
+                                      a_check=normal_command(command) in checks)
         if refusal is not None:
             return ToolResult("run_command", False, refusal)
         # After the fence, not before it: the executable allow-list refuses git
@@ -920,7 +928,7 @@ class Toolbox:
     # -- dispatch ----------------------------------------------------------
 
     def call(self, name: str, args: dict[str, Any], agent: AgentSpec, *,
-             whole_files: bool = False) -> ToolResult:
+             whole_files: bool = False, checks: Collection[str] = ()) -> ToolResult:
         """Run one requested tool, enforcing what this agent is allowed to do.
 
         ``whole_files`` is for an agent whose conversation keeps what it read:
@@ -982,8 +990,21 @@ class Toolbox:
                     f"a {agent.kind.value} agent may not run commands; report the "
                     "command that should be run, and the harness or the host runs it",
                 )
-            return self.run_command(str(args.get("command", "")), agent.scope)
+            return self.run_command(str(args.get("command", "")), agent.scope, checks)
         return ToolResult(name or "unknown", False, f"no such tool: {name!r}")
+
+
+#: An interpreter's way of naming a runner it runs: `python -m pytest` is `pytest`.
+_MODULE_RUN = ("python -m ", "python3 -m ", "py -m ")
+
+
+def normal_command(command: str) -> str:
+    """``command`` as a check is compared: one space, and no ``python -m`` before it."""
+    flat = " ".join(command.split())
+    for prefix in _MODULE_RUN:
+        if flat.startswith(prefix):
+            return flat[len(prefix):]
+    return flat
 
 
 def available_tools(agent: AgentSpec, policy: Policy) -> list[dict[str, str]]:

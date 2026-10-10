@@ -18,6 +18,8 @@ nothing at the end of a run could say which findings it had actually closed.
 
 from __future__ import annotations
 
+from typing import Any
+
 from supervisor_harness.core import phases
 from supervisor_harness.models import (
     AgentKind,
@@ -265,3 +267,84 @@ def test_the_final_report_says_what_the_run_did_not_close() -> None:
     assert "## Findings reconciliation" in markdown
     assert "1 still open" in markdown
     assert "no task claimed this finding" in markdown
+
+
+# -- a dependency chain runs a wave at a time -------------------------------
+
+
+async def test_a_task_waiting_on_another_runs_once_that_one_is_verified(
+    supervisor: Any, fake: Any,
+) -> None:
+    """Baseline 2: four runs of five ran their first task and ended.
+
+    The second task waited on the first, which was still awaiting its verifier
+    when the first wave finished; verification then went straight to the
+    checkpoint, which found nothing failed to send back, and the run ended with
+    the rest of the plan approved and never started.
+    """
+    import copy
+
+    from supervisor_harness.models import RunMode
+
+    plan = copy.deepcopy(fake._synthesis(None))
+    first = plan["tasks"][0]
+    second = copy.deepcopy(first)
+    second.update(title="Cover the limiter in the cache layer", depends_on=[first["title"]],
+                  action="Add a per-account counter to src/cache.py.",
+                  scope_paths=["src/cache.py"])
+    plan["tasks"].append(second)
+    fake.overrides["synthesis"] = plan
+
+    response = await supervisor.run("Add rate limiting to the public login endpoint",
+                                    mode=RunMode.EXECUTE, auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+
+    by_title = {t.title: t for t in state.tasks.values()}
+    waited = by_title["Cover the limiter in the cache layer"]
+    assert waited.depends_on == [by_title[first["title"]].id]
+    assert waited.attempts >= 1, f"never started: {waited.status}"
+    assert by_title[first["title"]].status is TaskStatus.VERIFIED
+
+
+async def test_a_task_whose_dependency_failed_for_good_still_runs(
+    supervisor: Any, fake: Any,
+) -> None:
+    """Baseline 2: one failed task left the rest of three plans never started."""
+    import copy
+
+    from supervisor_harness.models import RunMode
+
+    plan = copy.deepcopy(fake._synthesis(None))
+    first = plan["tasks"][0]
+    # A wording the file lacks, and a verifier that quotes nothing from it: fails.
+    first["dod"][1]["expect"] = "src/auth/login.py: no_such_limiter"
+    second = copy.deepcopy(plan["tasks"][0])
+    second.update(title="Cover the limiter in the cache layer", depends_on=[first["title"]],
+                  action="Add a per-account counter to src/cache.py.",
+                  scope_paths=["src/cache.py"])
+    second["dod"][1]["expect"] = "src/auth/login.py: account_key"
+    plan["tasks"].append(second)
+    fake.overrides["synthesis"] = plan
+
+    response = await supervisor.run("Add rate limiting to the public login endpoint",
+                                    mode=RunMode.EXECUTE, auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+
+    by_title = {t.title: t for t in state.tasks.values()}
+    assert by_title[first["title"]].status is TaskStatus.FAILED
+    waited = by_title["Cover the limiter in the cache layer"]
+    assert waited.attempts >= 1, f"never started: {waited.status}"
+    assert any("runs although" in n.text for n in state.notes)
+
+
+def test_a_dependency_held_for_the_owner_still_holds(supervisor: Any) -> None:
+    held = _task("Held", status=TaskStatus.BLOCKED)
+    failed = _task("Failed", status=TaskStatus.FAILED, attempts=1)
+    both = _task("Both", status=TaskStatus.APPROVED, depends_on=[held.id, failed.id])
+    one = _task("One", status=TaskStatus.APPROVED, depends_on=[failed.id])
+    session = supervisor.store.create(RunState(prompt="p"))
+    session.state.tasks = {t.id: t for t in (held, failed, both, one)}
+
+    supervisor._leave_or_release(session)
+
+    assert one.depends_on == [] and both.depends_on == [held.id, failed.id]

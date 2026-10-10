@@ -50,7 +50,7 @@ from .blackboard import (
 )
 from .dod import (
     apply_quality_bars,
-    fill_suite_commands,
+    fill_what_the_harness_can,
     review_what_cannot_inspect,
     review_what_cannot_run,
     summarise,
@@ -281,6 +281,11 @@ def synthesis_prompt(state: RunState, mode_hint: RunMode) -> tuple[str, str]:
         "condition, objectively checkable, and at least one per task must be provable "
         "by running a command, running tests, or inspecting a file for specific "
         "content. Criteria like 'the code is clean' are rejected by the harness.\n\n"
+        "How each method is written. `test` and `command`: one command, with no `&&`, "
+        "`|` or `;` -- three gates are three criteria -- and expect an exit code or the "
+        "output text. `inspection`: no command, and expect reads "
+        "`path/to/file: text that must be present`; the harness reads the file itself, "
+        "so write the file and the exact text, not a grep. `review`: a rubric.\n\n"
         "Three ways a criterion looks checkable and is not. The harness rejects or "
         "supplements all three, so write them correctly rather than have them added "
         "for you:\n"
@@ -445,9 +450,10 @@ def revision_prompt(user: str, weak: list[str]) -> str:
         "fixed and nothing else changed. A `test` or `command` criterion must give "
         "the exact command that runs that one check -- for example "
         "`pytest tests/test_ledger.py::test_conc_is_shown -q` -- using only a test "
-        "runner, with no `;`, `&&`, `|` or redirection. If a criterion has no such "
-        "command, make it an `inspection` (`expect`: `path/to/file: text that must be "
-        "present`) or a `review` with a `rubric`."
+        "runner, with no `;`, `&&`, `|` or redirection -- several gates are several "
+        "criteria. If a criterion has no such command, make it an `inspection` "
+        "(`expect`: `path/to/file: text that must be present`, and no command: the "
+        "harness reads the file itself) or a `review` with a `rubric`."
     )
 
 
@@ -462,7 +468,7 @@ def prepare_tasks(
     """
     notes: dict[str, list[str]] = {}
     for task in tasks:
-        entries: list[str] = fill_suite_commands(task, workspace)
+        entries: list[str] = fill_what_the_harness_can(task, workspace)
         entries += review_what_cannot_run(task, policy)
         entries += correct_inspection_paths(task, workspace)
         entries += review_what_cannot_inspect(task)
