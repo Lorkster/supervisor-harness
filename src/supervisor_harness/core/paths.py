@@ -290,6 +290,21 @@ def globs_within(inner: list[str], outer: list[str]) -> bool:
     return all(any(pattern_within(i, o) for o in right) for i in left)
 
 
+def minimal_globs(patterns: list[str]) -> list[str]:
+    """``patterns`` without those another of them already covers, in order.
+
+    `e2e/offline.spec.ts` beside `e2e/` adds nothing, and a comparison of two
+    lists that differ only by such a pattern reads a scope that kept everything
+    as one that was narrowed.
+    """
+    kept: list[str] = []
+    for pattern in patterns:
+        if any(pattern_within(pattern, k) for k in kept):
+            continue
+        kept = [k for k in kept if not pattern_within(k, pattern)] + [pattern]
+    return kept
+
+
 def narrow_globs(inner: list[str], outer: list[str]) -> list[str]:
     """The largest path set this module can *prove* lies inside both.
 

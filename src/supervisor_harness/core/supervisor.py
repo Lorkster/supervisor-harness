@@ -125,6 +125,7 @@ from .envelope import (
     establish,
     render,
     stale_reason,
+    what_was_taken,
     widen_within,
 )
 from .fails_before import (
@@ -821,7 +822,7 @@ class Supervisor:
             # declared none inherits the envelope, and the clamp's note for that
             # ("taken from the run envelope") is not the task asking for more:
             # read as narrowing, it sent every such task to the owner.
-            task.clamped = list(clamped) if declared else []
+            task.clamped = what_was_taken(clamped) if declared else []
             scope_notes[task.id] = [*placed, *clamped]
         # The bars after the scope, because whether a task touches code is read
         # partly from its paths. Before, a task that declared no scope had none
@@ -1084,7 +1085,13 @@ class Supervisor:
                 active = fresh
             else:
                 self._settle_tasks(session)
-                self._transition(session, Phase.CHECKPOINT)
+                # A task that waited on one just verified starts now; the
+                # checkpoint judges the run once nothing more can start.
+                # Measured: with the planner naming its dependencies, four runs
+                # of five ran their first task, checkpointed with the rest still
+                # approved, found nothing failed to send back, and ended.
+                self._transition(session, Phase.EXECUTING if phases.runnable_tasks(state)
+                                 else Phase.CHECKPOINT)
                 return None
 
         if state.backend is Backend.AUTONOMOUS:

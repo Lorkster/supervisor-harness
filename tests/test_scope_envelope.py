@@ -19,10 +19,11 @@ from pathlib import Path
 import pytest
 
 from supervisor_harness.config import HarnessConfig
-from supervisor_harness.core.envelope import Ceiling, attenuate, establish
+from supervisor_harness.core.envelope import Ceiling, attenuate, establish, what_was_taken
 from supervisor_harness.core.paths import (
     NOTHING,
     globs_within,
+    minimal_globs,
     narrow_globs,
     path_matches,
     pattern_within,
@@ -244,6 +245,45 @@ def test_an_unscoped_agent_is_narrowed_to_its_ceiling() -> None:
     assert narrowed.paths == ["src/**"]
     assert narrowed.forbidden_paths == ["src/vendor/**"]
     assert notes
+
+
+def test_an_envelope_naming_a_file_inside_a_directory_takes_nothing() -> None:
+    """Baseline 2: `src/`, `e2e/` "narrowed to" `src/`, `e2e/offline.spec.ts`, `e2e/`."""
+    _, notes = attenuate(Scope(paths=["src/", "e2e/"]), [
+        Ceiling("run envelope", ["src/", "e2e/offline.spec.ts", "e2e/", "scripts/verify.ps1"], [])])
+
+    assert what_was_taken(notes) == []
+    assert minimal_globs(["e2e/offline.spec.ts", "src/", "e2e/", "e2e/x.ts"]) == ["src/", "e2e/"]
+
+
+async def test_a_task_is_not_held_for_a_fence_it_never_reached(
+    supervisor: Supervisor, fake,
+) -> None:
+    """The run itself: a plan that forbids README.md holds none of its tasks for it."""
+    plan = fake.answer_for("planning", CompletionRequest(messages=[ChatMessage("user", "")]))
+    plan["envelope_paths"] = ["src/**", "tests/**", "README.md"]
+    plan["envelope_forbidden_paths"] = ["README.md"]
+    fake.overrides["planning"] = plan
+
+    response = await _reach_approval(supervisor)
+    state = supervisor.store.load_state(response.run_id)
+
+    (task,) = state.tasks.values()
+    assert "README.md" in task.scope.forbidden_paths, "the fence is handed down"
+    assert task.clamped == [], task.clamped
+
+
+def test_a_fence_handed_down_is_a_narrowing_only_where_the_task_named_it() -> None:
+    """Baseline 2: every task held for the owner over README.md, which none of them named."""
+    fence = Ceiling("run envelope", ["src/", "tests/", "README.md", "tools/"],
+                    ["README.md", "tools/check_doc_refs.py"])
+
+    narrowed, notes = attenuate(Scope(paths=["src/core/timing.py", "tests/", "tools/"]), [fence])
+    assert narrowed.forbidden_paths == ["README.md", "tools/check_doc_refs.py"]
+    assert notes and what_was_taken(notes) == [], "the fence is noted, nothing was taken"
+
+    _, notes = attenuate(Scope(paths=["src/", "README.md"]), [fence])
+    assert what_was_taken(notes) and "README.md" in what_was_taken(notes)[0]
 
 
 async def test_configuration_bounds_the_run_even_when_the_plan_asks_for_more(
