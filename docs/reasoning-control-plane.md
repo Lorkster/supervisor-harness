@@ -97,8 +97,8 @@ alone, and relaxes it to the workspace rather than to the machine.
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:360](../src/supervisor_harness/config.py:360)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:406](../src/supervisor_harness/config.py:406))
+([config.py:363](../src/supervisor_harness/config.py:363)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:409](../src/supervisor_harness/config.py:409))
 are the list of what it may not set: command execution, provider `base_url`, API
 keys, the AWS `region` and `profile` a Bedrock route would use, the store
 location. The principle is the same one in a different costume —

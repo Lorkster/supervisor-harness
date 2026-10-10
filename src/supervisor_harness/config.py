@@ -144,8 +144,11 @@ class Policy:
     # planner can open the files a task would change before naming them, and
     # answers by calling propose_plan. See `core/planner.py`. Only where the
     # synthesis provider takes tools natively; anywhere else, "one_shot". Not
-    # protected, for the reason implementer_loop is not.
-    planner_loop: str = "one_shot"
+    # protected, for the reason implementer_loop is not. The default since a
+    # measurement on a local model (seven planner cases, three times each):
+    # plans that passed every planner check, 15/21 against 3/21 one-shot and
+    # 4/21 one-shot with thinking on, for about a minute more planning.
+    planner_loop: str = "conversation"
 
     # Under envelope approval, a second reading of each task the gate passes,
     # by a reviewer that can only veto (`core/review.py`), routed to the

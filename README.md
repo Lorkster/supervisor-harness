@@ -964,7 +964,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `check_timeout_seconds` | 1800 | Bound on one of the harness's own checks: a criterion's command, its baseline run, the fails-before run |
 | `approval` | "task" | **Protected.** `"envelope"` lets `supervisor run --grant-envelope` approve tasks within the run's envelope by a deterministic gate, sending what it refuses to you; it needs command execution, tests, `fails_before` and `execution_worktree` |
 | `implementer_loop` | "turns" | `"conversation"`: implementers and verifiers are each one conversation with native tool calls (`core/conversation.py`), where the provider takes tools natively |
-| `planner_loop` | "one_shot" | `"conversation"`: the synthesis that writes tasks reads the workspace with read-only tools before it plans, and answers through `propose_plan` (`core/planner.py`) |
+| `planner_loop` | "conversation" | The synthesis that writes tasks reads the workspace with read-only tools before it plans, and answers through `propose_plan` (`core/planner.py`); `"one_shot"` asks for one JSON answer instead. A provider without native tools is always asked one-shot |
 | `veto_review` | true | **Protected.** Under envelope approval, a reviewer that can only veto reads each task the gate passed (`core/review.py`) |
 | `execution_worktree` | true | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
 | `apply_lessons` | true | Inject past lessons into briefs |
