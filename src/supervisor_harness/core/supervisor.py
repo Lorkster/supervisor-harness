@@ -164,7 +164,7 @@ from .review import ROLE as REVIEW_ROLE
 #: module that imports *that* would be a cycle.
 __all__ = ["Supervisor", "SupervisorResponse"]
 from .supervision import Supervision
-from .tools import Toolbox, ToolResult, render_results
+from .tools import Toolbox, ToolResult, normal_command, render_results
 
 # Stage agents are ordinary agents so that planning, synthesis, the checkpoint
 # and the improvement pass all flow through the same report/supervise path.
@@ -2154,7 +2154,9 @@ class Supervisor:
                     break
 
                 toolbox = self._toolbox_for(session.state)
-                results = [toolbox.call(name, args, agent) for name, args in calls]
+                checks = _run_checks(session.state)
+                results = [toolbox.call(name, args, agent, checks=checks)
+                           for name, args in calls]
                 tools_called += len(calls)
                 files_read.update(r.path for r in results if r.ok and r.path)
                 await session.anote(
@@ -2475,7 +2477,8 @@ class Supervisor:
                     if call.name in ("edit_file", "write_file", "delete_file"):
                         await self._widen_for_write(session, agent, toolbox,
                                                     str(call.arguments.get("path", "")))
-                    result = toolbox.call(call.name, call.arguments, agent, whole_files=True)
+                    result = toolbox.call(call.name, call.arguments, agent, whole_files=True,
+                                          checks=_run_checks(session.state))
                     self._remember_named(session.state, agent, call, result, toolbox)
                     stint.record(call, result.ok, result.path)
                     failures += [] if result.ok else [call.name]
@@ -2494,8 +2497,12 @@ class Supervisor:
         In baseline run 2 the agents found the stale document by running the
         doc-reference check themselves; `_widen_for_write` reads this.
         """
-        if (call.name == "run_command" and not result.ok
-                and _is_a_check(state, str(call.arguments.get("command", "")))):
+        command = str(call.arguments.get("command", ""))
+        # Ran and failed: a refusal names the path it refused, not one a check
+        # found broken -- read as a finding, it named the check's own script.
+        ran = result.output.startswith(f"$ {command}\nexit=")
+        if (call.name == "run_command" and not result.ok and ran
+                and _is_a_check(state, command)):
             self._named_by_checks.setdefault(agent.id, set()).update(
                 _files_named(result.output, toolbox))
 
@@ -2837,15 +2844,20 @@ _FILE_IN_TEXT = re.compile(r"[\w./-]*\w\.(?:[a-z]{1,4}\.)?[a-z]{1,5}\b", re.IGNO
 _PATH_IN_OUTPUT = re.compile(r"(?:[A-Za-z]:)?[\w.\\/-]*\w\.[A-Za-z0-9]{1,8}\b")
 
 
+def _run_checks(state: RunState) -> frozenset[str]:
+    """The run's own criterion commands, as `tools.normal_command` compares them."""
+    return frozenset(normal_command(c.command) for t in state.tasks.values()
+                     for c in t.dod if c.command.strip())
+
+
 def _is_a_check(state: RunState, command: str) -> bool:
     """Whether ``command`` is one of the run's own criteria, as written there.
 
     Only those: a file named by any failing command would let a model widen its
-    reach by printing a path.
+    reach by printing a path. ``python -m pytest -q`` is ``pytest -q``.
     """
-    wanted = " ".join(command.split())
-    return bool(wanted) and any(" ".join(c.command.split()) == wanted
-                                for t in state.tasks.values() for c in t.dod if c.command)
+    wanted = normal_command(command)
+    return bool(wanted) and wanted in _run_checks(state)
 
 
 def _files_named(text: str, toolbox: Toolbox) -> set[str]:

@@ -440,3 +440,41 @@ async def test_not_into_a_task_held_for_the_owner(supervisor: Supervisor) -> Non
     escalation.resolution = Resolution.DECLINE
     await supervisor._widen_for_write(session, me, box, "package.json")
     assert "package.json" in me.scope.paths, "once the owner has answered, it is not held"
+
+
+async def test_an_implementer_may_fix_the_file_its_failing_check_names(
+    supervisor: Supervisor, workspace: Path, fake: Any,
+) -> None:
+    """Baseline 2, run 4: the doc-reference gate named a document the implementer's
+    code edits had moved the citations in, and its edit of that document was refused."""
+    import copy
+
+    (workspace / "docs").mkdir()
+    (workspace / "docs" / "notes.md").write_text("see login.py:3\n", encoding="utf-8")
+    (workspace / "tools").mkdir()
+    (workspace / "tools" / "check_refs.py").write_text(
+        "import pathlib, sys\n"
+        "print(f\"{pathlib.Path('docs/notes.md').resolve()}: login.py:3 moved\")\n"
+        "sys.exit(0 if 'login.py:4' in pathlib.Path('docs/notes.md').read_text() else 1)\n",
+        encoding="utf-8")
+    plan = copy.deepcopy(fake._synthesis(None))
+    plan["tasks"][0]["dod"].append({"statement": "doc references resolve", "method": "command",
+                                    "command": "python tools/check_refs.py", "expect": "0",
+                                    "mandatory": True})
+    native = NativeFake(
+        _calls(ToolCall("run_command", {"command": "python tools/check_refs.py"})),
+        _calls(ToolCall("edit_file", {"path": "docs/notes.md", "old": "login.py:3",
+                                      "new": "login.py:4"})),
+        _calls(DONE))
+    native.overrides["synthesis"] = plan
+    supervisor.config.policy.allow_command_execution = True
+    supervisor.config.policy.planner_loop = "one_shot"
+
+    response = await _conversing(supervisor, native).run(
+        PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    state = supervisor.store.load_state(response.run_id)
+
+    tree = Path(state.worktree.path) if state.worktree and state.worktree.path else workspace
+    assert any("named by a failing check" in n.text for n in state.notes)
+    assert "login.py:4" in (tree / "docs" / "notes.md").read_text(encoding="utf-8")
+    assert "tools/check_refs.py" not in str(state.envelope), "the check's script, not a finding"

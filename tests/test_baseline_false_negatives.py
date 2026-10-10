@@ -244,7 +244,8 @@ async def test_the_agents_own_failing_run_of_a_check_names_files_too(
     box = Toolbox(supervisor.workspace, supervisor.config.policy)
     gate = ToolCall("run_command", {"command": "python tools/check_doc_refs.py"})
     other = ToolCall("run_command", {"command": "git log docs/design.md"})
-    said = ToolResult("run_command", False, "$ ...\nexit=1\ndocs/design.md: stale reference")
+    said = ToolResult("run_command", False,
+                      "$ python tools/check_doc_refs.py\nexit=1\ndocs/design.md: stale reference")
 
     supervisor._remember_named(session.state, me, other, said, box)
     await supervisor._widen_for_write(session, me, box, "docs/design.md")
@@ -286,3 +287,38 @@ def test_only_the_runs_own_checks_name_files(tmp_path: Path) -> None:
     assert not _is_a_check(state, "")
     assert _files_named(f"{tmp_path / 'docs' / 'a.md'}: stale; docs/missing.md; ../x.md",
                         box) == {"docs/a.md"}
+
+
+def test_an_agent_may_run_the_runs_own_check_wherever_its_script_is(tmp_path: Path) -> None:
+    """Baseline 2: `python tools/check_doc_refs.py` refused for the script's path."""
+    from supervisor_harness.core.tools import normal_command
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "check.py").write_text("raise SystemExit(3)\n", encoding="utf-8")
+    box = Toolbox(tmp_path, Policy(allow_command_execution=True))
+    scope = Scope(paths=["src/**"])
+
+    refused = box.run_command("python tools/check.py", scope)
+    assert not refused.ok and "outside this agent's scope" in refused.output
+    ran = box.run_command("python tools/check.py", scope, checks={"python tools/check.py"})
+    assert ran.output.startswith("$ python tools/check.py\nexit=3"), ran.output
+    other = box.run_command("python tools/other.py", scope, checks={"python tools/check.py"})
+    assert "outside this agent's scope" in other.output, "only the check itself"
+    assert normal_command("python -m  pytest -q") == normal_command("pytest -q") == "pytest -q"
+
+
+async def test_a_refused_check_names_nothing(supervisor: Supervisor) -> None:
+    """A refusal names the path it refused -- the check's script -- not a broken file."""
+    session, me, _ = _ripple(supervisor, "run_R4")
+    box = Toolbox(supervisor.workspace, supervisor.config.policy)
+    gate = ToolCall("run_command", {"command": "python tools/check_doc_refs.py"})
+
+    supervisor._remember_named(session.state, me, gate, ToolResult(
+        "run_command", False, "docs/design.md is outside this agent's scope (src/auth/**)"), box)
+    assert not supervisor._named_by_checks.get(me.id)
+
+    supervisor._remember_named(session.state, me, ToolCall(
+        "run_command", {"command": "python  tools/check_doc_refs.py"}), ToolResult(
+        "run_command", False, "$ python  tools/check_doc_refs.py\nexit=1\ndocs/design.md: stale"),
+        box)
+    assert supervisor._named_by_checks.get(me.id) == {"docs/design.md"}
