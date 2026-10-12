@@ -29,10 +29,11 @@ from typing import Any
 
 from . import __version__
 from .config import KNOWN_STAGES, PROJECT_CONFIG, load_config, write_example
+from .core import worktree
 from .core.supervisor import Supervisor, SupervisorResponse
 from .host.detect import detect_host
 from .install import COMPONENTS, INTEGRATIONS, MCP_FILES, uninstall
-from .models import Backend, RunMode
+from .models import Backend, RunMode, RunState
 from .serde import to_jsonable
 from .store.events import (
     UNRECOGNISED_TYPE_KEY,
@@ -1114,23 +1115,43 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         return 0
 
 
+def _git_releaser(notes: dict[str, str], *, unmerged: bool) -> Callable[[RunState], None]:
+    """What `RunStore.delete_run` calls to give back a run's worktree and branch."""
+    def release(state: RunState) -> None:
+        wt = state.worktree
+        if wt is None or not state.workspace:
+            return
+        note = worktree.release(Path(state.workspace), wt.path, wt.branch, unmerged=unmerged)
+        if note:
+            notes[state.id] = note
+    return release
+
+
 def cmd_delete(args: argparse.Namespace) -> int:
-    """Remove one run, or every run past a cutoff."""
+    """Remove one run, or every run past a cutoff, and what each held in git.
+
+    A run named on the command line loses its branch with it; a cutoff sweep
+    deletes only branches already merged, and says which it kept.
+    """
+    notes: dict[str, str] = {}
     with RunStore.discover(Path(args.workspace).resolve()) as store:
 
         if args.older_than is not None:
-            gone = store.purge(older_than_days=args.older_than, keep_last=args.keep_last)
+            gone = store.purge(older_than_days=args.older_than, keep_last=args.keep_last,
+                               release=_git_releaser(notes, unmerged=False))
             if not gone:
                 print(f"No runs older than {args.older_than} day(s).")
                 return 0
             print(f"Deleted {len(gone)} run(s): {', '.join(gone)}")
+            for run_id, note in notes.items():
+                print(f"  {run_id}: {note}")
             return 0
 
         if not args.run:
             print("Name a run, or pass --older-than DAYS.", file=sys.stderr)
             return 2
         try:
-            deleted = store.delete_run(args.run)
+            deleted = store.delete_run(args.run, _git_releaser(notes, unmerged=True))
         except ValueError as exc:
             print(f"{exc}: a run id is one name, like the ones `supervisor runs` lists",
                   file=sys.stderr)
@@ -1139,6 +1160,8 @@ def cmd_delete(args: argparse.Namespace) -> int:
             print(f"No such run: {args.run}", file=sys.stderr)
             return 1
         print(f"Deleted {args.run} and its rows in the index.")
+        if args.run in notes:
+            print(f"In git: {notes[args.run]}.")
         return 0
 
 
@@ -1365,7 +1388,8 @@ def _add_store_commands(sub: Any, common: argparse.ArgumentParser) -> None:
 
     p = sub.add_parser(
         "delete", parents=[common],
-        help="delete a run, or every run older than a cutoff, from disk and the index",
+        help="delete a run, or every run older than a cutoff, from disk and the index, "
+             "with its worktree and branch",
     )
     p.add_argument("run", nargs="?", help="the run to delete; omit when using --older-than")
     p.add_argument("--older-than", type=int, metavar="DAYS",
