@@ -461,6 +461,9 @@ def build_implementer_brief(
     )
     if agent.scope.forbidden_paths:
         scope += "\nNever change: " + ", ".join(f"`{p}`" for p in agent.scope.forbidden_paths)
+    if agent.scope.paths and run.envelope and run.envelope.paths:
+        scope += ("\nThe run's plan covers: " + ", ".join(f"`{p}`" for p in run.envelope.paths)
+                  + " -- a bug there that keeps your task from passing is yours to fix.")
     baseline = run.facts.get(BASELINE_FACT, "")
     parts = [
         f"# Your task: {task.title}",

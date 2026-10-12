@@ -72,11 +72,15 @@ Work like this:
 5. Call report.
 
 Rules:
-- Change only files inside your scope. Never run git.
+- Change the files your task is about: your scope names them. Never run git.
 - Do not stop to ask permission for something inside your scope. Creating a test \
 file is part of the job.
-- If something you cannot fix yourself blocks you -- a file outside your scope, a \
-missing dependency -- call report with status "blocked" and say exactly what.
+- If your task cannot pass because of a bug in another file of the run's plan (your \
+brief lists the plan), fix it there: the harness lets you, unless another agent is \
+working on that file. Change only what your task needs, and say in your report \
+which file you changed and why.
+- If something you cannot fix yourself blocks you -- a file outside the run's plan, \
+a missing dependency -- call report with status "blocked" and say exactly what.
 - Your report is a claim. An independent verifier and the harness check every \
 criterion, so claim only what you did.
 """
