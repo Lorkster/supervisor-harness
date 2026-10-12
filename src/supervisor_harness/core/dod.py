@@ -882,6 +882,88 @@ def _clean_exit(expect: str) -> bool:
     return not expect.strip() or bool(_CLEAN_EXIT.fullmatch(expect.strip()))
 
 
+#: A review's claim that what it names succeeds -- and, below, that something
+#: fails, which is not the claim a clean exit can stand behind.
+_CLAIMS_SUCCESS = re.compile(r"\b(?:pass(?:es)?|succeeds?|green|exits?\s+(?:with\s+)?"
+                             r"(?:code\s+)?0)\b", re.IGNORECASE)
+_CLAIMS_FAILURE = re.compile(r"\b(?:fail(?:s|ure)?|non-?zero|rejects?|refuses?)\b",
+                             re.IGNORECASE)
+#: Where a list of commands is split, in a sentence that names several: a comma
+#: or colon before a space (``test:e2e`` is one script), ``;``, brackets, "and".
+_COMMAND_LIST = re.compile(r"[;()]|[,:](?=\s|$)|\s+(?:and|then)\s+")
+#: Where the command ends and the sentence about it resumes: "npm run check
+#: and npm run test:e2e both pass". "both", "all" and "each" count only before
+#: a plural verb: in "npm run all passes", `all` is the script.
+_AFTER_COMMAND = re.compile(
+    r"\s+(?:(?:both|all|each)\s+(?=(?:pass|succeed|exit)\b)|(?:now|also)\s+)?"
+    r"(?:passes|pass|succeeds?|exits?|completes|runs"
+    r"|returns|is|are|must|should|will|still|when|after|individually|separately|in\s+the)\b.*$",
+    re.IGNORECASE | re.DOTALL)
+#: Runners named outside backticks. Not every one the harness allows: `make`,
+#: `go`, `black`, `node` and their like begin ordinary English sentences.
+_PROSE_RUNNERS = frozenset({
+    "npm", "npx", "pnpm", "yarn", "pytest", "python", "python3", "mypy", "ruff", "tox",
+    "cargo", "dotnet", "mvn", "gradle", "vitest", "jest", "eslint", "tsc", "ctest",
+    "phpunit", "pwsh", "powershell",
+})
+
+
+def commands_a_review_names(text: str) -> list[str]:
+    """The check commands ``text`` names, in order, each once.
+
+    Backticked spans whose runner the harness allows, and list items that begin
+    with an unambiguous runner: "All three gates pass: npm run check, pwsh
+    scripts/verify.ps1, npm run test:e2e" names three.
+    """
+    ticked = re.findall(r"`([^`]+)`", text)
+    spans = ticked + _COMMAND_LIST.split(re.sub(r"`[^`]*`", " ", text))
+    found: list[str] = []
+    for at, span in enumerate(spans):
+        command = " ".join(_AFTER_COMMAND.sub("", span.strip()).split()).rstrip(".")
+        tokens = command.split()
+        if not tokens:
+            continue
+        runner = executable_name(tokens[0])
+        if (runner in (VERIFY_EXECUTABLES if at < len(ticked) else _PROSE_RUNNERS)
+                and unsafe_command(command) is None and command not in found):
+            found.append(command)
+    return found
+
+
+def check_what_a_review_names(task: ExecutionTask) -> list[str]:
+    """A review that says named commands pass gets those runs, made by the harness.
+
+    Measured in baseline 3: "All three acceptance gates pass as separate
+    commands: npm run check, pwsh scripts/verify.ps1, npm run test:e2e", a
+    `review`, blocked a task whose three gates all passed. The verifier is a
+    reader with no command runner; the harness had run two of the gates, but for
+    other tasks, so they were not in front of it, and it could quote only the
+    implementer's word. Each command a review says passes becomes a criterion of
+    its own here, run like any other, and the review keeps its rubric -- now with
+    the harness's runs to read. Only commands the harness would run anyway, and
+    only a claim of success: "`npm run lint` reports the unused import" asks for
+    a failure, and a clean exit would prove the opposite.
+    """
+    lines: list[str] = []
+    for crit in list(task.dod):
+        if crit.method is not VerifyMethod.REVIEW:
+            continue
+        claim = f"{crit.statement}\n{crit.rubric}"
+        if not _CLAIMS_SUCCESS.search(claim) or _CLAIMS_FAILURE.search(claim):
+            continue
+        have = {" ".join(c.command.split()) for c in task.dod if c.command.strip()}
+        named = [c for c in commands_a_review_names(crit.statement) if c not in have]
+        at = task.dod.index(crit)
+        for offset, command in enumerate(named):
+            task.dod.insert(at + offset, DoDCriterion(
+                statement=f"{crit.statement} (`{command}`)", method=VerifyMethod.COMMAND,
+                command=command, mandatory=crit.mandatory))
+        if named:
+            lines.append(f"review {crit.statement!r} says {len(named)} command(s) pass; "
+                         "the harness runs each, and the verifier reads those runs")
+    return lines
+
+
 def fill_what_the_harness_can(task: ExecutionTask, workspace: Path | None) -> list[str]:
     """Every repair the harness makes to proposed criteria before judging them.
 
@@ -889,7 +971,7 @@ def fill_what_the_harness_can(task: ExecutionTask, workspace: Path | None) -> li
     prepared: what the harness can read for itself is not the model's miss.
     """
     return [*read_grep_inspections(task), *split_chained_commands(task),
-            *fill_suite_commands(task, workspace)]
+            *fill_suite_commands(task, workspace), *check_what_a_review_names(task)]
 
 
 #: A check runner's command at the start of a statement, or anywhere in
@@ -1343,6 +1425,25 @@ def _kill_tree(proc: subprocess.Popen[str]) -> None:
         pass  # the tree is already dead
 
 
+def resolve_runner(name: str) -> tuple[str | None, str]:
+    """The program ``name`` runs here, and a note when it is a stand-in.
+
+    A project whose script is written for Windows PowerShell may name `pwsh` in
+    its workflow; on a machine with only `powershell`, that is the one that runs
+    it. Said in the output, not done quietly. The harness's checks and an
+    agent's shell resolve alike: in baseline 3 the harness ran `pwsh
+    scripts/verify.ps1` this way while the implementer was told `pwsh` was not
+    on PATH, and could not run the gate its task was judged by.
+    """
+    executable = shutil.which(name)
+    if executable is None and executable_name(name) == "pwsh":
+        stand_in = shutil.which("powershell")
+        if stand_in is not None:
+            return stand_in, ("\n[supervisor] `pwsh` is not on PATH; the script was run "
+                              "with Windows PowerShell (`powershell`) instead.")
+    return executable, ""
+
+
 def executable_name(token: str) -> str:
     """The bare program name a command's first token invokes.
 
@@ -1425,15 +1526,7 @@ def verify_command(
     # nothing: an unresolvable name is refused here rather than in the OSError
     # below, so the evidence says the runner is missing.
     argv = shell_split(command)
-    executable = shutil.which(argv[0])
-    substituted = ""
-    if executable is None and executable_name(argv[0]) == "pwsh":
-        # A project whose script is written for Windows PowerShell may name
-        # `pwsh` in its workflow; on a machine with only `powershell`, that is
-        # the one that runs it. Said in the evidence, not done quietly.
-        executable = shutil.which("powershell")
-        substituted = ("\n[supervisor] `pwsh` is not on PATH; the script was run with "
-                       "Windows PowerShell (`powershell`) instead.")
+    executable, substituted = resolve_runner(argv[0])
     if executable is None:
         return VerificationOutcome(
             CriterionStatus.BLOCKED,
