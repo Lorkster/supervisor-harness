@@ -108,7 +108,7 @@ about work done on it.
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:1496](../src/supervisor_harness/core/dod.py:1496)) holds a runner to
+([core/dod.py:1499](../src/supervisor_harness/core/dod.py:1499)) holds a runner to
 an allow-list. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.
@@ -151,11 +151,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:817](../src/supervisor_harness/core/supervisor.py:817)), when an
+[supervisor.py:820](../src/supervisor_harness/core/supervisor.py:820)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:2929](../src/supervisor_harness/core/supervisor.py:2929)). It
+[supervisor.py:2963](../src/supervisor_harness/core/supervisor.py:2963)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 

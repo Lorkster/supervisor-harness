@@ -91,7 +91,8 @@ def gate(task: ExecutionTask, policy: Policy) -> list[tuple[EscalationReason, st
     unrunnable = [
         f"{c.statement!r}: {unsafe_command(c.command) or 'no command'}"
         for c in task.mandatory_criteria
-        if c.method in _RUN_METHODS and (not c.command.strip() or unsafe_command(c.command))
+        if c.method in _RUN_METHODS and not (c.suite and not c.command.strip())
+        and (not c.command.strip() or unsafe_command(c.command))
     ]
     if unrunnable:
         reasons.append((EscalationReason.UNRUNNABLE_CRITERION,

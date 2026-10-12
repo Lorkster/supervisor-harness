@@ -60,9 +60,21 @@ def placed_in_tree(patterns: list[str], workspace: str | Path) -> tuple[list[str
         if matches:
             notes.append(f"`{pat}` names no file in the workspace and could mean any of "
                          f"{len(matches)}; left as written")
-        elif not (root / pat).parent.exists():
+        elif not (root / pat).parent.exists() and _a_kind_it_has(pat, files):
             notes.append(f"`{pat}` names no file, in a directory that does not exist")
     return out, notes
+
+
+def _a_kind_it_has(path: str, files: list[str]) -> bool:
+    """Whether the tree has files of ``path``'s kind, so that it could be misplaced.
+
+    A path to a kind of file the project has none of is new, not misplaced: the
+    plan for a project built from nothing named fourteen files, each noted as
+    naming no file in a directory that does not exist -- all of them true, and
+    none of them news.
+    """
+    suffix = Path(path).suffix.lower()
+    return not suffix or any(f.lower().endswith(suffix) for f in files)
 
 
 #: A path written in prose: at least one directory, and a file extension.

@@ -519,7 +519,9 @@ def validate_criteria(criteria: list[DoDCriterion], policy: Policy) -> list[Crit
                                Severity.HIGH)
             )
         if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST):
-            if not crit.command.strip():
+            if crit.suite and not crit.command.strip():
+                pass  # found when the task is done: `Supervisor._find_the_suite`
+            elif not crit.command.strip():
                 issues.append(
                     CriterionIssue(crit.id, f"method={crit.method.value} but no command given",
                                    Severity.HIGH)
@@ -1073,6 +1075,7 @@ def apply_quality_bars(
                 command=detect_test_command(workspace) if workspace else "",
                 expect="0",
                 mandatory=True,
+                suite=True,
             ),
         )
 
@@ -1507,6 +1510,10 @@ def verify_command(
     proven, so refusing here cannot certify anything.
     """
     command = criterion.command.strip()
+    if not command and criterion.suite:
+        return VerificationOutcome(CriterionStatus.BLOCKED, (
+            "the project has no test suite the harness can find: a `test` script in "
+            "package.json, pyproject.toml or pytest.ini, go.mod or Cargo.toml"))
     if not command:
         return VerificationOutcome(CriterionStatus.BLOCKED, "no command specified")
 

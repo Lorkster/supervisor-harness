@@ -690,6 +690,10 @@ class DoDCriterion:
     evidence: str = ""
     verified_at: str = ""
     verified_by: str = ""
+    # The harness's own test bar: ``command`` is the project's test suite, found
+    # when the task is done if the project had none when the plan was made (a
+    # project built from nothing). Set by the harness only, never from a model.
+    suite: bool = False
 
     @property
     def machine_checkable(self) -> bool:
