@@ -238,3 +238,116 @@ async def test_a_host_delegated_run_is_not_given_a_branch_yet(
 
     assert final.action == "complete", final.message
     assert sup.store.load_state(final.run_id).worktree is None
+
+
+# -- deleting a run gives back what it held in git -------------------------------
+
+
+def _held(store: RunStore, repo: Path, run_id: str, branch: str, path: str = "") -> None:
+    """A run whose state says it works on ``branch``, in a worktree at ``path``."""
+    from supervisor_harness.models import RunState, RunWorktree
+    from supervisor_harness.serde import to_jsonable
+    from supervisor_harness.store.events import EventType
+
+    session = store.create(RunState(id=run_id, prompt=PROMPT, workspace=str(repo)))
+    session.emit(EventType.WORKTREE_OPENED, {"worktree": to_jsonable(RunWorktree(
+        path=path, branch=branch, base=git(repo, "rev-parse", "HEAD")))})
+
+
+def _branches(repo: Path) -> list[str]:
+    return git(repo, "branch", "--list", "--format=%(refname:short)").splitlines()
+
+
+async def test_deleting_a_run_takes_its_branch_and_says_how_to_put_it_back(
+    repo: Path, config: HarnessConfig, writing: Writing,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`supervisor delete` left every run's branch behind, for a hand-run `git branch -D`."""
+    from supervisor_harness.cli import main
+
+    monkeypatch.delenv("SUPERVISOR_HOME", raising=False)
+    sup = _supervisor(repo, config, writing)
+    response = await sup.run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
+    wt = sup.store.load_state(response.run_id).worktree
+    assert wt is not None and wt.commit and wt.branch in _branches(repo)
+    sup.store.close()
+    capsys.readouterr()
+
+    assert main(["delete", response.run_id, "-w", str(repo)]) == 0
+    out = capsys.readouterr().out
+
+    assert wt.branch not in _branches(repo), "the run's branch went with the run"
+    restore = f"git branch {wt.branch} {wt.commit[:12]}"
+    assert restore in out, out
+    git(repo, *restore.split()[1:])
+    assert git(repo, "rev-parse", wt.branch) == wt.commit, "and the note can put it back"
+
+
+def test_deleting_a_run_mid_execution_unregisters_its_worktree(repo: Path) -> None:
+    """The worktree is inside the run's directory: deleting that left git a stale entry."""
+    from supervisor_harness.cli import _git_releaser
+
+    store = RunStore(repo / ".supervisor")
+    tree = store.run_dir("run_A") / "worktree"
+    assert worktree.create(repo, tree, worktree.branch_for("run_A"), "HEAD") is None
+    _held(store, repo, "run_A", worktree.branch_for("run_A"), str(tree))
+    assert len(git(repo, "worktree", "list").splitlines()) == 2
+
+    notes: dict[str, str] = {}
+    assert store.delete_run("run_A", _git_releaser(notes, unmerged=True)) is True
+
+    assert len(git(repo, "worktree", "list").splitlines()) == 1, "no stale registration"
+    assert worktree.branch_for("run_A") not in _branches(repo)
+    assert "removed its worktree" in notes["run_A"]
+    assert not (store.runs_dir / "run_A").exists()
+
+
+def test_a_cutoff_sweep_deletes_merged_branches_and_keeps_unmerged_work(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Nobody named those runs: work the owner has not merged is not the sweep's to drop."""
+    import json
+
+    from supervisor_harness.cli import main
+
+    monkeypatch.delenv("SUPERVISOR_HOME", raising=False)
+    store = RunStore(repo / ".supervisor")
+    merged, unmerged = worktree.branch_for("run_A"), worktree.branch_for("run_B")
+    git(repo, "branch", merged)
+    git(repo, "checkout", "-q", "-b", unmerged)
+    (repo / "change.txt").write_text("the run's work\n", encoding="utf-8")
+    git(repo, "add", "change.txt")
+    git(repo, "commit", "-q", "-m", "work")
+    git(repo, "checkout", "-q", "-")
+    for run_id, branch in (("run_A", merged), ("run_B", unmerged)):
+        _held(store, repo, run_id, branch)
+        snapshot = store.runs_dir / run_id / "state.json"
+        data = json.loads(snapshot.read_text(encoding="utf-8"))
+        data["updated_at"] = "2020-01-01T00:00:00Z"
+        snapshot.write_text(json.dumps(data), encoding="utf-8")
+
+    store.close()
+    capsys.readouterr()
+
+    assert main(["delete", "--older-than", "180", "--keep-last", "0", "-w", str(repo)]) == 0
+    out = capsys.readouterr().out
+
+    assert store.list_run_ids() == []
+    assert merged not in _branches(repo)
+    assert unmerged in _branches(repo)
+    assert f"run_B: kept branch {unmerged}" in out and f"git branch -D {unmerged}" in out, out
+
+
+def test_a_branch_the_harness_did_not_make_is_never_deleted(repo: Path) -> None:
+    """A state naming the owner's own branch -- hand-edited, or corrupt -- costs them nothing."""
+    from supervisor_harness.cli import _git_releaser
+
+    store = RunStore(repo / ".supervisor")
+    git(repo, "branch", "feature")
+    _held(store, repo, "run_A", "feature")
+
+    notes: dict[str, str] = {}
+    assert store.delete_run("run_A", _git_releaser(notes, unmerged=True)) is True
+
+    assert "feature" in _branches(repo)
+    assert "run_A" not in notes

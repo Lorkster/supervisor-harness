@@ -376,7 +376,7 @@ shorthand for something the CLI will not tell you itself.
 | `lessons` | show what previous runs taught the harness, including the ones it has retired | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit`; `--live-only` to hide retired ones |
 | `providers` | show stage routing and whether each provider answers | — |
 | `reindex` | rebuild `index.sqlite3` from the event logs | — |
-| `delete [RUN]` | **remove runs from disk** and their rows from the index | a run id, or `--older-than DAYS`; `--keep-last N` never deletes the N most recent (default 5) |
+| `delete [RUN]` | **remove runs from disk** and their rows from the index, with each run's worktree and `supervisor/` branch | a run id, or `--older-than DAYS`; `--keep-last N` never deletes the N most recent (default 5). A named run's branch goes even unmerged, and the output gives the command that restores it; `--older-than` deletes only merged branches and lists the rest |
 | `prune-lessons` | drop lessons the library has not seen for a while | `--older-than DAYS` (default 180) |
 | `mcp` | run the MCP server on stdio; `.mcp.json` starts the same server through the `supervisor-mcp` entry point | — |
 | `eval run CASES…` | measure roles (planner, reviewer, verifier) on fixed cases, several times each, and summarise how often each check passed | `--variant NAME:route=…,think=on,sampling=model` (repeatable), `--route`, `--repeat N` (default 3), `--role`, `--case`, `--out FILE` |

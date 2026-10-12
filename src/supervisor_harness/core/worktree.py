@@ -136,6 +136,38 @@ def close(workspace: Path, tree: Path, base: str, message: str) -> Closed:
     return Closed(commit=commit, diffstat=staged, removed=_remove(workspace, tree))
 
 
+def release(workspace: Path, path: str, branch: str, *, unmerged: bool) -> str:
+    """Give back what a deleted run held in git; what was done, as a note.
+
+    The worktree sits in the run's own directory, so deleting the run took the
+    files and left git's registration of them and the run's branch: every
+    deleted run left a ``supervisor/`` branch and a stale worktree entry that
+    only a hand-run ``git worktree prune`` and ``git branch -D`` cleared.
+
+    The branch goes only when it is one the harness made, and an unmerged one
+    only when ``unmerged`` says the owner named this run: a cutoff sweep keeps
+    the work it was not asked about. The note gives the commit, so a branch
+    deleted by mistake can be put back.
+    """
+    notes: list[str] = []
+    if path and Path(path).exists():
+        _remove(workspace, Path(path))
+        notes.append("removed its worktree")
+    if not branch.startswith(BRANCH_PREFIX):
+        return "; ".join(notes)
+    tip = _git(workspace, "rev-parse", "--verify", "-q", f"refs/heads/{branch}")
+    if tip is None:
+        return "; ".join(notes)
+    if _git(workspace, "branch", "-D" if unmerged else "-d", branch) is not None:
+        notes.append(f"deleted branch {branch} (was {tip[:12]}; "
+                     f"`git branch {branch} {tip[:12]}` restores it)")
+    elif unmerged:
+        notes.append(f"could not delete branch {branch}")
+    else:
+        notes.append(f"kept branch {branch}: it is not merged (`git branch -D {branch}` drops it)")
+    return "; ".join(notes)
+
+
 def _remove(workspace: Path, tree: Path) -> bool:
     """Take the worktree down and unregister it; the branch stays."""
     if _git(workspace, "worktree", "remove", "--force", str(tree), timeout=TIMEOUT) is None:

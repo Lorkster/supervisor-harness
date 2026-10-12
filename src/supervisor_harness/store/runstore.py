@@ -591,7 +591,8 @@ class RunStore:
 
     # -- retention ---------------------------------------------------------
 
-    def delete_run(self, run_id: str) -> bool:
+    def delete_run(self, run_id: str,
+                   release: Callable[[RunState], None] | None = None) -> bool:
         """Remove one run entirely: its directory and its rows in the index.
 
         There was no way to do this at all. The store held every prompt, every
@@ -603,10 +604,21 @@ class RunStore:
         a stale index row, which ``reindex`` now removes -- the other order would
         leave a run the index has forgotten but the disk still holds, which is
         the harder state to notice.
+
+        ``release`` is handed the run's state first, for what it holds outside
+        the store -- its worktree and branch in git (`core/worktree.release`).
+        A run whose state cannot be read is deleted all the same.
         """
         target = self.runs_dir / checked_run_id(run_id)
         if not target.exists():
             return False
+        if release is not None:
+            try:
+                state = self.load_state(run_id)
+            except (OSError, ValueError):
+                state = None
+            if state is not None:
+                release(state)
         shutil.rmtree(target, ignore_errors=False)
         try:
             self.index().delete_run(run_id)
@@ -614,7 +626,8 @@ class RunStore:
             self.snapshot_error = f"index rows for {run_id} were not removed: {exc}"
         return True
 
-    def purge(self, *, older_than_days: int, keep_last: int = 0) -> list[str]:
+    def purge(self, *, older_than_days: int, keep_last: int = 0,
+              release: Callable[[RunState], None] | None = None) -> list[str]:
         """Delete runs older than a cutoff, newest first. Returns what went.
 
         ``keep_last`` is a floor rather than a nicety: a retention policy that
@@ -640,7 +653,7 @@ class RunStore:
                     stamp = datetime.fromtimestamp(mtime, UTC).isoformat()
                 except OSError:
                     continue
-            if _older_than(stamp, older_than_days) and self.delete_run(run_id):
+            if _older_than(stamp, older_than_days) and self.delete_run(run_id, release):
                 gone.append(run_id)
         return gone
 
