@@ -2536,6 +2536,16 @@ class Supervisor:
                     # Counted, or a model that never sends a readable answer
                     # would be refused for ever: the stretch ends on its calls.
                     stint.tool_calls += 1
+                elif (call.name == finish and in_run
+                      and (reachable := self._blocked_within_reach(session.state, agent,
+                                                                   call.arguments, toolbox))):
+                    text = _yours_to_fix(reachable)
+                    failures.append(call.name)
+                    stint.tool_calls += 1
+                    await session.anote(
+                        f"{SENT_BACK_BLOCKED}: what it was blocked on is within "
+                        "the run's plan, and the harness lets the agent change it",
+                        actor=agent.id, task_id=agent.task_id, paths=reachable)
                 elif call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
                 elif call.name not in offered:
@@ -2574,6 +2584,37 @@ class Supervisor:
             self._named_by_checks.setdefault(agent.id, set()).update(
                 _files_named(result.output, toolbox))
 
+    def _blocked_within_reach(self, state: RunState, agent: AgentSpec,
+                              report: dict[str, Any], toolbox: Toolbox) -> list[str]:
+        """The files a blocked report names that the agent may in fact change.
+
+        Measured in the first Minesweeper run to reach its last task: the agent
+        writing the browser tests found the bug that failed eight of them --
+        cells with no `data-state` until their first change, `src/main.ts:156`,
+        in the file of a task already verified -- and reported itself blocked,
+        because the file was outside its scope and its rules said so. The
+        harness would have let it write there: `src/main.ts` was inside the
+        run's plan and no one else was working on it. So once per agent, a
+        blocked report naming only such files is handed back, saying so; a
+        second is taken, and goes to the owner as before.
+        """
+        # Once: read from the log, so a resumed run remembers it too.
+        once = any(n.actor == agent.id and n.text.startswith(SENT_BACK_BLOCKED)
+                   for n in state.notes)
+        if (agent.kind is not AgentKind.EXECUTION or once
+                or str(report.get("status", "")).strip().lower() != "blocked"):
+            return []
+        task = state.tasks.get(agent.task_id or "")
+        text = f"{report.get('blocked_on', '')}\n{report.get('summary', '')}"
+        named = sorted(rel for rel in _files_named(text, toolbox)
+                       if not matches_any(rel, agent.scope.paths))
+        if task is None or not agent.scope.paths or not named:
+            return []
+        if any(_another_writer(state, agent, rel) or _held_holder(state, task, rel)
+               or not _in_the_plan(state, rel) for rel in named):
+            return []
+        return named
+
     async def _widen_for_write(
         self, session: RunSession, agent: AgentSpec, toolbox: Toolbox, raw: str
     ) -> None:
@@ -2603,14 +2644,9 @@ class Supervisor:
         if (task is None or rel is None or not agent.scope.paths
                 or matches_any(rel, agent.scope.paths)):
             return
-        if any(other.id != agent.id and other.kind is AgentKind.EXECUTION
-               and other.status in ACTIVE_AGENT_STATUSES
-               and globs_may_overlap([rel], other.scope.paths)
-               for other in state.agents.values()):
+        if _another_writer(state, agent, rel):
             return
-        held = {e.task_id for e in state.open_escalations()} - {task.id}
-        holder = next((t for t in state.tasks.values()
-                       if t.id in held and globs_may_overlap([rel], t.scope.paths)), None)
+        holder = _held_holder(state, task, rel)
         if holder is not None:
             await session.anote(f"scope not widened to {rel}: it is in the scope of "
                                 f"{holder.title!r}, which is held for the owner",
@@ -2926,6 +2962,46 @@ def _is_a_check(state: RunState, command: str) -> bool:
     """
     wanted = normal_command(command)
     return bool(wanted) and wanted in _run_checks(state)
+
+
+#: How the log says a blocked report was handed back (`_blocked_within_reach`).
+SENT_BACK_BLOCKED = "a blocked report was sent back"
+
+
+def _yours_to_fix(paths: list[str]) -> str:
+    """What a blocked report is answered with when the harness would let the write."""
+    files = ", ".join(f"`{p}`" for p in paths)
+    one = len(paths) == 1
+    return (f"Not taken: {files} {'is' if one else 'are'} within the run's plan, and no "
+            f"other agent is working on {'it' if one else 'them'}, so you may change "
+            f"{'it' if one else 'them'} -- the harness widens your scope when you write. "
+            "If your task needs the change, make it, and only what the task needs; run "
+            "the checks again, and say in your report what you changed there. If it "
+            "still cannot be done, report blocked again and it goes to the owner.")
+
+
+def _another_writer(state: RunState, agent: AgentSpec, rel: str) -> bool:
+    """Whether another running implementer's scope could meet ``rel``."""
+    return any(other.id != agent.id and other.kind is AgentKind.EXECUTION
+               and other.status in ACTIVE_AGENT_STATUSES
+               and globs_may_overlap([rel], other.scope.paths)
+               for other in state.agents.values())
+
+
+def _held_holder(state: RunState, task: ExecutionTask, rel: str) -> ExecutionTask | None:
+    """The task held for the owner whose scope could meet ``rel``, if any."""
+    held = {e.task_id for e in state.open_escalations()} - {task.id}
+    return next((t for t in state.tasks.values()
+                 if t.id in held and globs_may_overlap([rel], t.scope.paths)), None)
+
+
+def _in_the_plan(state: RunState, rel: str) -> bool:
+    """Whether the run's plan, as `_widen_for_write` reads it, covers ``rel``."""
+    current = effective(state.envelope)
+    grant = state.envelope_grant
+    plan = Ceiling("the run's plan", list(current.paths),
+                   [*current.forbidden_paths, *(grant.forbidden_paths if grant else [])])
+    return bool(widen_within(current, plan, [rel])[1])
 
 
 def _files_named(text: str, toolbox: Toolbox) -> set[str]:
