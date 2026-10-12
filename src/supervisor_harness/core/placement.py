@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from ..models import ExecutionTask, VerifyMethod
-from .dod import shell_split
+from .dod import executable_name, shell_split
 from .paths import _META, NOTHING, matches_any
 
 #: Directories a search for "the file a model meant" never descends into:
@@ -203,9 +203,47 @@ def _nearest(path: str, files: list[str]) -> list[str]:
                                      cutoff=0.5)
 
 
+#: Runners that run nothing without the project's `package.json`.
+_PACKAGE_RUNNERS = frozenset({"npm", "npx", "pnpm", "yarn"})
+
+
+def _needed(command: str) -> list[tuple[str, bool]]:
+    """The workspace files ``command`` needs: ``(path, named)``, named when it says them,
+    not when its runner implies them -- `npx vitest run` needs a `package.json`."""
+    needed = [(path, True) for path in _command_paths(command)]
+    tokens = shell_split(command)
+    if tokens and executable_name(tokens[0]) in _PACKAGE_RUNNERS:
+        needed.append(("package.json", False))
+    return needed
+
+
+def _this_and_before(task: ExecutionTask, tasks: list[ExecutionTask]) -> list[ExecutionTask]:
+    """The task and every task it comes after, however far back.
+
+    Dependencies are named as `phases.resolve_dependencies` reads them -- by id,
+    or by title as the planner writes them before ids exist.
+    """
+    by_id = {t.id: t for t in tasks}
+    by_title = {t.title.strip().casefold(): t for t in tasks if t.title.strip()}
+    seen = {task.id: task}
+    stack = [task]
+    while stack:
+        for dep in stack.pop().depends_on:
+            entry = str(dep).strip()
+            found = by_id.get(entry) or by_title.get(entry.casefold())
+            if found is not None and found.id not in seen:
+                seen[found.id] = found
+                stack.append(found)
+    return list(seen.values())
+
+
+def _may_create(path: str, task: ExecutionTask) -> bool:
+    return not task.scope.paths or matches_any(path, task.scope.paths)  # none: the workspace
+
+
 def criteria_running_missing_files(tasks: list[ExecutionTask],
                              workspace: str | Path | None) -> list[tuple[ExecutionTask, str]]:
-    """Criteria that run a file the workspace does not have, and no task will make.
+    """Criteria that need a file the workspace does not have, and nothing before them makes.
 
     Measured in baseline 3: "The existing tile-loader 404 absent-tile behavior
     still passes after the code split", run as `npm run test --
@@ -213,36 +251,51 @@ def criteria_running_missing_files(tasks: list[ExecutionTask],
     criterion failed before the change and after it, and said nothing about
     the tile loader either time. A file a criterion runs may be a test the
     plan will write, so a missing one is a problem only where the criterion
-    says the test is already there, or no task's scope would let anyone create
-    it. Each comes with the files nearest what was written, for the planner to
-    choose from.
+    says the test is already there, or neither its task nor one it comes after
+    may create it. Each comes with the files nearest what was written, for the
+    planner to choose from.
+
+    Coming after is the point, measured on the Minesweeper brief: the first
+    task of a new project's plan was its engine, checked by `npx vitest run
+    tests/engine.test.ts`, and the task that would write `package.json` and
+    install Vitest depended on the engine. Any task's scope covered the file,
+    and the plan could not have run. So a runner that needs `package.json`
+    needs it too, and a later task that would make a file is named, so the
+    planner can put it first.
     """
     root = Path(workspace) if workspace else None
     if root is None or not root.is_dir():
         return []
-    anywhere = any(not t.scope.paths for t in tasks)   # no paths is the whole workspace
     found: list[tuple[ExecutionTask, str]] = []
     files: list[str] | None = None
     for task in tasks:
+        before = _this_and_before(task, tasks)
         for crit in task.dod:
             if (crit.method not in (VerifyMethod.COMMAND, VerifyMethod.TEST,
                                     VerifyMethod.FAILS_BEFORE) or not crit.command.strip()):
                 continue
-            for path in _command_paths(crit.command):
+            for path, named in _needed(crit.command):
                 if (root / path).exists():
                     continue
-                said_existing = (crit.method is not VerifyMethod.FAILS_BEFORE
+                said_existing = (named and crit.method is not VerifyMethod.FAILS_BEFORE
                                  and bool(_CLAIMS_EXISTING.search(crit.statement)))
-                creatable = anywhere or any(matches_any(path, t.scope.paths) for t in tasks)
-                if creatable and not said_existing:
+                if any(_may_create(path, t) for t in before) and not said_existing:
                     continue
+                later = [t.title for t in tasks if t not in before and _may_create(path, t)]
+                if said_existing:
+                    why = "it says that test is already there"
+                elif later:
+                    why = (f"only {', '.join(repr(t) for t in later)} may create it, and this "
+                           "task does not come after it: add that to its depends_on, or "
+                           "check this where the file is made")
+                else:
+                    why = "no task's scope would let it be created"
                 files = _tree_files(root) if files is None else files
-                near = _nearest(path, files)
-                why = ("it says that test is already there" if said_existing
-                       else "no task's scope would let it be created")
+                near = _nearest(path, files) if named else []
                 found.append((task, (
                     f"task {task.title!r}, criterion {crit.statement!r}: `{crit.command}` "
-                    f"runs {path}, which is not in the workspace, and {why}"
+                    f"{'runs' if named else 'needs'} {path}, which is not in the workspace, "
+                    f"and {why}"
                     + (f"; the nearest files that are: {', '.join(near)}" if near else ""))))
     return found
 

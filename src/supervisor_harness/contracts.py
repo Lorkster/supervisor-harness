@@ -364,7 +364,18 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                         "items": {"type": "string"},
                         "description": "Titles of the tasks that must finish first; [] if none",
                     },
-                    "risk": {"type": "string", "enum": SEVERITIES},
+                    # Undescribed, a local model read it as difficulty: the Minesweeper
+                    # plan rated a new project's pure game engine "high", and under
+                    # envelope approval a high-risk task waits for the owner.
+                    "risk": {
+                        "type": "string", "enum": SEVERITIES,
+                        "description": (
+                            "The harm if this change is wrong: to security, to people's "
+                            "data, to code or users that already rely on what it changes, "
+                            "or by something that cannot be undone. Not how hard it is -- "
+                            "effort says that. New code nothing relies on yet is low"
+                        ),
+                    },
                     "effort": {"type": "string", "enum": ["small", "medium", "large"]},
                 },
                 # `scope_paths` and `depends_on` are required for the reason a
