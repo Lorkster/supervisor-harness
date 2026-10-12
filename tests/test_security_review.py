@@ -227,3 +227,24 @@ def test_a_pwsh_script_runs_under_windows_powershell_when_pwsh_is_missing(
 
     assert outcome.status is CriterionStatus.PASS, outcome.evidence
     assert "run with Windows PowerShell" in outcome.evidence
+
+
+@pytest.mark.skipif(shutil.which("powershell") is None, reason="needs Windows PowerShell")
+def test_the_agent_shell_runs_a_pwsh_script_as_the_harness_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Baseline 3: the harness ran `pwsh scripts/verify.ps1`; the implementer was refused it."""
+    (tmp_path / "verify.ps1").write_text("Write-Output 'all checks green'\nexit 0\n",
+                                         encoding="utf-8")
+    real_which = shutil.which
+    monkeypatch.setattr("supervisor_harness.core.dod.shutil.which",
+                        lambda name, *a, **k: None if name == "pwsh" else real_which(name))
+    box = Toolbox(tmp_path, Policy(allow_command_execution=True))
+    agent = AgentSpec(kind=AgentKind.EXECUTION, scope=Scope())
+
+    ran = box.call("run_command", {"command": "pwsh -NoProfile -File verify.ps1"}, agent)
+
+    assert ran.ok, ran.output
+    assert ran.output.startswith("$ pwsh -NoProfile -File verify.ps1\nexit=0\n"), (
+        "the harness reads a run by this head")
+    assert "all checks green" in ran.output and "run with Windows PowerShell" in ran.output

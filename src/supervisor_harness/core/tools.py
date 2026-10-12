@@ -70,7 +70,6 @@ from __future__ import annotations
 
 import fnmatch
 import re
-import shutil
 import subprocess
 import time
 from collections.abc import Collection
@@ -86,6 +85,7 @@ from .dod import (
     executable_name,
     inline_source_flag,
     powershell_refusal,
+    resolve_runner,
     run_bounded,
     shell_split,
     unquoted_metacharacter,
@@ -903,7 +903,7 @@ class Toolbox:
         # without the shell. An agent could hold a run open for as long as it
         # liked while the harness reported that it had stopped it.
         argv = shell_split(command)
-        executable = shutil.which(argv[0]) if argv else None
+        executable, substituted = resolve_runner(argv[0]) if argv else (None, "")
         if executable is None:
             return ToolResult(
                 "run_command", False,
@@ -922,7 +922,7 @@ class Toolbox:
         output = (completed.stdout + completed.stderr).strip()[-3000:]
         return ToolResult(
             "run_command", completed.returncode == 0,
-            f"$ {command}\nexit={completed.returncode}\n{output}",
+            f"$ {command}\nexit={completed.returncode}\n{output}{substituted}",
         )
 
     # -- dispatch ----------------------------------------------------------

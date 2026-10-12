@@ -10,9 +10,15 @@ unenforceable though it said exactly what to look for, and where, or what to run
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from supervisor_harness.config import Policy
 from supervisor_harness.core import phases
 from supervisor_harness.core.dod import (
+    check_what_a_review_names,
+    commands_a_review_names,
     fill_what_the_harness_can,
     read_grep_inspections,
     split_chained_commands,
@@ -146,3 +152,116 @@ def test_the_harness_reads_both_before_it_judges_a_plan() -> None:
     fill_what_the_harness_can(task, None)
 
     assert phases.unenforceable_criteria([task], Policy()) == []
+
+
+# -- a review that says named commands pass ------------------------------------------------
+
+
+def _review(statement: str, rubric: str = "", mandatory: bool = True) -> ExecutionTask:
+    return ExecutionTask(title="t", dod=[DoDCriterion(
+        statement=statement, method=VerifyMethod.REVIEW, rubric=rubric, mandatory=mandatory)])
+
+
+GATES = ("All three acceptance gates pass as separate commands: npm run check, "
+         "pwsh scripts/verify.ps1, npm run test:e2e")
+
+
+def test_a_review_that_says_gates_pass_gets_a_run_of_each() -> None:
+    """Baseline 3: the verifier blocked this review for want of runs it could quote."""
+    task = _review(GATES, "Each of the three commands exits 0 when run individually.")
+
+    notes = check_what_a_review_names(task)
+
+    *runs, review = task.dod
+    assert [c.command for c in runs] == ["npm run check", "pwsh scripts/verify.ps1",
+                                         "npm run test:e2e"]
+    assert all(c.method is VerifyMethod.COMMAND and c.mandatory and not c.expect for c in runs)
+    assert len({c.statement for c in runs}) == 3, "three criteria, told apart"
+    assert review.method is VerifyMethod.REVIEW and review.statement == GATES, (
+        "the review keeps its rubric, now with the runs to read")
+    assert notes and "3 command(s)" in notes[0]
+
+
+def test_a_command_the_task_already_runs_is_not_run_twice() -> None:
+    task = _review(GATES)
+    task.dod.insert(0, DoDCriterion(statement="the e2e suite passes", method=VerifyMethod.COMMAND,
+                                    command="npm  run test:e2e", mandatory=True))
+
+    check_what_a_review_names(task)
+    check_what_a_review_names(task)   # the send-back and the preparation both repair
+
+    assert [c.command for c in task.dod if c.command] == [
+        "npm  run test:e2e", "npm run check", "pwsh scripts/verify.ps1"]
+
+
+def test_an_optional_review_adds_optional_runs() -> None:
+    task = _review("`pytest -q tests/test_x.py` passes", mandatory=False)
+
+    check_what_a_review_names(task)
+
+    assert [(c.command, c.mandatory) for c in task.dod[:-1]] == [("pytest -q tests/test_x.py",
+                                                                    False)]
+
+
+def test_a_review_that_expects_a_failure_gets_no_clean_exit_run() -> None:
+    """A clean exit would prove the opposite of what it says."""
+    for statement in ("`npm run lint` fails on the unused import, and `npm test` passes",
+                      "npm run check rejects the old config; the rest pass"):
+        task = _review(statement)
+        assert check_what_a_review_names(task) == [] and len(task.dod) == 1, statement
+
+
+def test_a_review_that_claims_nothing_passes_is_left_alone() -> None:
+    task = _review("The README documents `npm run check` for contributors")
+
+    assert check_what_a_review_names(task) == [] and len(task.dod) == 1
+
+
+def test_only_a_review_is_given_runs() -> None:
+    """A criterion that runs or reads something already says what settles it."""
+    for method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.INSPECTION):
+        task = ExecutionTask(title="t", dod=[DoDCriterion(
+            statement="npm run check and npm run test:e2e pass", method=method,
+            command="npm run check", mandatory=True)])
+        assert check_what_a_review_names(task) == [] and len(task.dod) == 1, method
+
+
+@pytest.mark.parametrize(("text", "named"), [
+    ("npm run check passes after the change", ["npm run check"]),
+    ("npm run check and npm run test:e2e both pass", ["npm run check", "npm run test:e2e"]),
+    ("npm run all passes", ["npm run all"]),
+    ("npm run check, npm run lint and npm test each exit 0",
+     ["npm run check", "npm run lint", "npm test"]),
+    ("`make lint` and `pytest -q tests/x.py` pass", ["make lint", "pytest -q tests/x.py"]),
+    ("python tools/check_doc_refs.py exits 0 in the finished tree",
+     ["python tools/check_doc_refs.py"]),
+    # Runners that begin English sentences count only in backticks.
+    ("Make sure the docs pass review and go through the changelog", []),
+    # Nothing the harness would refuse to run as a criterion.
+    ("`curl https://example.com` and `python -c 'import os'` pass", []),
+    ("`npm run check && npm test` passes", []),
+])
+def test_the_commands_a_review_names(text: str, named: list[str]) -> None:
+    assert commands_a_review_names(text) == named
+
+
+def test_the_verifier_reads_the_runs_the_review_named(tmp_path: Path) -> None:
+    """End to end: repaired, run by the harness, and in front of the verifier."""
+    from supervisor_harness.agents.brief import build_verifier_brief
+    from supervisor_harness.core.dod import verify_criterion
+    from supervisor_harness.models import RunState
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "gate.py").write_text("print('gate green')\n", encoding="utf-8")
+    task = _review("All gates pass: python tools/gate.py, pytest --version")
+
+    fill_what_the_harness_can(task, tmp_path)
+    for crit in task.dod:
+        outcome = verify_criterion(crit, tmp_path, Policy(), allow_commands=True)
+        if outcome is not None:
+            crit.status, crit.evidence = outcome.status, outcome.evidence
+
+    brief = build_verifier_brief(RunState(), task)
+    ran = brief.split("What the harness already ran", 1)[1]
+    assert "$ python tools/gate.py\nexit=0" in ran.replace("  ", "") and "gate green" in ran
+    assert "$ pytest --version" in ran
