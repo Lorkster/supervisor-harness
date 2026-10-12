@@ -7,11 +7,13 @@ the workspace, so it is asked here, once, where the paths come in.
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 from pathlib import Path
 
 from ..models import ExecutionTask, VerifyMethod
+from .dod import shell_split
 from .paths import _META, NOTHING, matches_any
 
 #: Directories a search for "the file a model meant" never descends into:
@@ -148,6 +150,90 @@ def correct_inspection_paths(task: ExecutionTask, workspace: str | Path | None) 
         notes.append(f"criterion {crit.statement!r} named {path}, which is not in the tree; "
                      f"it checks {same[0]}, the one file of that name")
     return notes
+
+#: A criterion's claim that the test it runs is there already: "the existing
+#: tile-loader tests still pass". Not "still" or "existing" alone: "fetchJson
+#: still throws" and "using the existing helper" are about the code, and its
+#: test may be the one the task writes.
+_CLAIMS_EXISTING = re.compile(
+    r"\b(?:still|continues?\s+to)\s+pass(?:es)?\b"
+    r"|\b(?:pre-)?existing(?:\s+[\w'-]+){0,3}?\s+(?:tests?|suites?|specs?|behaviou?rs?)\b",
+    re.IGNORECASE)
+#: A file name's extension, which is what tells a path from a word.
+_EXTENSION = re.compile(r"\.[A-Za-z]\w{0,7}$")
+
+
+def _command_paths(command: str) -> list[str]:
+    """The workspace paths a criterion's command names: ``tests/x.test.ts``,
+    ``tests/test_a.py::test_b`` -- at least one directory and an extension."""
+    paths: list[str] = []
+    for token in shell_split(command)[1:]:
+        if token.startswith("-") or "=" in token or _META & set(token):
+            continue
+        path = token.split("::", 1)[0].replace("\\", "/").removeprefix("./")
+        if ("/" not in path or not _EXTENSION.search(path.rsplit("/", 1)[-1])
+                or path.startswith("/") or re.match(r"[A-Za-z]:", path)
+                or ".." in path.split("/")):
+            continue
+        paths.append(path)
+    return paths
+
+
+def _nearest(path: str, files: list[str]) -> list[str]:
+    """Up to three files the model may have meant: the same name elsewhere, or the
+    closest paths of the same kind (``.test.ts`` for ``.test.ts``)."""
+    name = path.rsplit("/", 1)[-1]
+    same = [f for f in files if f.rsplit("/", 1)[-1] == name]
+    if same:
+        return same[:3]
+    kind = "." + name.split(".", 1)[1]
+    return difflib.get_close_matches(path, [f for f in files if f.endswith(kind)], n=3,
+                                     cutoff=0.5)
+
+
+def criteria_running_missing_files(tasks: list[ExecutionTask],
+                             workspace: str | Path | None) -> list[tuple[ExecutionTask, str]]:
+    """Criteria that run a file the workspace does not have, and no task will make.
+
+    Measured in baseline 3: "The existing tile-loader 404 absent-tile behavior
+    still passes after the code split", run as `npm run test --
+    tests/data/tiles/loader.test.ts` -- a file that never existed, so the
+    criterion failed before the change and after it, and said nothing about
+    the tile loader either time. A file a criterion runs may be a test the
+    plan will write, so a missing one is a problem only where the criterion
+    says the test is already there, or no task's scope would let anyone create
+    it. Each comes with the files nearest what was written, for the planner to
+    choose from.
+    """
+    root = Path(workspace) if workspace else None
+    if root is None or not root.is_dir():
+        return []
+    anywhere = any(not t.scope.paths for t in tasks)   # no paths is the whole workspace
+    found: list[tuple[ExecutionTask, str]] = []
+    files: list[str] | None = None
+    for task in tasks:
+        for crit in task.dod:
+            if (crit.method not in (VerifyMethod.COMMAND, VerifyMethod.TEST,
+                                    VerifyMethod.FAILS_BEFORE) or not crit.command.strip()):
+                continue
+            for path in _command_paths(crit.command):
+                if (root / path).exists():
+                    continue
+                said_existing = (crit.method is not VerifyMethod.FAILS_BEFORE
+                                 and bool(_CLAIMS_EXISTING.search(crit.statement)))
+                creatable = anywhere or any(matches_any(path, t.scope.paths) for t in tasks)
+                if creatable and not said_existing:
+                    continue
+                files = _tree_files(root) if files is None else files
+                near = _nearest(path, files)
+                why = ("it says that test is already there" if said_existing
+                       else "no task's scope would let it be created")
+                found.append((task, (
+                    f"task {task.title!r}, criterion {crit.statement!r}: `{crit.command}` "
+                    f"runs {path}, which is not in the workspace, and {why}"
+                    + (f"; the nearest files that are: {', '.join(near)}" if near else ""))))
+    return found
+
 
 def _tree_files(root: Path) -> list[str]:
     found: list[str] = []

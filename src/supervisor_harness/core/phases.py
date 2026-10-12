@@ -58,7 +58,8 @@ from .dod import (
     validate_criteria,
 )
 from .paths import relative_patterns
-from .placement import correct_inspection_paths
+from .placement import correct_inspection_paths, criteria_running_missing_files
+from .planner import MISSING_FILE_FIX
 
 # --------------------------------------------------------------------------
 # Planning
@@ -413,12 +414,15 @@ def resolve_dependencies(tasks: list[ExecutionTask]) -> dict[str, list[str]]:
     return notes
 
 
-def unenforceable_criteria(tasks: list[ExecutionTask], policy: Policy) -> list[str]:
+def unenforceable_criteria(tasks: list[ExecutionTask], policy: Policy,
+                           workspace: Path | None = None) -> list[str]:
     """Each proposed criterion the harness could not enforce, named, with why.
 
     The model's own criteria only, before any quality bar is added: those are
     the harness's, and are always enforceable. A line per criterion, because the
-    point is to hand it back to the model that wrote it.
+    point is to hand it back to the model that wrote it. With the ``workspace``,
+    also each one that runs a test file nobody has or will write
+    (`placement.criteria_running_missing_files`).
     """
     lines: list[str] = []
     for task in tasks:
@@ -436,7 +440,7 @@ def unenforceable_criteria(tasks: list[ExecutionTask], policy: Policy) -> list[s
                 if refusal:
                     lines.append(f"task {task.title!r}, criterion {crit.statement!r}: "
                                  f"the harness will not run {crit.command!r}: {refusal}")
-    return lines
+    return lines + [line for _, line in criteria_running_missing_files(tasks, workspace)]
 
 
 def revision_prompt(user: str, weak: list[str]) -> str:
@@ -453,7 +457,7 @@ def revision_prompt(user: str, weak: list[str]) -> str:
         "runner, with no `;`, `&&`, `|` or redirection -- several gates are several "
         "criteria. If a criterion has no such command, make it an `inspection` "
         "(`expect`: `path/to/file: text that must be present`, and no command: the "
-        "harness reads the file itself) or a `review` with a `rubric`."
+        f"harness reads the file itself) or a `review` with a `rubric`. {MISSING_FILE_FIX}"
     )
 
 
@@ -479,6 +483,9 @@ def prepare_tasks(
             entries.append(f"weak criterion ({issue.severity.value}): {issue.problem}")
         if entries:
             notes[task.id] = entries
+    # What the send-back did not put right, where the owner sees it before approving.
+    for task, line in criteria_running_missing_files(tasks, workspace):
+        notes.setdefault(task.id, []).append(f"criterion runs a missing file: {line}")
     return tasks, notes
 
 

@@ -64,10 +64,17 @@ NOW = ("Your reading time is up. Call propose_plan now with the plan as it stand
        "name in each task's scope the files you know it changes.")
 
 
+#: How a criterion that runs a file not in the workspace is put right, in both
+#: send-backs (`phases.revision_prompt` too).
+MISSING_FILE_FIX = ("A criterion that runs a file not in the workspace must name the test "
+                    "file that is there, or belong to a plan in which a task's scope "
+                    "includes the new file it will write.")
+
+
 def send_back(weak: list[str]) -> str:
     """The criteria the harness cannot enforce, returned in the conversation."""
     listed = "\n".join(f"- {line}" for line in weak)
     return ("These definition-of-done criteria cannot be checked by the harness:\n\n"
-            f"{listed}\n\nFix each one -- one command the harness can run, with no `&&` or "
+            f"{listed}\n\nFix each one: one command the harness can run, with no `&&` or "
             "`|`, or an inspection whose expect reads `path: text` and which has no "
-            "command -- and call propose_plan again with the whole plan.")
+            f"command. {MISSING_FILE_FIX} Then call propose_plan again with the whole plan.")

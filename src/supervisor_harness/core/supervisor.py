@@ -718,7 +718,8 @@ class Supervisor:
             proposed = parse_tasks(plan, state.id, state.workspace)
             for task in proposed:
                 fill_what_the_harness_can(task, self.workspace)
-            weak = phases.unenforceable_criteria(proposed, self.config.policy)
+            weak = phases.unenforceable_criteria(proposed, self.config.policy,
+                                                 self.workspace)
             if weak:
                 await session.anote("synthesis sent back once: criteria it proposed cannot "
                                     "be enforced", criteria=len(weak), weak=weak)
@@ -758,7 +759,7 @@ class Supervisor:
         # What the harness fills in itself is not the model's to fix.
         for task in proposed:
             fill_what_the_harness_can(task, self.workspace)
-        weak = phases.unenforceable_criteria(proposed, self.config.policy)
+        weak = phases.unenforceable_criteria(proposed, self.config.policy, self.workspace)
         if not weak:
             return data
         await session.anote("synthesis sent back once: criteria it proposed cannot be "
