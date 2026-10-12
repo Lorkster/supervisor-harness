@@ -113,6 +113,7 @@ from .conversation import (
 from .conversation import ROLE as CONVERSATION_ROLES
 from .dod import (
     VerificationOutcome,
+    detect_test_command,
     fill_what_the_harness_can,
     quotes_the_file,
     verify_criterion,
@@ -1118,8 +1119,16 @@ class Supervisor:
         for task in state.tasks.values():
             if task.status not in (TaskStatus.AWAITING_VERIFICATION, TaskStatus.IN_PROGRESS):
                 continue
+            if task.status is TaskStatus.AWAITING_VERIFICATION:
+                self._find_the_suite(session, task, tree)
             for crit in task.dod:
                 if crit.status is not CriterionStatus.UNVERIFIED:
+                    continue
+                if (task.status is TaskStatus.IN_PROGRESS and crit.suite
+                        and not crit.command.strip()):
+                    # Not blocked yet: the project may not have its runner until the
+                    # task that makes it is done, and a block stands until a checkpoint
+                    # reopens the task -- an attempt spent on a runner not yet written.
                     continue
                 outcome: VerificationOutcome | None
                 if crit.method is VerifyMethod.FAILS_BEFORE:
@@ -1150,6 +1159,30 @@ class Supervisor:
                     },
                     actor="harness",
                 )
+
+    def _find_the_suite(self, session: RunSession, task: ExecutionTask, tree: Path) -> None:
+        """Give the harness's test bar the project's suite, if the plan found none.
+
+        The bar's command is looked for when the plan is made, from the project
+        as it is then. A project built from nothing has no runner then: on the
+        Minesweeper brief the bar went on with no command, and a criterion with
+        no command is blocked, never passed -- the task that set the project up
+        and the task that built its page could not have been verified whatever
+        they did. By the time a task is done the project has its `package.json`,
+        so the suite is looked for again there, on the tree the task left.
+        """
+        pending = [c for c in task.dod if c.suite and not c.command.strip()
+                   and c.status is CriterionStatus.UNVERIFIED]
+        command = detect_test_command(tree) if pending else ""
+        if not command:
+            return
+        for crit in pending:
+            crit.command = command
+        task.updated_at = now_iso()
+        session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        session.note(f"the project had no test suite when task {task.title!r} was planned; "
+                     f"its test bar runs `{command}`, found on the tree the task left",
+                     task_id=task.id)
 
     def _attributed(
         self, state: RunState, crit: DoDCriterion, outcome: VerificationOutcome

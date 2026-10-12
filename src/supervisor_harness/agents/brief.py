@@ -372,6 +372,10 @@ def _dod_block(criteria: list[DoDCriterion]) -> str:
         lines.append(f"  - Verified by: {crit.method.value}")
         if crit.command:
             lines.append(f"  - Command: `{crit.command}`")
+        elif crit.suite:
+            lines.append("  - Command: the project's test suite, found when the task is done "
+                         "-- the `test` script in package.json, or pytest, go test or "
+                         "cargo test")
         if crit.expect:
             lines.append(f"  - Passes when: {crit.expect}")
         if crit.rubric:
