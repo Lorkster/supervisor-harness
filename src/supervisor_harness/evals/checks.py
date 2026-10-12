@@ -69,7 +69,7 @@ def answered(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result
 def criteria_enforceable(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result:
     """No proposed criterion is one the harness would have to send back."""
     tasks = [_filled(t, ws) for t in out.tasks]
-    weak = phases.unenforceable_criteria(tasks, Policy())
+    weak = phases.unenforceable_criteria(tasks, Policy(), ws)
     return not weak, "; ".join(weak)[:600]
 
 
