@@ -66,9 +66,10 @@ NOW = ("Your reading time is up. Call propose_plan now with the plan as it stand
 
 #: How a criterion that runs a file not in the workspace is put right, in both
 #: send-backs (`phases.revision_prompt` too).
-MISSING_FILE_FIX = ("A criterion that runs a file not in the workspace must name the test "
-                    "file that is there, or belong to a plan in which a task's scope "
-                    "includes the new file it will write.")
+MISSING_FILE_FIX = ("A criterion that needs a file not in the workspace must name the test "
+                    "file that is there, or belong to the task whose scope makes that file "
+                    "or to a task that depends_on it -- a check that runs npm or npx needs "
+                    "the task that writes package.json to come first.")
 
 
 def send_back(weak: list[str]) -> str:

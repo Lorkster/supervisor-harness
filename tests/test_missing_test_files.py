@@ -39,7 +39,7 @@ TILES = "The existing tile-loader 404 absent-tile behavior still passes after th
 
 @pytest.fixture
 def tree(tmp_path: Path) -> Path:
-    for path in ("tests/data/places.test.ts", "tests/data/realTiles.test.ts",
+    for path in ("package.json", "tests/data/places.test.ts", "tests/data/realTiles.test.ts",
                  "tests/data/catalogue.test.ts", "e2e/smoke.spec.ts", "tests/test_login.py"):
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / path).write_text("", encoding="utf-8")
@@ -116,12 +116,100 @@ def test_a_new_test_a_task_will_write_is_left_alone(tree: Path, paths: list[str]
     assert _flagged([task], tree) == []
 
 
-def test_another_tasks_scope_can_write_it(tree: Path) -> None:
-    tasks = [_task("The offline spec passes", "npx playwright test e2e/offline.spec.ts",
-                   ["src/"]),
-             _task("Write the spec", "npx playwright test e2e/smoke.spec.ts", ["e2e/"])]
+def test_another_tasks_scope_can_write_it_only_if_this_one_comes_after(tree: Path) -> None:
+    check = _task("The offline spec passes", "npx playwright test e2e/offline.spec.ts",
+                  ["src/"], title="Wire the spec into CI")
+    writer = _task("Write the spec", "npx playwright test e2e/smoke.spec.ts", ["e2e/"],
+                   title="Write the offline spec")
 
-    assert _flagged(tasks, tree) == []
+    (line,) = _flagged([check, writer], tree)
+    assert "only 'Write the offline spec' may create it" in line and "depends_on" in line
+
+    check.depends_on = ["write the offline spec"]                  # a title, as planned
+    assert _flagged([check, writer], tree) == []
+    check.depends_on = [writer.id]                                 # an id, once resolved
+    assert _flagged([check, writer], tree) == []
+
+
+# -- a new project: what a runner needs, and the order it comes in --------------------
+
+
+def _engine_and_setup(tmp_path: Path) -> tuple[ExecutionTask, ExecutionTask]:
+    """The first Minesweeper run's plan: the engine first, the setup after it."""
+    engine = _task("tests/engine.test.ts has ten passing tests",
+                   "npx vitest run tests/engine.test.ts",
+                   ["src/game/engine.ts", "tests/engine.test.ts"],
+                   title="Implement the pure game engine")
+    setup = _task("npm run check passes", "npm run check",
+                  ["package.json", "tsconfig.json", "vite.config.ts"],
+                  title="Set up the build")
+    setup.depends_on = ["Implement the pure game engine"]
+    return engine, setup
+
+
+def test_a_runner_that_needs_a_package_json_made_later_is_caught(tmp_path: Path) -> None:
+    engine, setup = _engine_and_setup(tmp_path)
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "package.json").write_text("{}", encoding="utf-8")  # not the project's
+
+    (line,) = _flagged([engine, setup], tmp_path)
+
+    assert line.startswith("task 'Implement the pure game engine'")
+    assert "needs package.json, which is not in the workspace" in line
+    assert "only 'Set up the build' may create it, and this task does not come after it" in line
+    assert "nearest files" not in line and "already there" not in line, "implied, not written"
+
+
+def test_the_same_plan_in_order_is_left_alone(tmp_path: Path) -> None:
+    engine, setup = _engine_and_setup(tmp_path)
+    setup.depends_on, engine.depends_on = [], ["Set up the build"]
+    # "still passes" is about a test file; package.json is the runner's, not one it says.
+    engine.dod[0].statement, engine.dod[0].command = "the engine's tests still pass", "npm test"
+
+    assert _flagged([engine, setup], tmp_path) == []
+
+
+@pytest.mark.parametrize("command", ["yarn test", "pnpm exec vitest run", "npm test"])
+def test_every_package_runner_needs_the_package(tmp_path: Path, command: str) -> None:
+    engine, setup = _engine_and_setup(tmp_path)
+    engine.dod[0].command = command
+
+    (line,) = _flagged([engine, setup], tmp_path)
+    assert "needs package.json" in line
+
+
+def test_coming_after_counts_however_far_back(tmp_path: Path) -> None:
+    engine, setup = _engine_and_setup(tmp_path)
+    setup.depends_on = []
+    view = _task("lint passes", "npm run lint", ["src/view/"], title="Build the view")
+    view.depends_on = ["Set up the build"]
+    engine.depends_on = ["Build the view"]
+
+    assert _flagged([engine, view, setup], tmp_path) == []
+
+
+def test_a_prerequisite_with_no_scope_may_make_anything(tmp_path: Path) -> None:
+    engine, setup = _engine_and_setup(tmp_path)
+    setup.scope.paths, setup.depends_on, engine.depends_on = [], [], ["Set up the build"]
+
+    assert _flagged([engine, setup], tmp_path) == []
+
+
+def test_a_project_with_its_package_json_needs_nothing_more(tree: Path) -> None:
+    assert _flagged([_task("the unit tests pass", "npm test", ["src/"])], tree) == []
+    assert _flagged([_task("lint passes", "yarn lint", ["src/"]),
+                     _task("e2e passes", "pnpm exec playwright test", ["src/"])], tree) == []
+
+
+def test_risk_is_described_as_harm_not_difficulty() -> None:
+    """Undescribed, a local model rated a new project's game engine "high" -- for the owner."""
+    from supervisor_harness.contracts import SYNTHESIS_SCHEMA
+
+    risk = SYNTHESIS_SCHEMA["properties"]["tasks"]["items"]["properties"]["risk"]
+    assert "harm if this change is wrong" in risk["description"]
+    assert "Not how hard it is" in risk["description"]
+    assert risk["description"].endswith("New code nothing relies on yet is low")
+    assert "depends_on" in MISSING_FILE_FIX and "package.json" in MISSING_FILE_FIX
 
 
 @pytest.mark.parametrize("statement", [
