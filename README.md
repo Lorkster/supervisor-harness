@@ -966,6 +966,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `implementer_loop` | "turns" | `"conversation"`: implementers and verifiers are each one conversation with native tool calls (`core/conversation.py`), where the provider takes tools natively |
 | `planner_loop` | "conversation" | The synthesis that writes tasks reads the workspace with read-only tools before it plans, and answers through `propose_plan` (`core/planner.py`); `"one_shot"` asks for one JSON answer instead. A provider without native tools is always asked one-shot |
 | `veto_review` | true | **Protected.** Under envelope approval, a reviewer that can only veto reads each task the gate passed (`core/review.py`) |
+| `requirements_ledger` | true | **Protected.** Before the plan, a reader lists what the request and the documents it points to require, as quotes the harness finds where they are said to be; the plan must deliver each or set it aside, and have each tested by a task other than its builder or say why not (`core/requirements.py`) |
 | `execution_worktree` | true | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
 | `apply_lessons` | true | Inject past lessons into briefs |
 | `lesson_decay_after_runs` | 10 | Runs a lesson may go unconfirmed before its confidence falls |
@@ -1036,6 +1037,7 @@ src/supervisor_harness/
     planner.py     the synthesis as a conversation that reads before it plans
     review.py      batch G: a second reading of each task, which can only veto
     observe.py     batch J: the run's page rendered, for a goal check to see, not infer
+    requirements.py batch L: what the request requires, quoted, accounted for and tested
     paths.py       path normalisation and scope matching
     placement.py   a model's paths placed in the tree, when they name no file
     baseline.py    the commit a run measures its whole-repository checks against

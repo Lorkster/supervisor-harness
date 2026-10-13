@@ -1018,6 +1018,67 @@ test and an opened-from-disk test, which measure the benchmark, not the harness.
 J first: on its own it would have failed run 1's page task on its first
 attempt, before sound, animation and browser tests were built on top of it.
 
+### After run 4: verified against the plan, short of the brief
+
+*Written 2026-10-13.* Three runs on batches J and K, the same brief, the same
+hidden suite of 73 tests:
+
+| Run | Harness | Tasks verified | Project gates | Hidden logic | Hidden browser |
+|---|---|---|---|---|---|
+| 2 | J | 1/4 | pass | 46/46 | 26/27 |
+| 3 | J, K, #105 | 2/4 | pass | 46/46 | 27/27 |
+| 4 | J, K, #105, #106 | 6/6 | pass | 44/46 | 24/27 |
+
+Run 4 verified every task, and the hidden suite failed five things: the mine
+count, a flood next to a flag, the timer, the best time, and the state
+changing before an animation ends. Each is a sentence of the brief. None was a
+criterion of the plan or an expectation of the goal, and the implementers' own
+73 tests, written for the plan they were given, tested none of them. The
+verifier judges what the plan asks; the plan asks what the planner happened to
+write down; the brief has about fifty sentences someone could check. Run 3's
+perfect score and run 4's five misses are the same harness. What differed is
+what one planner wrote down.
+
+### Batch L — Every requirement of the brief, accounted for and tested
+
+1. **A ledger, before planning.** A reader -- a conversation with the
+   read-only tools, before the synthesis -- lists what the request and the
+   documents it points to require: each a quote of the words that state it,
+   and where they are. The harness keeps only quotes it finds in that source,
+   so no paraphrase becomes a requirement, numbers them `R1`, `R2`, ..., and
+   holds them (`requirements_set`). A second reading is shown the list and
+   asked only what it leaves out; what it quotes is added. The report shows
+   the ledger, and what became of each requirement.
+2. **The plan accounts for every requirement.** Each is delivered by a task
+   (its id in that task's `requirements`), or set aside with a reason. One no
+   task delivers and nobody set aside goes back to the planner by id, in the
+   plan's one send-back. The delivering task gains a review criterion quoting
+   its requirements, judged when it settles.
+3. **Tested by someone other than the builder.** Each delivered requirement is
+   tested by a different task, in its `acceptance_tests` (a command and the ids
+   it covers), or listed as not tested, with a reason. The tests are written
+   from the quote, after the work they test (the harness adds the dependency),
+   and each test's title carries its id (`[R7] the timer stops at 999`). The
+   testing task is done when the harness finds every id in its files, the
+   command passes, and its verifier finds that each test checks what its quote
+   says. A failure that is the product's fault is a finding, routed to the task
+   that delivered it (batch K), or fixed within the run's plan (#101).
+4. **The builder cannot rewrite the test.** The testing task's files are
+   forbidden paths for the tasks whose requirements they test, enforced by the
+   toolbox as every scope is.
+5. **Judges only tighten.** A requirement adds checks. Set-aside and not-tested
+   reasons are the planner's, shown to the owner, and pass nothing.
+
+**Why after, not first.** Tests written first fail every suite gate that runs
+before their task: the harness's own "the suite passes" bar and the project's
+`check`, for every task in between, and parallel tasks would fail each other's.
+What made the hidden suite work is who wrote it and from what, not when.
+
+Measured on Minesweeper against the hidden suite, over several runs, not one.
+If misses remain that a test cannot hold -- what a person sees while playing --
+a third layer: the result played, not only looked at (click, wait, look
+again), and the whole brief read against it before the run completes.
+
 ---
 
 ## The gate between the parts

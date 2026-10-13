@@ -723,6 +723,34 @@ class GoalExpectation:
 
 
 @dataclass
+class Requirement:
+    """One thing the request, or a document it points to, requires of the result.
+
+    Batch L: listed before the plan by a reader, kept only when ``quote`` is
+    found in ``source`` (``request``, or a workspace path), numbered ``R1``,
+    ``R2``, ... and held by the run. The plan must deliver each, or set it
+    aside with a reason, and have a task other than the one that built it test
+    it, or say why not. The reasons are the planner's and pass nothing.
+    """
+
+    id: str = ""
+    quote: str = ""
+    source: str = "request"
+    # ``reader``, or ``audit``: the second reading, asked what the first left out.
+    found_by: str = "reader"
+    set_aside: str = ""
+    not_tested: str = ""
+
+
+@dataclass
+class AcceptanceTests:
+    """The tests one task writes for requirements another task delivered."""
+
+    requirements: list[str] = field(default_factory=list)
+    command: str = ""
+
+
+@dataclass
 class ExecutionTask:
     """Work the user may approve, with a verifiable finish line."""
 
@@ -743,6 +771,10 @@ class ExecutionTask:
     # which sends a narrowed task to the owner rather than ahead.
     clamped: list[str] = field(default_factory=list)
     effort: str = "medium"   # small | medium | large
+    # The requirements this task delivers (`Requirement.id`), and the acceptance
+    # tests it writes for requirements other tasks delivered: from the plan.
+    requirements: list[str] = field(default_factory=list)
+    acceptance: list[AcceptanceTests] = field(default_factory=list)
     status: TaskStatus = TaskStatus.PROPOSED
     decision: Decision | None = None
     decision_note: str = ""
@@ -958,6 +990,8 @@ class RunState:
     worktree: RunWorktree | None = None
     # What the result must be, for whoever asked: see `GoalExpectation`.
     goal: list[GoalExpectation] = field(default_factory=list)
+    # What the request requires, quoted: see `Requirement`.
+    requirements: list[Requirement] = field(default_factory=list)
     envelope_grant: EnvelopeGrant | None = None
     drift: dict[str, DriftAssessment] = field(default_factory=dict)
     # What the harness had to repair before each answer could be used, by kind,
