@@ -155,6 +155,41 @@ async def test_a_finding_reopens_the_verified_task_whose_work_it_names(
     assert [e.statement for e in reloaded.goal] == [expectation.statement], "on the log"
 
 
+async def test_the_check_asks_whether_the_problem_is_there(supervisor: Supervisor) -> None:
+    """Minesweeper run 5: routed as "would whoever asked find this true", a report
+    that another task's test file was wrong was judged false, and failed the task."""
+    session, me, page, _ = _two_tasks(supervisor)
+    await supervisor._route_findings(session, me, _turn(
+        ("supervisor", "finding", "src/page.ts:1 never sets data-state")))
+
+    (check,) = [c for c in page.dod if c.goal_id]
+    assert check.statement.startswith("Reported by another agent, and checked:")
+    assert "Pass if the problem it describes is not there" in check.rubric
+    assert "fail only if it is still there in this task's work" in check.rubric
+    assert "would find this true" not in check.rubric
+
+
+async def test_a_finding_goes_to_every_task_whose_files_it_names(
+    supervisor: Supervisor,
+) -> None:
+    """Run 5's finding was about a test file and named the engine beside it; only the
+    engine, the first task to match, was reopened."""
+    from supervisor_harness.models import Decision, ExecutionTask, Scope, TaskStatus
+
+    session, me, page, _ = _two_tasks(supervisor)
+    (supervisor.workspace / "src" / "page.test.ts").write_text("", encoding="utf-8")
+    tester = ExecutionTask(title="Test the page", scope=Scope(paths=["src/page.test.ts"]),
+                           status=TaskStatus.VERIFIED, attempts=1, decision=Decision.APPROVE)
+    session.state.tasks[tester.id] = tester
+
+    await supervisor._route_findings(session, me, _turn(
+        ("supervisor", "finding",
+         "src/page.test.ts expects the wrong text; src/page.ts is right")))
+
+    assert page.status is TaskStatus.APPROVED and tester.status is TaskStatus.APPROVED
+    assert sorted(e.task_id for e in session.state.goal) == sorted([page.id, tester.id])
+
+
 async def test_a_task_not_yet_done_just_gains_the_check(supervisor: Supervisor) -> None:
     from supervisor_harness.models import TaskStatus
 

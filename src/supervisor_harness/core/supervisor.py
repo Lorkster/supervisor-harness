@@ -80,6 +80,7 @@ from ..models import (
     EscalationReason,
     ExecutionTask,
     GoalExpectation,
+    Message,
     MessageKind,
     Phase,
     Requirement,
@@ -2480,36 +2481,45 @@ class Supervisor:
         mine = state.tasks.get(agent.task_id or "")
         toolbox = self._toolbox_for(state)
         for message in turn.messages:
-            if (message.recipient != SUPERVISOR or message.kind not in _FINDING_KINDS
-                    or sum(1 for e in state.goal if e.source.startswith("agent "))
-                    >= MAX_ROUTED_FINDINGS):
+            if message.recipient != SUPERVISOR or message.kind not in _FINDING_KINDS:
                 continue
             named = _files_named(f"{message.subject}\n{message.content}", toolbox)
-            owner = next((t for t in state.approved_tasks()
+            # Every task whose files it names, not the first: Minesweeper run 5's
+            # finding was about a test file and named the engine beside it, and
+            # only the engine was reopened. A task it does not concern passes the
+            # check, which asks whether the problem is in its work.
+            for owner in [t for t in state.approved_tasks()
                           if (mine is None or t.id != mine.id)
-                          and any(matches_any(rel, t.scope.paths) for rel in named)), None)
-            if owner is None:
-                continue
-            said = " -- ".join(p for p in (message.subject, message.content) if p)[:400]
-            expectation = GoalExpectation(statement=said, task_id=owner.id,
-                                          source=f"agent {agent.id}")
-            await session.aemit(EventType.GOAL_SET,
-                                {"goal": to_jsonable([*state.goal, expectation])})
-            owner.dod.append(phases.goal_criterion(expectation, state.prompt))
-            found_by = f"{agent.id}, working on {mine.title!r}" if mine else agent.id
-            owner.action = f"{owner.action}\n\nFound by {found_by}: {said}"
-            reopened = (owner.status is TaskStatus.VERIFIED
-                        and owner.attempts < self.config.policy.max_task_attempts)
-            if reopened:
-                owner.status = TaskStatus.APPROVED
-                owner.assigned_agent_id = None
-                await self._reopen_criteria(session, owner)
-            owner.updated_at = now_iso()
-            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(owner)})
-            await session.anote(
-                "a finding was routed to the task whose work it concerns"
-                + (", which was reopened" if reopened else ""),
-                actor=agent.id, task_id=owner.id, message_id=message.id)
+                          and any(matches_any(rel, t.scope.paths) for rel in named)]:
+                await self._route_one(session, agent, mine, message, owner)
+
+    async def _route_one(self, session: RunSession, agent: AgentSpec,
+                         mine: ExecutionTask | None, message: Message,
+                         owner: ExecutionTask) -> None:
+        """One finding onto one task's definition of done, reopening it if verified."""
+        state = session.state
+        if sum(1 for e in state.goal if e.source.startswith("agent ")) >= MAX_ROUTED_FINDINGS:
+            return
+        said = " -- ".join(p for p in (message.subject, message.content) if p)[:400]
+        expectation = GoalExpectation(statement=said, task_id=owner.id,
+                                      source=f"agent {agent.id}")
+        await session.aemit(EventType.GOAL_SET,
+                            {"goal": to_jsonable([*state.goal, expectation])})
+        owner.dod.append(phases.finding_criterion(expectation, state.prompt))
+        found_by = f"{agent.id}, working on {mine.title!r}" if mine else agent.id
+        owner.action = f"{owner.action}\n\nFound by {found_by}: {said}"
+        reopened = (owner.status is TaskStatus.VERIFIED
+                    and owner.attempts < self.config.policy.max_task_attempts)
+        if reopened:
+            owner.status = TaskStatus.APPROVED
+            owner.assigned_agent_id = None
+            await self._reopen_criteria(session, owner)
+        owner.updated_at = now_iso()
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(owner)})
+        await session.anote(
+            "a finding was routed to the task whose work it concerns"
+            + (", which was reopened" if reopened else ""),
+            actor=agent.id, task_id=owner.id, message_id=message.id)
 
     async def _look_at_the_goal(self, session: RunSession,
                                 task: ExecutionTask) -> tuple[str, list[str]]:

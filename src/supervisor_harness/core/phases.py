@@ -512,6 +512,28 @@ def goal_criterion(expectation: GoalExpectation, request: str) -> DoDCriterion:
     )
 
 
+def finding_criterion(expectation: GoalExpectation, request: str) -> DoDCriterion:
+    """The check a finding routed to a task becomes: is the problem it reports there?
+
+    Not `goal_criterion`, whose question -- would whoever asked find this true? --
+    reads a problem report backwards. Minesweeper run 5: a finding that "the
+    failing suite is another task's test file with wrong expectations", routed
+    to the engine, was judged false and failed the engine, which was right.
+    """
+    asked = request.strip().splitlines()[0][:300] if request.strip() else "the request"
+    return DoDCriterion(
+        statement=f"Reported by another agent, and checked: {expectation.statement}",
+        method=VerifyMethod.REVIEW,
+        rubric=(f"The run's goal: {asked}. Another agent reported this about the work of "
+                f"this task: {expectation.statement}. Check it against the result as it "
+                "stands. Pass if the problem it describes is not there -- fixed, never there, "
+                "or not in this task's work -- and say which; fail only if it is still there "
+                "in this task's work, citing file:line or what you see."),
+        mandatory=True,
+        goal_id=expectation.id,
+    )
+
+
 def revision_prompt(user: str, weak: list[str]) -> str:
     """The synthesis request again, with what made the last answer unusable."""
     listed = "\n".join(f"- {line}" for line in weak)
