@@ -14,6 +14,14 @@ terms of it.** An agent proposes; policy disposes. What that means in practice �
 and where each part of it lives in the code — is
 [`docs/reasoning-control-plane.md`](docs/reasoning-control-plane.md).
 
+<p align="center">
+  <img src="docs/images/run-lifecycle.svg" width="100%"
+       alt="The lifecycle of a run: created, analyzing, synthesizing, awaiting approval, executing, verifying, checkpoint, awaiting owner, improving, complete. A failed checkpoint reopens the tasks that fell short; report mode goes straight from synthesizing to improving.">
+</p>
+
+<details>
+<summary>Plain-text version</summary>
+
 ```
                  ┌──────────── supervisor ────────────┐
    your task ──▶ │ plan → analyse → synthesise → you   │
@@ -25,6 +33,11 @@ and where each part of it lives in the code — is
                  │                      lessons ───────┼──▶ next run
                  └────────────────────────────────────┘
 ```
+
+Every phase and the conditions on each arrow:
+[`docs/architecture.md`](docs/architecture.md#the-phase-machine).
+
+</details>
 
 ---
 

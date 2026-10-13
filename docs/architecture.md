@@ -21,6 +21,9 @@ place and not the others is worse than a plain one that renders everywhere.
 Every arrow is a `PHASE_CHANGED` event on the run's log, so a run resumes at
 whatever phase it had reached, in another process or a later session.
 
+A rendered version for the web is
+[`images/run-lifecycle.svg`](images/run-lifecycle.svg); this one is the reference.
+
 ```
   supervisor start
         │
