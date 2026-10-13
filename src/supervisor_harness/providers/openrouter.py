@@ -65,7 +65,7 @@ class OpenRouterProvider(Provider):
             system = f"{system}\n\n{schema_instruction(request.json_schema)}".strip()
         if system:
             messages.append({"role": "system", "content": system})
-        messages.extend({"role": m.role, "content": m.content} for m in request.messages)
+        messages.extend({"role": m.role, "content": _content(m)} for m in request.messages)
 
         body: dict[str, Any] = {
             "model": request.model or self.default_model,
@@ -134,3 +134,12 @@ class OpenRouterProvider(Provider):
 
 
 __all__ = ["ChatMessage", "OpenRouterProvider"]
+
+
+def _content(message: ChatMessage) -> Any:
+    """A message's content, with its pictures as OpenAI-style image parts."""
+    if not message.images:
+        return message.content
+    return [{"type": "text", "text": message.content},
+            *({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+              for b64 in message.images)]

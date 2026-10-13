@@ -81,6 +81,9 @@ class ChatMessage:
     #: On a tool message: which tool's result this is, and the call it answers.
     tool_name: str = ""
     tool_call_id: str = ""
+    #: Pictures shown with the message, base64 PNG: what the harness rendered of
+    #: the run's product, for a judge to see rather than infer (`core/observe.py`).
+    images: list[str] = field(default_factory=list)
 
 
 #: The sampling temperature the OpenAI-compatible and Ollama providers use when

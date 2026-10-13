@@ -31,6 +31,7 @@ in-memory change second, which is what makes a run resumable from any point.
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import traceback
 from dataclasses import replace
@@ -93,7 +94,7 @@ from ..providers.router import ModelRouter
 from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
-from . import autonomy, phases, worktree
+from . import autonomy, observe, phases, worktree
 from .attribution import baseline_verdict
 from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
@@ -719,8 +720,9 @@ class Supervisor:
             proposed = parse_tasks(plan, state.id, state.workspace)
             for task in proposed:
                 fill_what_the_harness_can(task, self.workspace)
-            weak = phases.unenforceable_criteria(proposed, self.config.policy,
-                                                 self.workspace)
+            weak = (phases.unenforceable_criteria(proposed, self.config.policy,
+                                                  self.workspace)
+                    + phases.goal_problems(plan, proposed))
             if weak:
                 await session.anote("synthesis sent back once: criteria it proposed cannot "
                                     "be enforced", criteria=len(weak), weak=weak)
@@ -760,7 +762,8 @@ class Supervisor:
         # What the harness fills in itself is not the model's to fix.
         for task in proposed:
             fill_what_the_harness_can(task, self.workspace)
-        weak = phases.unenforceable_criteria(proposed, self.config.policy, self.workspace)
+        weak = (phases.unenforceable_criteria(proposed, self.config.policy, self.workspace)
+                + phases.goal_problems(data, proposed))
         if not weak:
             return data
         await session.anote("synthesis sent back once: criteria it proposed cannot be "
@@ -834,6 +837,11 @@ class Supervisor:
         # bar, no fails_before -- and one was "verified" by tests of helpers in
         # a file other than the one it was about.
         tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
+        goal, unplaced = phases.attach_goal(tasks, data, state.prompt)
+        if goal:
+            session.emit(EventType.GOAL_SET, {"goal": to_jsonable(goal)})
+        for line in unplaced:
+            session.note(line)
         for extra in (dep_notes, ref_notes, scope_notes):
             for task_id, entries in extra.items():
                 notes.setdefault(task_id, []).extend(entries)
@@ -2358,7 +2366,9 @@ class Supervisor:
         if brief is None:
             brief = build_verifier_brief(state, task, self.packets._change_summary(session, task))
             await session.aemit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
-        messages = [ChatMessage("user", brief)]
+        shown, images = await self._look_at_the_goal(session, task)
+        messages = [ChatMessage("user", f"{brief}\n\n{shown}" if shown else brief,
+                                images=images)]
         tools = native_tool_specs(agent, self.config.policy)
         stint = Stint()
         verdict = await self._read_then_finish(session, agent, messages, tools, stint,
@@ -2376,6 +2386,43 @@ class Supervisor:
         await self._flush_assists(session, agent)
         await self.supervision._assess_drift(session, agent, turn)
         await self._report_verification(session, agent, payload)
+
+    async def _look_at_the_goal(self, session: RunSession,
+                                task: ExecutionTask) -> tuple[str, list[str]]:
+        """The pages this task's open goal expectations name, rendered for its verifier.
+
+        See `core/observe.py`. Returns what to tell the verifier and the pictures,
+        base64 PNG; a page that cannot be shown is said so, and judged from code.
+        """
+        state = session.state
+        by_id = {e.id: e for e in state.goal}
+        pages: dict[tuple[str, str], list[str]] = {}
+        for crit in task.dod:
+            expectation = by_id.get(crit.goal_id)
+            if (expectation is not None and expectation.look
+                    and crit.status is CriterionStatus.UNVERIFIED):
+                pages.setdefault((expectation.look, expectation.build), []).append(crit.id)
+        if not pages:
+            return "", []
+        tree = self._tree(state)
+        allow = self.config.policy.allow_command_execution
+        lines: list[str] = []
+        images: list[str] = []
+        for (page, build), ids in pages.items():
+            seen = await asyncio.to_thread(
+                observe.look, tree, page, build, allow_build=allow,
+                build_timeout=float(self.config.policy.check_timeout_seconds))
+            which = ", ".join(f"`{i}`" for i in ids)
+            if seen.png is not None:
+                images.append(base64.b64encode(seen.png).decode("ascii"))
+                lines.append(f"- Picture {len(images)}: {seen.note}, as a person opening it "
+                             f"would see it -- for {which}. Judge those by what it shows.")
+            else:
+                lines.append(f"- `{page}` could not be shown ({seen.note}): judge {which} "
+                             "from the code, and say that you did.")
+            await session.anote("looked at the run's page for its goal", task_id=task.id,
+                                page=page, shown=seen.png is not None, detail=seen.note)
+        return "## What the result looks like\n\n" + "\n".join(lines), images
 
     async def _revise_after_veto(
         self, session: RunSession, task: ExecutionTask, veto: tuple[str, str]

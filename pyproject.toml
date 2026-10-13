@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
+# Batch J: a goal expectation that names a page is rendered and shown to the
+# verifier (core/observe.py). Optional: without it, the page is judged from code.
+observe = ["playwright>=1.40"]
 # Autonomous Bedrock. Deliberately an extra rather than a runtime dependency:
 # the package otherwise has exactly one, and this pulls the Anthropic SDK plus
 # boto3 and botocore. Nothing imports it unless a provider of type "bedrock" is

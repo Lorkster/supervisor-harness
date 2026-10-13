@@ -27,6 +27,7 @@ from ..models import (
     ExecutionTask,
     Fact,
     Finding,
+    GoalExpectation,
     Lesson,
     Message,
     Note,
@@ -88,6 +89,9 @@ class EventType(StrEnum):
     #: so it could make a change its task needed. See
     #: `Supervisor._widen_for_write`.
     SCOPE_WIDENED = "scope_widened"
+    #: What the result must be, for whoever asked: the plan's expectations, held
+    #: by the supervisor (`phases.attach_goal`).
+    GOAL_SET = "goal_set"
     RUN_ENDED = "run_ended"
     #: Never emitted: what a type this build does not define is read back as,
     #: so the log line survives the read. See :func:`event_from_dict`.
@@ -345,6 +349,10 @@ def _on_criterion_verified(state: RunState, event: Event) -> None:
                 break
 
 
+def _on_goal_set(state: RunState, event: Event) -> None:
+    state.goal = [from_jsonable(raw, GoalExpectation) for raw in event.payload.get("goal") or []]
+
+
 def _on_report_written(state: RunState, event: Event) -> None:
     p = event.payload
     state.report = from_jsonable(p["report"], Report)
@@ -485,6 +493,7 @@ _HANDLERS: dict[EventType, Callable[[RunState, Event], None]] = {
     EventType.TASK_DECIDED: _on_task_decided_or_task_updated,
     EventType.TASK_UPDATED: _on_task_decided_or_task_updated,
     EventType.CRITERION_VERIFIED: _on_criterion_verified,
+    EventType.GOAL_SET: _on_goal_set,
     EventType.REPORT_WRITTEN: _on_report_written,
     EventType.CHECKPOINT_RECORDED: _on_checkpoint_recorded,
     EventType.LESSON_LEARNED: _on_lesson_learned,

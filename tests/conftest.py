@@ -228,6 +228,11 @@ class FakeProvider(Provider):
             "conflicts": [],
             "open_questions": ["Is there an upstream WAF already throttling this path?"],
             "recommended_mode": "execute",
+            "goal": [{
+                "statement": "Repeated failed logins from one address are refused with HTTP 429",
+                "delivered_by": "Add rate limiting to the login endpoint",
+                "look": "", "build": "",
+            }],
             "tasks": [
                 {
                     "title": "Add rate limiting to the login endpoint",

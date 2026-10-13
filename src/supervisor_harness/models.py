@@ -694,11 +694,32 @@ class DoDCriterion:
     # when the task is done if the project had none when the plan was made (a
     # project built from nothing). Set by the harness only, never from a model.
     suite: bool = False
+    # The goal expectation this criterion checks (`GoalExpectation.id`), when it
+    # is one: set by the harness from the plan's goal, never from a criterion.
+    goal_id: str = ""
 
     @property
     def machine_checkable(self) -> bool:
         return self.method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.INSPECTION,
                                VerifyMethod.FAILS_BEFORE)
+
+
+@dataclass
+class GoalExpectation:
+    """One thing someone who asked for the run's goal would check when they try the result.
+
+    The owner gives the goal; its specifics are worked out in the run -- the plan
+    proposes them -- and held by the supervisor, which checks each when the task
+    that delivers it settles. ``look`` is a page the run builds, opened after
+    ``build`` and shown to the judge as a person would see it.
+    """
+
+    id: str = field(default_factory=lambda: new_id("exp"))
+    statement: str = ""
+    task_id: str = ""
+    look: str = ""
+    build: str = ""
+    source: str = "plan"
 
 
 @dataclass
@@ -935,6 +956,8 @@ class RunState:
     directives: list[Directive] = field(default_factory=list)
     escalations: dict[str, Escalation] = field(default_factory=dict)
     worktree: RunWorktree | None = None
+    # What the result must be, for whoever asked: see `GoalExpectation`.
+    goal: list[GoalExpectation] = field(default_factory=list)
     envelope_grant: EnvelopeGrant | None = None
     drift: dict[str, DriftAssessment] = field(default_factory=dict)
     # What the harness had to repair before each answer could be used, by kind,

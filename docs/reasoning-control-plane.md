@@ -151,11 +151,11 @@ nothing may widen it (`establish`,
 scope to the stack of ceilings over it and says *which* ceiling bit, so a
 clamp is legible rather than mysterious. It runs at all three points where
 authority is handed on — when synthesis creates a task (`attenuate` at
-[supervisor.py:820](../src/supervisor_harness/core/supervisor.py:820)), when an
+[supervisor.py:823](../src/supervisor_harness/core/supervisor.py:823)), when an
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:3039](../src/supervisor_harness/core/supervisor.py:3039)). It
+[supervisor.py:3086](../src/supervisor_harness/core/supervisor.py:3086)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -244,7 +244,7 @@ because the contradiction only surfaces in the work.
 **A `Fact`** ([models.py:313](../src/supervisor_harness/models.py:313)) is
 something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
-`FACT_ESTABLISHED` ([events.py:50](../src/supervisor_harness/store/events.py:50)),
+`FACT_ESTABLISHED` ([events.py:53](../src/supervisor_harness/store/events.py:53)),
 and facts reach later agents' briefs through `render_context`
 ([core/blackboard.py:104](../src/supervisor_harness/core/blackboard.py:104)).
 
