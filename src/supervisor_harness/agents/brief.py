@@ -460,7 +460,8 @@ def _requirements_block(run: RunState, task: ExecutionTask) -> str:
         testers = [t.title for t in run.tasks.values() if t.id != task.id and any(
             rid in g.requirements for g in t.acceptance for rid in task.requirements)]
         after = (f" {', '.join(repr(t) for t in testers)} then tests them, from these "
-                 "words, in files you may not change." if testers else "")
+                 "words, in files you may not change. Write no tests of your own for them: "
+                 "theirs are the suite, and yours must leave it passing." if testers else "")
         parts.append("Your task delivers these, as the request states them. Do each as "
                      f"quoted, not as you would have designed it.{after}\n"
                      + "\n".join(f"- {r.id}: {r.quote}" for r in built))

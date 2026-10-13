@@ -1065,7 +1065,11 @@ what one planner wrote down.
    that delivered it (batch K), or fixed within the run's plan (#101).
 4. **The builder cannot rewrite the test.** The testing task's files are
    forbidden paths for the tasks whose requirements they test, enforced by the
-   toolbox as every scope is.
+   toolbox as every scope is. Nor is it asked to write its own: where another
+   task tests its requirements, the harness's test bar asks only that the
+   suite passes -- mandatory where the project had a suite at planning, and
+   reported where it had none and no test exists yet (run 6: the engine's own
+   tests and its tester's disagreed, and one broke `npm test`).
 5. **Judges only tighten.** A requirement adds checks. Set-aside and not-tested
    reasons are the planner's, shown to the owner, and pass nothing.
 

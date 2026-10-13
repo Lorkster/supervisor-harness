@@ -1060,6 +1060,11 @@ def _exit_code_or_zero(expect: str) -> str:
     return exit_code.group(1) if exit_code else "0"
 
 
+#: The harness's test bar, as it is added to a task that changes behaviour.
+TESTS_BAR = ("Automated tests cover the behaviour changed by this task, including at least "
+             "one failure or edge case, and the suite passes")
+
+
 def apply_quality_bars(
     task: ExecutionTask, policy: Policy, workspace: Path | None = None
 ) -> list[DoDCriterion]:
@@ -1106,10 +1111,7 @@ def apply_quality_bars(
         bar(
             bool(_COVERS_TESTS.search(runnable)),
             DoDCriterion(
-                statement=(
-                    "Automated tests cover the behaviour changed by this task, including "
-                    "at least one failure or edge case, and the suite passes"
-                ),
+                statement=TESTS_BAR,
                 method=VerifyMethod.TEST,
                 command=detect_test_command(workspace) if workspace else "",
                 expect="0",
