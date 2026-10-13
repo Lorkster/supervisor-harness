@@ -402,7 +402,16 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                             "When it can be seen on a page this project builds: the page "
                             "to open, relative to the repository, as it is after `build` "
                             "-- for example dist/index.html; prefix it with file: when it "
-                            "must work opened straight from disk. Empty when there is no page"
+                            "must work opened straight from disk. The path alone, no words "
+                            "around it. Empty when there is no page"
+                        ),
+                    },
+                    "whole": {
+                        "type": "boolean",
+                        "description": (
+                            "true when it holds only once the whole result is built -- a "
+                            "playable game, a working app; its task must come after every "
+                            "task that builds a part of it"
                         ),
                     },
                     "build": {
@@ -410,7 +419,7 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                         "description": "The command that builds that page; empty if none",
                     },
                 },
-                "required": ["statement", "delivered_by", "look", "build"],
+                "required": ["statement", "delivered_by", "look", "build", "whole"],
             },
         },
         "tasks": {
@@ -570,6 +579,9 @@ VERIFICATION_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "description": "First-hand proof: actual command output or quoted code",
                     },
+                    "belongs_to": {"type": "string", "description": (
+                        "Only when it fails because a later task in the plan builds that part, "
+                        "not this one: that task's title, from the plan. Otherwise leave it out")},
                 },
                 "required": ["criterion_id", "status", "evidence"],
             },
@@ -756,14 +768,17 @@ def parse_status(value: Any) -> AgentStatus:
     return _enum(value, AgentStatus, AgentStatus.RUNNING)
 
 
-def parse_goal(data: dict[str, Any]) -> list[dict[str, str]]:
+def parse_goal(data: dict[str, Any]) -> list[dict[str, Any]]:
     """The plan's goal expectations, each with a statement; the rest dropped."""
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for raw in data.get("goal") or []:
         if not isinstance(raw, dict) or not str(raw.get("statement", "")).strip():
             continue
-        out.append({key: str(raw.get(key, "")).strip()
-                    for key in ("statement", "delivered_by", "look", "build")})
+        item: dict[str, Any] = {key: str(raw.get(key, "")).strip()
+                                for key in ("statement", "delivered_by", "look", "build")}
+        item["whole"] = (raw.get("whole") is True
+                         or str(raw.get("whole", "")).strip().lower() == "true")
+        out.append(item)
     return out
 
 
