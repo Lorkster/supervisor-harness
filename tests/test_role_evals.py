@@ -267,6 +267,31 @@ def test_a_run_is_scored_by_its_record_and_by_its_tree(tmp_path: Path) -> None:
     assert nowhere["acceptance"][0]["tail"] == "the run left no tree to check"
 
 
+def test_what_is_left_of_a_worktree_is_not_scored(tmp_path: Path) -> None:
+    """Minesweeper run 5: the worktree came down but for `node_modules`, held by a stray
+    process, and the gates were scored on that. The run's commit is scored instead."""
+    from supervisor_harness.models import RunWorktree
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    (repo / "package.json").write_text("{}\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "the run's work"], check=True)
+    commit = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True,
+                            check=True).stdout.strip()
+    husk = tmp_path / "worktree"
+    (husk / "node_modules").mkdir(parents=True)
+    state = RunState(prompt="p", workspace=str(repo),
+                     worktree=RunWorktree(path=str(husk), commit=commit, removed=False))
+    has = f'"{sys.executable}" -c "import os; raise SystemExit(not os.path.exists(\'package.json\'))"'
+
+    card = scorecard(state, [has])
+
+    assert card["accepted"] is True, "scored on the commit, which has its package.json"
+
+
 def test_acceptance_runs_without_the_scorers_harness_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

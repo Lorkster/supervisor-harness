@@ -66,7 +66,11 @@ def _tree(state: RunState, workspace: Path | None) -> Iterator[Path | None]:
         yield workspace
         return
     wt = state.worktree
-    if wt is not None and wt.path and not wt.removed and Path(wt.path).is_dir():
+    # A checkout still, not only a folder: Minesweeper run 5's worktree was taken
+    # down but for the files a stray process held -- `node_modules` and a lock
+    # file -- and its gates were scored on that, with no package.json.
+    if (wt is not None and wt.path and not wt.removed
+            and (Path(wt.path) / ".git").exists()):
         yield Path(wt.path)
         return
     ref = (wt.commit or wt.branch) if wt is not None else ""
