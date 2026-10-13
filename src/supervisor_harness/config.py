@@ -156,6 +156,13 @@ class Policy:
     # choosing to skip the one reading of its own changes that is not a gate.
     veto_review: bool = True
 
+    # Batch L: before the plan, a reader lists what the request and the
+    # documents it points to require, quoted (`core/requirements.py`); the plan
+    # must account for each and have each tested by a task other than its
+    # builder. Protected: a repository able to turn it off would be choosing
+    # to be judged only by the criteria its planner happened to write.
+    requirements_ledger: bool = True
+
     # The run's scope envelope: the ceiling on every agent scope in the run.
     # Empty means the whole workspace, which is what an empty scope already
     # means to the toolbox and to the floor beneath it. This is deliberately
@@ -384,6 +391,7 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     # Whether a person reviews each task, or the harness does within a grant.
     ("policy", "approval"),
     ("policy", "veto_review"),
+    ("policy", "requirements_ledger"),
 )
 
 # Per-provider keys an untrusted file may not touch, for the same reason.

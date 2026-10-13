@@ -51,6 +51,7 @@ from ..contracts import (
     CHECKPOINT_SCHEMA,
     LESSONS_SCHEMA,
     PLANNING_SCHEMA,
+    REQUIREMENTS_SCHEMA,
     SYNTHESIS_SCHEMA,
     parse_checkpoint,
     parse_lessons,
@@ -81,6 +82,7 @@ from ..models import (
     GoalExpectation,
     MessageKind,
     Phase,
+    Requirement,
     Resolution,
     RunMode,
     RunState,
@@ -97,7 +99,7 @@ from ..providers.router import ModelRouter
 from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
-from . import autonomy, observe, phases, worktree
+from . import autonomy, observe, phases, requirements, worktree
 from .attribution import baseline_verdict
 from .baseline import commit_from_fact, git_baseline
 from .consolidate import consolidate
@@ -675,6 +677,8 @@ class Supervisor:
                 packets=[packet],
             )
 
+        if await self._read_requirements(session):
+            system, user = phases.synthesis_prompt(state, state.mode)
         conversed = (await self._converse_synthesis(session, system, user)
                      if self._plans_in_conversation() else None)
         if conversed is not None:
@@ -684,6 +688,62 @@ class Supervisor:
             data = await self._send_back_weak_criteria(session, system, user, data)
         self._apply_synthesis(session, data)
         return None
+
+    async def _read_requirements(self, session: RunSession) -> bool:
+        """Batch L's ledger, before the plan: what the request requires, quoted.
+
+        Two readings (`core/requirements.py`): one lists, the next is shown the
+        list and asked what it leaves out. Only quotes found where they are said
+        to be are kept. Once per run, read from the log. Not for a run that
+        only reports, and not where the synthesis is delegated to the host.
+        Returns whether the run now holds requirements.
+        """
+        state = session.state
+        if (not self.config.policy.requirements_ledger or state.mode is RunMode.REPORT
+                or any(n.text == LEDGER_READ for n in state.notes)):
+            return False
+        ledger: list[Requirement] = []
+        refused: list[str] = []
+        for found_by, system in (("reader", requirements.READER_SYSTEM),
+                                 ("audit", requirements.AUDIT_SYSTEM)):
+            user = (requirements.reader_prompt(state.prompt) if found_by == "reader"
+                    else requirements.audit_prompt(state.prompt, ledger))
+            raw = await self._a_reading(session, system, user)
+            ledger, notes = requirements.build_ledger(
+                ledger, raw, request=state.prompt, workspace=self.workspace,
+                found_by=found_by)
+            refused += notes
+        await session.anote(LEDGER_READ, requirements=len(ledger),
+                            audit=sum(r.found_by == "audit" for r in ledger), refused=refused)
+        if ledger:
+            await session.aemit(EventType.REQUIREMENTS_SET,
+                                {"requirements": to_jsonable(ledger)})
+        return bool(ledger)
+
+    async def _a_reading(self, session: RunSession, system: str, user: str) -> dict[str, Any]:
+        """One reading of the request for the ledger: a conversation where the planner
+        has one, so it can open the documents the request points to; else one call."""
+        if self._plans_in_conversation():
+            reader = AgentSpec(id=f"reader_{session.state.id}", kind=AgentKind.ANALYSIS,
+                               role="reader", title="Requirements reader", scope=Scope(),
+                               binding=self.config.binding_for("synthesis"))
+            tools = [t for t in native_tool_specs(reader, self.config.policy)
+                     if t["name"] != "report"] + [requirements.LIST_TOOL]
+            stint = Stint()
+            found = await self._read_then_finish(
+                session, reader, [ChatMessage("user", user)], tools, stint,
+                finish="list_requirements", now=requirements.READER_NOW,
+                role=(system, "list_requirements", requirements.READER_NUDGE),
+                stage="synthesis")
+            await session.anote("requirements read in a conversation", read=stint.read,
+                                tool_calls=stint.tool_calls)
+            return found or {}
+        try:
+            return await self.supervision._call("synthesis", system, user,
+                                                REQUIREMENTS_SCHEMA, session)
+        except Exception as exc:  # noqa: BLE001 - the plan can be made without it
+            await session.anote(f"a requirements reading failed; planning goes on: {exc}")
+            return {}
 
     def _plans_in_conversation(self) -> bool:
         """Whether the synthesis is a conversation with read-only tools (`core/planner.py`)."""
@@ -725,7 +785,8 @@ class Supervisor:
                 fill_what_the_harness_can(task, self.workspace)
             weak = (phases.unenforceable_criteria(proposed, self.config.policy,
                                                   self.workspace)
-                    + phases.goal_problems(plan, proposed))
+                    + phases.goal_problems(plan, proposed)
+                    + requirements.coverage_problems(state.requirements, plan, proposed))
             if weak:
                 await session.anote("synthesis sent back once: criteria it proposed cannot "
                                     "be enforced", criteria=len(weak), weak=weak)
@@ -766,7 +827,8 @@ class Supervisor:
         for task in proposed:
             fill_what_the_harness_can(task, self.workspace)
         weak = (phases.unenforceable_criteria(proposed, self.config.policy, self.workspace)
-                + phases.goal_problems(data, proposed))
+                + phases.goal_problems(data, proposed)
+                + requirements.coverage_problems(state.requirements, data, proposed))
         if not weak:
             return data
         await session.anote("synthesis sent back once: criteria it proposed cannot be "
@@ -845,7 +907,14 @@ class Supervisor:
             session.emit(EventType.GOAL_SET, {"goal": to_jsonable(goal)})
         for line in unplaced:
             session.note(line)
-        for extra in (dep_notes, ref_notes, scope_notes):
+        # What the send-back did not put right is kept on the log, and the
+        # report marks each requirement still unaccounted for.
+        for line in requirements.coverage_problems(state.requirements, data, tasks):
+            session.note(f"requirements: {line}")
+        ledger, req_notes = requirements.attach_requirements(tasks, state.requirements, data)
+        if ledger:
+            session.emit(EventType.REQUIREMENTS_SET, {"requirements": to_jsonable(ledger)})
+        for extra in (dep_notes, ref_notes, scope_notes, req_notes):
             for task_id, entries in extra.items():
                 notes.setdefault(task_id, []).extend(entries)
         for task in tasks:
@@ -2715,6 +2784,9 @@ class Supervisor:
                        if not matches_any(rel, agent.scope.paths))
         if task is None or not agent.scope.paths or not named:
             return []
+        # The tests of its own work are not its to change (batch L).
+        if any(matches_any(rel, agent.scope.forbidden_paths) for rel in named):
+            return []
         if any(_another_writer(state, agent, rel) or _held_holder(state, task, rel)
                or not _in_the_plan(state, rel) for rel in named):
             return []
@@ -2749,7 +2821,9 @@ class Supervisor:
         if (task is None or rel is None or not agent.scope.paths
                 or matches_any(rel, agent.scope.paths)):
             return
-        if _another_writer(state, agent, rel):
+        # Forbidden to this agent: the tests of its own work (batch L), which no
+        # widening reaches; the toolbox refuses the write and says so.
+        if _another_writer(state, agent, rel) or matches_any(rel, agent.scope.forbidden_paths):
             return
         holder = _held_holder(state, task, rel)
         if holder is not None:
@@ -3078,6 +3152,8 @@ MAX_ROUTED_FINDINGS = 5
 
 #: How the log says a blocked report was handed back (`_blocked_within_reach`).
 SENT_BACK_BLOCKED = "a blocked report was sent back"
+#: The note that says the run's requirements were read, once (`_read_requirements`).
+LEDGER_READ = "requirements read"
 
 
 def _yours_to_fix(paths: list[str]) -> str:

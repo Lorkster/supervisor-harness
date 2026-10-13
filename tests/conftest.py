@@ -97,6 +97,8 @@ class FakeProvider(Provider):
         props = set((request.json_schema or {}).get("properties", {}))
         if "lenses" in props:
             return "planning"
+        if props == {"requirements"}:
+            return "requirements"
         if "recommended_mode" in props:
             return "synthesis"
         if "drift_score" in props:
@@ -269,6 +271,11 @@ class FakeProvider(Provider):
                 }
             ],
         }
+
+    def _requirements(self, request: CompletionRequest) -> dict[str, Any]:
+        # None by default: a run with no ledger plans as it did before batch L.
+        # The tests of the ledger script their own readings.
+        return {"requirements": []}
 
     def _execution(self, request: CompletionRequest) -> dict[str, Any]:
         return {

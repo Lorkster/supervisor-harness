@@ -63,6 +63,8 @@ from .dod import (
 from .paths import relative_patterns
 from .placement import correct_inspection_paths, criteria_running_missing_files
 from .planner import MISSING_FILE_FIX
+from .requirements import report_lines as requirements_report
+from .requirements import synthesis_block
 
 # --------------------------------------------------------------------------
 # Planning
@@ -339,7 +341,7 @@ def synthesis_prompt(state: RunState, mode_hint: RunMode) -> tuple[str, str]:
         f"# Original request\n{state.prompt}\n\n"
         f"# Agents\n{agent_notes}\n\n"
         f"# Findings\n{_findings_digest(state.findings)}"
-        f"{conflict_block}{message_block}\n\n"
+        f"{conflict_block}{message_block}{synthesis_block(state.requirements)}\n\n"
         f"# Hint\nThe planning stage judged this run to be '{mode_hint.value}'. "
         "Override that if the findings say otherwise.\n\n"
         "Produce the synthesis."
@@ -1161,6 +1163,11 @@ def _report_summary(state: RunState) -> list[str]:
     return lines
 
 
+def _report_requirements(state: RunState) -> list[str]:
+    """What the request required, quoted, and what the run did with each (batch L)."""
+    return requirements_report(state.requirements, state.tasks)
+
+
 def _report_verification(state: RunState) -> list[str]:
     """Every task's definition of done, and what was actually proven."""
     lines: list[str] = []
@@ -1368,6 +1375,7 @@ def final_report_markdown(state: RunState) -> str:
     for section in (
         _report_header,
         _report_summary,
+        _report_requirements,
         _report_verification,
         _report_findings,
         _report_reconciliation,

@@ -19,6 +19,7 @@ from typing import Any, TypeVar
 
 from .ids import now_iso
 from .models import (
+    AcceptanceTests,
     AgentStatus,
     Checkpoint,
     Decision,
@@ -308,6 +309,50 @@ PLANNING_SCHEMA: dict[str, Any] = {
     "required": ["restated_goal", "mode", "lenses"],
 }
 
+REQUIREMENTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "requirements": {
+            "type": "array",
+            "description": (
+                "What the request requires of the result: each one thing someone could "
+                "check when they try it -- a behaviour, a rule, an interface, a limit"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "quote": {
+                        "type": "string",
+                        "description": (
+                            "The words that state it, copied exactly from the source; "
+                            "shorten a long passage with ... but change no word"
+                        ),
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": ("Where the quote is: 'request', or the workspace "
+                                        "path of the document, such as docs/SPEC.md"),
+                    },
+                },
+                "required": ["quote", "source"],
+            },
+        },
+    },
+    "required": ["requirements"],
+}
+
+_REASONED: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "requirement": {"type": "string", "description": "Its id, such as R4"},
+            "reason": {"type": "string"},
+        },
+        "required": ["requirement", "reason"],
+    },
+}
+
 SYNTHESIS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -417,6 +462,32 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                         ),
                     },
                     "effort": {"type": "string", "enum": ["small", "medium", "large"]},
+                    "requirements": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": ("The ids of the listed requirements this task "
+                                        "delivers, such as R3; [] if none"),
+                    },
+                    "acceptance_tests": {
+                        "type": "array",
+                        "description": (
+                            "When this task writes the acceptance tests for requirements "
+                            "another task delivers: per command, the ids its tests cover. "
+                            "Each test's title carries its id in brackets, like "
+                            "'[R3] ...'. [] if this task writes none"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "requirements": {"type": "array", "items": {"type": "string"}},
+                                "command": {
+                                    "type": "string",
+                                    "description": "One command that runs those tests",
+                                },
+                            },
+                            "required": ["requirements", "command"],
+                        },
+                    },
                 },
                 # `scope_paths` and `depends_on` are required for the reason a
                 # criterion's command is: decoding against the schema, the
@@ -425,6 +496,16 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                 "required": ["title", "action", "motivation", "rationale_refs", "dod",
                              "scope_paths", "depends_on"],
             },
+        },
+        "set_aside": {
+            **_REASONED,
+            "description": ("Listed requirements no task will deliver, each with why; "
+                            "shown to the owner"),
+        },
+        "not_tested": {
+            **_REASONED,
+            "description": ("Delivered requirements no other task will test, each with "
+                            "why; shown to the owner"),
         },
     },
     "required": ["summary", "recommended_mode", "goal"],
@@ -678,6 +759,69 @@ def parse_goal(data: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+def parse_quoted(data: dict[str, Any]) -> list[dict[str, str]]:
+    """A reader's requirements, each a quote and its source; the rest dropped."""
+    out: list[dict[str, str]] = []
+    for raw in data.get("requirements") or []:
+        if not isinstance(raw, dict) or not str(raw.get("quote", "")).strip():
+            continue
+        out.append({"quote": str(raw["quote"]).strip(),
+                    "source": str(raw.get("source", "")).strip() or "request"})
+    return out
+
+
+_REQUIREMENT_ID = re.compile(r"\s*\[?\s*R?\s*0*(\d{1,4})\s*\]?\s*", re.IGNORECASE)
+
+
+def requirement_id(value: Any) -> str:
+    """``R7`` from ``R7``, ``r07``, ``[R7]`` or ``7``; anything else is empty."""
+    match = _REQUIREMENT_ID.fullmatch(str(value or ""))
+    return f"R{int(match.group(1))}" if match else ""
+
+
+def requirement_ids(value: Any) -> list[str]:
+    """The requirement ids in a list, normalised, in order, once each."""
+    out: list[str] = []
+    for item in _strs(value):
+        rid = requirement_id(item)
+        if rid and rid not in out:
+            out.append(rid)
+    return out
+
+
+def parse_reasoned(value: Any) -> dict[str, str]:
+    """``set_aside`` or ``not_tested``: requirement id to the reason given."""
+    out: dict[str, str] = {}
+    for raw in value or []:
+        if not isinstance(raw, dict):
+            continue
+        rid = requirement_id(raw.get("requirement"))
+        if rid:
+            out[rid] = str(raw.get("reason", "")).strip()
+    return out
+
+
+def parse_acceptance(value: Any) -> list[AcceptanceTests]:
+    """A task's acceptance tests: each command, with the requirements it covers."""
+    out: list[AcceptanceTests] = []
+    for raw in value or []:
+        if not isinstance(raw, dict):
+            continue
+        ids = requirement_ids(raw.get("requirements"))
+        if ids:
+            out.append(AcceptanceTests(requirements=ids,
+                                       command=str(raw.get("command", "")).strip()))
+    return out
+
+
+def acceptance_criterion(tests: AcceptanceTests) -> DoDCriterion:
+    """The criterion that runs one group of acceptance tests, for the task writing them."""
+    return DoDCriterion(
+        statement=f"The acceptance tests for {', '.join(tests.requirements)} pass",
+        method=VerifyMethod.TEST, command=tests.command, expect="0", mandatory=True,
+    )
+
+
 def parse_dod(items: Any) -> list[DoDCriterion]:
     out: list[DoDCriterion] = []
     for raw in items or []:
@@ -730,9 +874,16 @@ def parse_tasks(data: dict[str, Any], run_id: str, workspace: str = "") -> list[
                 depends_on=_strs(raw.get("depends_on")),
                 risk=_enum(raw.get("risk"), Severity, Severity.LOW),
                 effort=str(raw.get("effort", "medium")).strip().lower(),
+                requirements=requirement_ids(raw.get("requirements")),
+                acceptance=parse_acceptance(raw.get("acceptance_tests")),
                 status=TaskStatus.PROPOSED,
             )
         )
+        # Here rather than with the rest of batch L, so a command the harness
+        # cannot run, or one that runs a file no task writes, is sent back with
+        # every other criterion (`phases.unenforceable_criteria`).
+        task = out[-1]
+        task.dod += [acceptance_criterion(t) for t in task.acceptance if t.command]
     return out
 
 

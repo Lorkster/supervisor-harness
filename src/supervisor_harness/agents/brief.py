@@ -448,6 +448,35 @@ def _goal_block(run: RunState, task: ExecutionTask) -> str:
     return "\n".join(lines)
 
 
+def _requirements_block(run: RunState, task: ExecutionTask) -> str:
+    """What this task delivers of the request, quoted, and what it tests (batch L)."""
+    by_id = {r.id: r for r in run.requirements}
+    built = [by_id[rid] for rid in task.requirements if rid in by_id]
+    tested = [by_id[rid] for rid in dict.fromkeys(
+        rid for group in task.acceptance for rid in group.requirements)
+        if rid in by_id and rid not in task.requirements]
+    parts: list[str] = []
+    if built:
+        testers = [t.title for t in run.tasks.values() if t.id != task.id and any(
+            rid in g.requirements for g in t.acceptance for rid in task.requirements)]
+        after = (f" {', '.join(repr(t) for t in testers)} then tests them, from these "
+                 "words, in files you may not change." if testers else "")
+        parts.append("Your task delivers these, as the request states them. Do each as "
+                     f"quoted, not as you would have designed it.{after}\n"
+                     + "\n".join(f"- {r.id}: {r.quote}" for r in built))
+    if tested:
+        parts.append(
+            "Your task writes the acceptance tests for these, which other tasks built. "
+            "Write each test from the words quoted, not from the code: where the code does "
+            "something else, the code is wrong, and the test stays. Put the id in each "
+            "test's title in brackets, like `[R3] ...`, and run them with the commands in "
+            "Done means. When one fails because the product is wrong, fix the product if "
+            "the run's plan lets you, or send the supervisor a finding naming the file and "
+            "the requirement. Never weaken a test to make it pass.\n"
+            + "\n".join(f"- {r.id}: {r.quote}" for r in tested))
+    return "\n\n".join(parts)
+
+
 def build_implementer_brief(
     run: RunState,
     agent: AgentSpec,
@@ -484,6 +513,7 @@ def build_implementer_brief(
         _section("Findings behind it", findings),
         _section("Done means", _dod_block(task.dod)),
         _section("What the result is for", _goal_block(run, task)),
+        _section("Requirements", _requirements_block(run, task)),
         _section("Scope", scope),
         _section("Held for the owner", _held_tasks(run, task)),
         _section(
