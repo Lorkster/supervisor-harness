@@ -936,6 +936,88 @@ F, retargeted. (3) A baseline on main, scored by batch F: P3-18 three times and
 in the meantime: no new text heuristics; every solution must hold for any
 project, including a green-field one with nothing but a prompt.
 
+### After Minesweeper: the harness supervised the plan, not the goal
+
+*Written 2026-10-13.* The first green-field project -- a browser Minesweeper,
+built from a repository holding only its brief -- ended with all five tasks
+verified, both of the project's own gates green and 23 of 25 hidden browser
+tests passing. The board renders as a single column, and the built page shows
+nothing opened from disk. The owner's verdict: there is no version of
+Minesweeper with one row; the code alone should have made it obvious; and the
+whole point of a supervisor is that something judges the work against its
+purpose. Measured from the run (`run_01M4S0M0FQ5WW4`):
+
+1. **Every judgement was against the plan.** The criteria are the planner's; the
+   verifier judges those; the drift judge measures each agent against its own
+   task (narrowed there after it stopped a correct one-line implementer for
+   "abandoning the primary task"); the checkpoint is computed from the two. The
+   goal is nobody's criterion unless the planner writes it down, and "the board
+   is a grid" is too obvious to write. The page task's definition of done was
+   `npm run check`, a timer helper's tests, a malformed `?board=` and the
+   harness's security and conventions bars. Turnstone's third point, read above
+   -- "if the person goes, something outside the model has to do it instead" --
+   was mapped onto the project's test suite and the person at approval. Under
+   envelope approval, in a project with no suite, neither exists.
+2. **Reading the code does not see it.** Asked the expectation itself ("each
+   row's cells side by side on one line ... so the cells of a column line up"),
+   with `index.html`, `style.css` and the render code, `qwen3.8-code` passed the
+   one-column board three times out of three, thinking on and off: "the CSS
+   grid auto-places the buttons left-to-right per row" -- which a grid with no
+   column template does not do. Shown a screenshot of the page, the same model
+   failed it twice out of two ("a single vertical column of cells") and passed
+   the reference implementation's grid twice out of two, in one to nine seconds.
+3. **The agents could not tell anyone.** The blackboard's messages -- question,
+   warning, finding, contradiction, handoff, routed through the supervisor so
+   that "a warning from one agent" becomes "a directive for another before the
+   recipient wastes a turn" -- were carried in the turn contract's JSON. Batch
+   I's conversation loop offers file and command tools and `report`, and
+   delivers no inbox. Run 1 sent no messages. The agent that found the bug
+   behind five failing tests in an earlier task's file could only report itself
+   blocked, to the owner.
+
+**The model, from the owner.** The owner gives the goal. Its specifics -- what
+someone who asked for it would expect when they try the result -- are worked out
+by the supervisor and the agents together, held by the supervisor, refined as
+the work teaches, and visible to the owner, who can correct them at any time. No
+agent judges its own work against terms it set. Judges still only tighten.
+
+### Batch J — The goal, held by the supervisor
+
+1. **Expectations, at planning.** The plan carries a `goal`: the few things
+   someone who asked for this would check first when they try it, each
+   observable, each delivered by a named task. The run holds them
+   (`goal_set`), shows them in the report and gives them to every agent.
+2. **Coverage.** An expectation no task delivers goes back to the planner, in
+   the plan's one send-back.
+3. **Checked when its task settles, not at the end.** Each expectation becomes
+   a mandatory criterion of the task that delivers it, judged by the verifier.
+   Where the product has a page, the harness builds it, renders it in a
+   headless browser (Playwright, an optional extra, driving its own Chromium or
+   an installed Edge or Chrome) and hands the verifier a screenshot with the
+   expectation: it judges what a person would see. Without a renderer it judges
+   from the code, and its evidence says so. A miss fails the task, which goes
+   through remediation before anything that depends on it starts.
+4. **Judges only tighten.** An expectation can fail a task. It never passes a
+   criterion the gates refused.
+
+Measured by the Minesweeper brief, run again; its hidden suite gains a layout
+test and an opened-from-disk test, which measure the benchmark, not the harness.
+
+### Batch K — Agents talk to the supervisor again
+
+1. **A `message` tool in the conversation loop**, with the blackboard's kinds,
+   to the supervisor or a peer. Replies and peers' messages join an agent's
+   conversation at its next stretch.
+2. **A finding about the goal refines it.** The supervisor adds the expectation
+   (`goal_refined`, recording who and why), attaches it to the task that
+   delivers it, and reopens that task if it was already verified.
+3. **A finding about another task's work goes to that task**, reopened with the
+   finding, or -- within the run's plan -- to the agent that found it, which may
+   fix it (#101). The owner hears only of what lies beyond the plan.
+
+J first: on its own it would have failed run 1's page task on its first
+attempt, before sound, animation and browser tests were built on top of it.
+
 ---
 
 ## The gate between the parts
