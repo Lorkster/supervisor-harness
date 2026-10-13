@@ -1496,6 +1496,14 @@ def unsafe_command(command: str) -> str | None:
     return None
 
 
+#: An expectation that is a count of passing tests: "20 passed", "at least 20 tests
+#: passed", "20 passing" -- a floor, compared with the count the runner printed.
+_AT_LEAST_PASSED = re.compile(r"(?:at\s+least\s+)?(\d+)\s+(?:tests?\s+)?(?:passed|passing)",
+                              re.IGNORECASE)
+_PASSED_COUNT = re.compile(r"(\d+)\s+(?:tests?\s+)?(?:passed|passing)", re.IGNORECASE)
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
 def verify_command(
     criterion: DoDCriterion,
     workspace: Path,
@@ -1565,8 +1573,17 @@ def verify_command(
         # expectation of "tests", so the check whose whole purpose is refusing
         # unproven work certified a failing suite.
         exit_match = re.fullmatch(r"(?:exit\s*(?:code)?\s*[= ]\s*)?(\d+)", expect, re.IGNORECASE)
+        at_least = _AT_LEAST_PASSED.fullmatch(expect)
         if exit_match:
             ok = completed.returncode == int(exit_match.group(1))
+        elif at_least:
+            # "20 passed" is a floor, not text to find: Minesweeper run 2's suite
+            # printed "35 passed" and its criterion failed for want of "20 passed".
+            counts = [int(n) for n in _PASSED_COUNT.findall(_ANSI.sub("", output))]
+            ok = completed.returncode == 0 and bool(counts) and max(counts) >= int(
+                at_least.group(1))
+            evidence += (f"\n\n[supervisor] read as at least {at_least.group(1)} passing; "
+                         f"the run reported {max(counts) if counts else 'no count of'} passed.")
         else:
             ok = completed.returncode == 0 and expect.lower() in output.lower()
             if completed.returncode != 0 and expect.lower() in output.lower():
@@ -1621,6 +1638,8 @@ def verify_inspection(criterion: DoDCriterion, workspace: Path) -> VerificationO
         return VerificationOutcome(
             CriterionStatus.BLOCKED, f"path escapes the workspace: {raw_path.strip()}"
         )
+    if path.is_dir():
+        return _inspect_directory(path, raw_path.strip(), needle, workspace)
     if not path.is_file():
         return VerificationOutcome(CriterionStatus.FAIL, f"{raw_path.strip()} does not exist")
 
@@ -1641,6 +1660,48 @@ def verify_inspection(criterion: DoDCriterion, workspace: Path) -> VerificationO
         CriterionStatus.FAIL, f"{raw_path.strip()} does not contain {needle!r}",
         wording_only=True,
     )
+
+
+#: Directories an inspection of a directory never reads: dependencies, build
+#: output, version control, caches.
+_NOT_INSPECTED = frozenset({"node_modules", ".git", "dist", "build", ".venv", "venv",
+                            "__pycache__", ".supervisor", ".pytest_cache", ".mypy_cache"})
+#: How many files, and how much of each, an inspection of a directory reads.
+_DIRECTORY_FILES, _DIRECTORY_FILE_BYTES = 400, 400_000
+
+
+def _directory_files(directory: Path) -> list[Path]:
+    found: list[Path] = []
+    for path in sorted(directory.rglob("*")):
+        if len(found) >= _DIRECTORY_FILES:
+            break
+        if (path.is_file() and not _NOT_INSPECTED & set(path.relative_to(directory).parts)
+                and path.stat().st_size <= _DIRECTORY_FILE_BYTES):
+            found.append(path)
+    return found
+
+
+def _inspect_directory(directory: Path, shown: str, needle: str,
+                       workspace: Path) -> VerificationOutcome:
+    """``dir: text`` -- some file under the directory holds the text.
+
+    Measured on Minesweeper run 2: three inspections of `tests/e2e: ...`, a
+    directory the task filled with six spec files, failed as "tests/e2e does
+    not exist", because only a file was ever looked in.
+    """
+    files = _directory_files(directory)
+    if not files:
+        return VerificationOutcome(CriterionStatus.FAIL, f"{shown} holds no files")
+    if not needle:
+        return VerificationOutcome(CriterionStatus.PASS, f"{shown} holds {len(files)} file(s)")
+    for path in files:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if needle in content:
+            rel = path.relative_to(workspace.resolve()).as_posix()
+            line_no = content[: content.index(needle)].count("\n") + 1
+            return VerificationOutcome(CriterionStatus.PASS, f"{rel}:{line_no} contains {needle!r}")
+    return VerificationOutcome(
+        CriterionStatus.FAIL, f"no file under {shown} contains {needle!r}", wording_only=True)
 
 
 #: A quoted span in a verifier's evidence: backticks, straight or curly quotes.
@@ -1664,12 +1725,21 @@ def quotes_the_file(criterion: DoDCriterion, evidence: str, workspace: Path) -> 
     path = (workspace / raw_path.strip()).resolve()
     try:
         path.relative_to(workspace.resolve())
-        content = path.read_text(encoding="utf-8", errors="replace")
+        files = _directory_files(path) if path.is_dir() else [path]
+        content = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in files)
     except (ValueError, OSError):
         return False
     flat = " ".join(content.split())
-    return any(" ".join(next(g for g in m.groups() if g).split()) in flat
-               for m in _EVIDENCE_QUOTE.finditer(evidence))
+    # A verifier shortens a long line with an ellipsis: Minesweeper run 2's quoted
+    # `<script type="module" crossorigin>(function(){...}...</script>`, every
+    # piece of it in the file, and its pass was thrown out as quoting nothing.
+    pieces = (piece for m in _EVIDENCE_QUOTE.finditer(evidence)
+              for piece in _ELLIPSIS.split(next(g for g in m.groups() if g)))
+    return any(len(text) >= 8 and text in flat
+               for text in (" ".join(piece.split()) for piece in pieces))
+
+
+_ELLIPSIS = re.compile(r"\.{3,}|…")
 
 
 def verify_criterion(
