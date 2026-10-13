@@ -42,6 +42,7 @@ from typing import Any
 from ..agents.brief import (
     build_implementer_brief,
     build_verifier_brief,
+    later_tasks,
     render_directive,
 )
 from ..agents.registry import AgentRegistry
@@ -60,7 +61,7 @@ from ..contracts import (
     parse_tool_calls,
 )
 from ..host.detect import HostInfo, detect_host
-from ..ids import now_iso
+from ..ids import new_id, now_iso
 from ..models import (
     ACTIVE_AGENT_STATUSES,
     BASELINE_FACT,
@@ -791,7 +792,7 @@ class Supervisor:
                 fill_what_the_harness_can(task, self.workspace)
             weak = (phases.unenforceable_criteria(proposed, self.config.policy,
                                                   self.workspace)
-                    + phases.goal_problems(plan, proposed)
+                    + phases.goal_problems(plan, proposed, state.requirements)
                     + requirements.coverage_problems(state.requirements, plan, proposed))
             if weak:
                 await session.anote("synthesis sent back once: criteria it proposed cannot "
@@ -833,7 +834,7 @@ class Supervisor:
         for task in proposed:
             fill_what_the_harness_can(task, self.workspace)
         weak = (phases.unenforceable_criteria(proposed, self.config.policy, self.workspace)
-                + phases.goal_problems(data, proposed)
+                + phases.goal_problems(data, proposed, state.requirements)
                 + requirements.coverage_problems(state.requirements, data, proposed))
         if not weak:
             return data
@@ -908,7 +909,7 @@ class Supervisor:
         # bar, no fails_before -- and one was "verified" by tests of helpers in
         # a file other than the one it was about.
         tasks, notes = phases.prepare_tasks(tasks, self.config.policy, self.workspace)
-        goal, unplaced = phases.attach_goal(tasks, data, state.prompt)
+        goal, unplaced = phases.attach_goal(tasks, data, state.prompt, state.requirements)
         if goal:
             session.emit(EventType.GOAL_SET, {"goal": to_jsonable(goal)})
         for line in unplaced:
@@ -1890,6 +1891,7 @@ class Supervisor:
 
         by_id = {c.id: c for c in task.dod}
         applied = 0
+        moves: list[tuple[DoDCriterion, ExecutionTask, str]] = []
         for result in payload.get("results") or []:
             if not isinstance(result, dict):
                 continue
@@ -1910,6 +1912,16 @@ class Supervisor:
             if status is CriterionStatus.PASS and not evidence:
                 status = CriterionStatus.FAIL
                 evidence = "marked passed without evidence; rejected by the supervisor"
+
+            # A gap that is a later task's goes to that task, not against this one:
+            # the plan is held, not frozen. Only a judged criterion -- a mechanical
+            # result is a fact about the tree as it is.
+            later = (self._later_owner(state, task, result.get("belongs_to"))
+                     if status is CriterionStatus.FAIL and crit.method is VerifyMethod.REVIEW
+                     else None)
+            if later is not None:
+                moves.append((crit, later, evidence))
+                continue
 
             # An inspection handed over because its guessed wording was missing:
             # the verifier may judge the statement, but a pass must quote the
@@ -1961,6 +1973,8 @@ class Supervisor:
             )
             applied += 1
 
+        for crit, later, evidence in moves:
+            await self._move_check(session, task, crit, later, evidence, agent)
         await self.lifecycle._set_status(session, agent, AgentStatus.DONE,
                                          cause=EndCause.REPORTED, reason="verification reported")
         # This used to re-fetch the task from state, because emitting replaced
@@ -1984,6 +1998,52 @@ class Supervisor:
             detail={"task_id": task.id, "satisfied": task.dod_satisfied(),
                     "unmet": [c.statement for c in unmet]},
         )
+
+    def _later_owner(self, state: RunState, task: ExecutionTask,
+                     named: Any) -> ExecutionTask | None:
+        """The later task a verifier named as building the part a check failed on.
+
+        Only one that comes after ``task`` and is still to be done: a check moved
+        there is judged when it settles, on the fuller result. Anything else --
+        no name, a name not in the plan, a task before or beside this one, one
+        already settled -- leaves the failure where it is.
+        """
+        name = str(named or "").strip().casefold()
+        if not name:
+            return None
+        return next((t for t in later_tasks(state, task)
+                     if t.title.strip().casefold() == name
+                     and t.status in (TaskStatus.PROPOSED, TaskStatus.APPROVED,
+                                      TaskStatus.IN_PROGRESS)), None)
+
+    async def _move_check(self, session: RunSession, task: ExecutionTask, crit: DoDCriterion,
+                          later: ExecutionTask, evidence: str, agent: AgentSpec) -> None:
+        """A check this task failed only because a later task builds that part, moved there.
+
+        Turnstone's coordinator, when a child reports: "decide whether the goal is
+        met, then close it out, push a follow-up, or spawn another child to cover
+        the gap." Minesweeper runs 6 and 7 failed their scaffolds on browser tests
+        and a playable game, which later tasks in the same plan were there to build,
+        and three attempts could not change that. The check is not dropped: it
+        moves forward in the plan, so it is judged later, on more of the result,
+        and can only ever move forward again.
+        """
+        state = session.state
+        task.dod = [c for c in task.dod if c.id != crit.id]
+        moved = replace(crit, id=new_id("dod"), status=CriterionStatus.UNVERIFIED,
+                        evidence="", verified_at="", verified_by="")
+        later.dod.append(moved)
+        later.updated_at = now_iso()
+        if crit.goal_id:
+            for expectation in state.goal:
+                if expectation.id == crit.goal_id:
+                    expectation.task_id = later.id
+            await session.aemit(EventType.GOAL_SET, {"goal": to_jsonable(state.goal)})
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(later)})
+        await session.anote(
+            f"a check moved from {task.title!r} to {later.title!r}, which builds the part "
+            "it failed on", actor=agent.id, task_id=task.id, to_task=later.id,
+            criterion=crit.statement[:200], evidence=evidence[:400])
 
     async def _report_stage(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]

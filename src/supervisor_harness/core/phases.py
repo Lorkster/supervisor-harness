@@ -12,6 +12,7 @@ unavailable or answers badly.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ from ..models import (
     LessonCategory,
     ModelBinding,
     Report,
+    Requirement,
     RunMode,
     RunState,
     Scope,
@@ -63,8 +65,8 @@ from .dod import (
 from .paths import relative_patterns
 from .placement import correct_inspection_paths, criteria_running_missing_files
 from .planner import MISSING_FILE_FIX
+from .requirements import furthest_after_parts, synthesis_block, unbuilt_parts
 from .requirements import report_lines as requirements_report
-from .requirements import synthesis_block
 
 # --------------------------------------------------------------------------
 # Planning
@@ -448,13 +450,22 @@ def unenforceable_criteria(tasks: list[ExecutionTask], policy: Policy,
     return lines + [line for _, line in criteria_running_missing_files(tasks, workspace)]
 
 
-def goal_problems(data: dict[str, Any], tasks: list[ExecutionTask]) -> list[str]:
+#: A goal's ``look``: one path, optionally ``file:`` -- not a sentence about one.
+_A_PAGE = re.compile(r"(?:file:)?[^\s()]+")
+
+
+def goal_problems(data: dict[str, Any], tasks: list[ExecutionTask],
+                  ledger: list[Requirement] | None = None) -> list[str]:
     """What keeps a plan's goal from being checked, a line each, for the send-back.
 
     A plan that proposes work must say what the result is for: the first
     green-field run verified every task of a Minesweeper whose board was one
     column, because no criterion said it should look like Minesweeper. And each
-    expectation needs the task that delivers it, which is when it is checked.
+    expectation needs the task that delivers it, which is when it is checked:
+    one of the whole result after every task that builds a part (run 7 gave
+    "a playable game, opened from disk" to the scaffold), and its page a path
+    (run 7's was "dist/index.html (open via file:// after npm run build)", and
+    the page was never shown).
     """
     if not tasks:
         return []
@@ -463,29 +474,55 @@ def goal_problems(data: dict[str, Any], tasks: list[ExecutionTask]) -> list[str]
         return ["the plan names no goal: list the few things someone who asked for this "
                 "would check first when they try the result, each with the task that "
                 "delivers it"]
-    titles = {t.title.strip().casefold() for t in tasks}
-    return [f"goal expectation {g['statement']!r}: delivered_by {g['delivered_by']!r} "
-            "names no task in this plan; give the title of the task that delivers it"
-            for g in goal if g["delivered_by"].casefold() not in titles]
+    by_title = {t.title.strip().casefold(): t for t in tasks}
+    whole = {r.id for r in ledger or [] if r.whole}
+    lines = []
+    for g in goal:
+        task = by_title.get(g["delivered_by"].casefold())
+        if task is None:
+            lines.append(f"goal expectation {g['statement']!r}: delivered_by "
+                         f"{g['delivered_by']!r} names no task in this plan; give the title "
+                         "of the task that delivers it")
+        elif g["whole"] and (early := unbuilt_parts(task, tasks, whole)):
+            lines.append(f"goal expectation {g['statement']!r} holds only for the whole "
+                         f"result, but {task.title!r} comes before "
+                         f"{', '.join(repr(t.title) for t in early)}: give it to a task that "
+                         "comes after every task building a part")
+        if g["look"] and not _A_PAGE.fullmatch(g["look"]):
+            lines.append(f"goal expectation {g['statement']!r}: look {g['look']!r} is not a "
+                         "path; give the page alone, such as dist/index.html, or "
+                         "file:dist/index.html when it must work opened from disk")
+    return lines
 
 
-def attach_goal(tasks: list[ExecutionTask], data: dict[str, Any],
-                request: str) -> tuple[list[GoalExpectation], list[str]]:
+def attach_goal(tasks: list[ExecutionTask], data: dict[str, Any], request: str,
+                ledger: list[Requirement] | None = None,
+                ) -> tuple[list[GoalExpectation], list[str]]:
     """The plan's goal, held by the run, and a criterion on each delivering task.
 
     Each expectation becomes a mandatory review of the task that delivers it,
     judged when that task settles -- not at the end, after the rest of the run
     has been built on it. An expectation that names no task is kept on the goal
-    and reported, not guessed onto one. Returns the goal and the report lines.
+    and reported, not guessed onto one. One of the whole result that the
+    send-back left on a task before the parts is moved to the furthest task
+    after them, and said. Returns the goal and the report lines.
     """
     by_title = {t.title.strip().casefold(): t for t in tasks}
+    whole = {r.id for r in ledger or [] if r.whole}
     goal: list[GoalExpectation] = []
     unplaced: list[str] = []
     for raw in parse_goal(data):
         task = by_title.get(raw["delivered_by"].casefold())
+        if task is not None and raw["whole"] and unbuilt_parts(task, tasks, whole):
+            last = furthest_after_parts(tasks, whole)
+            if last is not None and last is not task:
+                unplaced.append(f"goal expectation {raw['statement']!r} holds only for the "
+                                f"whole result: moved from {task.title!r} to {last.title!r}")
+                task = last
         expectation = GoalExpectation(statement=raw["statement"],
                                       task_id=task.id if task else "",
-                                      look=raw["look"], build=raw["build"])
+                                      look=raw["look"], build=raw["build"],
+                                      whole=raw["whole"])
         goal.append(expectation)
         if task is None:
             unplaced.append(f"goal expectation {raw['statement']!r} names no task in the "

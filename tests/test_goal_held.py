@@ -47,8 +47,10 @@ def _plan(fake: Any, goal: list[dict[str, str]] | None) -> dict[str, Any]:
     return data
 
 
-def _expect(statement: str, delivered_by: str = TITLE, look: str = "", build: str = "") -> dict:
-    return {"statement": statement, "delivered_by": delivered_by, "look": look, "build": build}
+def _expect(statement: str, delivered_by: str = TITLE, look: str = "", build: str = "",
+            whole: bool = False) -> dict:
+    return {"statement": statement, "delivered_by": delivered_by, "look": look, "build": build,
+            "whole": whole}
 
 
 # -- the plan's goal ------------------------------------------------------------------------
@@ -58,7 +60,7 @@ def test_the_plan_must_say_what_the_result_is_for() -> None:
     goal = SYNTHESIS_SCHEMA["properties"]["goal"]
     assert "goal" in SYNTHESIS_SCHEMA["required"] and goal["minItems"] == 1
     assert "too obvious to write" in goal["description"]
-    assert goal["items"]["required"] == ["statement", "delivered_by", "look", "build"]
+    assert goal["items"]["required"] == ["statement", "delivered_by", "look", "build", "whole"]
 
 
 def test_what_keeps_a_goal_from_being_checked_goes_back(fake: Any) -> None:

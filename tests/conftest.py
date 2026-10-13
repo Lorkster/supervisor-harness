@@ -233,7 +233,7 @@ class FakeProvider(Provider):
             "goal": [{
                 "statement": "Repeated failed logins from one address are refused with HTTP 429",
                 "delivered_by": "Add rate limiting to the login endpoint",
-                "look": "", "build": "",
+                "look": "", "build": "", "whole": False,
             }],
             "tasks": [
                 {
