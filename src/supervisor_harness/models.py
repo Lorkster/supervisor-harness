@@ -724,6 +724,9 @@ class GoalExpectation:
     look: str = ""
     build: str = ""
     source: str = "plan"
+    # It holds only once the whole result is built -- a playable game -- so
+    # its task comes after every task that builds a part (`phases.goal_problems`).
+    whole: bool = False
 
 
 @dataclass

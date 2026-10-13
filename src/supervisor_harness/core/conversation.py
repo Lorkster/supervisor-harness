@@ -189,6 +189,9 @@ VERDICT_TOOL = _spec(
             "status": {"type": "string", "enum": ["pass", "fail", "blocked"]},
             "evidence": {"type": "string",
                          "description": "The code you read, quoted with file:line"},
+            "belongs_to": {"type": "string", "description": (
+                "Only when it fails because a later task in the plan builds that part, "
+                "not this one: that task's title, from the plan. Otherwise leave it out")},
         }, "required": ["criterion_id", "status", "evidence"]}},
         "summary": {"type": "string"},
     },

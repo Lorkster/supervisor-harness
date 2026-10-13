@@ -305,9 +305,31 @@ def _who_tests_whom(tasks: list[ExecutionTask]) -> list[str]:
 
 def _not_yet_built(task: ExecutionTask, tasks: list[ExecutionTask],
                    whole: set[str], deps: dict[str, set[str]]) -> list[ExecutionTask]:
-    """The tasks delivering a part of the result that ``task`` does not come after."""
-    return [t for t in tasks if t is not task and set(t.requirements) - whole
-            and not _depends_on(deps, task.id, t.id)]
+    """The tasks building a part of the result that ``task`` does not come after.
+
+    A part is a task that delivers a requirement of less than the whole; in a
+    plan with no requirements, every task is one.
+    """
+    builders = [t for t in tasks if set(t.requirements) - whole]
+    return [t for t in builders or tasks
+            if t is not task and not _depends_on(deps, task.id, t.id)]
+
+
+def unbuilt_parts(task: ExecutionTask, tasks: list[ExecutionTask],
+                  whole: set[str]) -> list[ExecutionTask]:
+    """`_not_yet_built`, for a caller holding tasks whose dependencies may be titles."""
+    return _not_yet_built(task, tasks, whole, _deps(tasks))
+
+
+def furthest_after_parts(tasks: list[ExecutionTask], whole: set[str],
+                         skip: set[str] | None = None) -> ExecutionTask | None:
+    """The task furthest along among those after every part, ``skip`` ids aside."""
+    deps = _deps(tasks)
+    able = [t for t in tasks if t.id not in (skip or set())
+            and not _not_yet_built(t, tasks, whole, deps)]
+    # The furthest along: one no other candidate comes after.
+    return next((t for t in able if not any(_depends_on(deps, o.id, t.id) for o in able)),
+                None)
 
 
 def _too_early(ledger: list[Requirement], tasks: list[ExecutionTask]) -> list[str]:
@@ -344,12 +366,9 @@ def _deliver_last(tasks: list[ExecutionTask], whole: set[str],
         for rid in [r for r in task.requirements if r in whole]:
             if not _not_yet_built(task, tasks, whole, deps):
                 continue
-            able = [t for t in tasks if t is not task
-                    and rid not in {r for g in t.acceptance for r in g.requirements}
-                    and not _not_yet_built(t, tasks, whole, deps)]
-            # The furthest along: one no other candidate comes after.
-            last = next((t for t in able
-                         if not any(_depends_on(deps, o.id, t.id) for o in able)), None)
+            last = furthest_after_parts(tasks, whole, skip={task.id} | {
+                t.id for t in tasks
+                if rid in {r for g in t.acceptance for r in g.requirements}})
             if last is None:
                 continue
             task.requirements.remove(rid)

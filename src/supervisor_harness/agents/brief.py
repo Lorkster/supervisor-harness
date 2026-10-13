@@ -608,6 +608,34 @@ def _runs_block(task: ExecutionTask) -> str:
     return "\n".join(lines)
 
 
+def later_tasks(run: RunState, task: ExecutionTask) -> list[ExecutionTask]:
+    """The tasks that come after ``task``: they depend on it, directly or through others."""
+    after: list[ExecutionTask] = []
+    frontier = {task.id}
+    while frontier:
+        found = [t for t in run.tasks.values()
+                 if t not in after and t.id != task.id and set(t.depends_on) & frontier]
+        after += found
+        frontier = {t.id for t in found}
+    return after
+
+
+def _later_block(run: RunState, task: ExecutionTask) -> str:
+    """The plan's later tasks, so a gap that is theirs is named, not failed here.
+
+    Minesweeper runs 6 and 7: the scaffold failed for browser tests and a
+    playable game -- work later tasks in the same plan were there to do.
+    """
+    later = later_tasks(run, task)
+    if not later:
+        return ""
+    return ("These tasks come after this one. A review criterion that fails only "
+            "because one of them builds that part -- not because this task left its own "
+            "part undone -- set belongs_to to that task's title; the supervisor moves the "
+            "check there. Its own part undone is a fail, with no belongs_to.\n"
+            + "\n".join(f"- {t.title}: {(t.action or t.title)[:200]}" for t in later))
+
+
 def build_verifier_brief(run: RunState, task: ExecutionTask, change_summary: str = "") -> str:
     """The opening message of a verifier's conversation: what is still to be judged.
 
@@ -623,6 +651,7 @@ def build_verifier_brief(run: RunState, task: ExecutionTask, change_summary: str
         _section("What the implementer reports", change_summary),
         _section("Criteria to judge", _dod_block(still_open or task.dod)),
         _section("What the harness already ran", _runs_block(task)),
+        _section("Later in the plan", _later_block(run, task)),
         _section(
             "How to judge",
             _bullets([

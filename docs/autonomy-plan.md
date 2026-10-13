@@ -1087,6 +1087,35 @@ If misses remain that a test cannot hold -- what a person sees while playing --
 a third layer: the result played, not only looked at (click, wait, look
 again), and the whole brief read against it before the run completes.
 
+### After runs 5-7: the plan was frozen
+
+*Written 2026-10-13.* Run 5 scored 71 of 73 hidden tests and run 6 all 73, but
+the harness verified 5 of 6 and 4 of 7 tasks, and run 7 was discarded at 68
+minutes with its scaffold failed three times and its engine once. The model was
+not the cause. Each time a check sat on a task that could not meet it: the
+brief's "done" clause on the scaffold (run 6, fixed in #110); a goal of "a
+playable game, opened from disk" and the Playwright half of a stack requirement
+on the scaffold (run 7); a goal's page written as a sentence, so it was never
+shown. A plan made once, at synthesis, decided where every check was judged, and
+a check in the wrong place could only fail its task, three times, and stall what
+came after.
+
+Turnstone's coordinator holds its plan instead: "when a child reports back, you
+decide whether the goal is met, then close it out, push a follow-up, or spawn
+another child to cover the gap." A gap is new work, not a failure of whoever
+reported. So:
+
+1. **At planning, a goal of the whole result comes last**, as #110 did for
+   requirements: marked by the planner (`whole`), sent back when its task comes
+   before the parts, moved to the furthest task after them if the revision
+   leaves it there. A goal's page is a path, or it goes back.
+2. **At verification, a gap that a later task builds moves there.** The verifier
+   is shown the tasks after this one. A review criterion that fails only because
+   one of them builds that part names it (`belongs_to`), and the harness moves
+   the check to that task -- judged later, on more of the result, and only ever
+   forward. A mechanical result is a fact about the tree and stays; a task's own
+   part left undone is still a failure.
+
 ---
 
 ## The gate between the parts
