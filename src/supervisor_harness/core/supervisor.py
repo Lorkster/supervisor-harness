@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import re
 import traceback
 from dataclasses import replace
@@ -135,6 +136,8 @@ from .envelope import (
     what_was_taken,
     widen_within,
 )
+from .external import FIND_TOOL, USE_TOOL, ExternalTools
+from .external import TOOL_NAMES as EXTERNAL_TOOLS
 from .fails_before import (
     changed_since,
     is_test_module,
@@ -270,6 +273,9 @@ class Supervisor:
         self.reporting = Reporting(self.config, self.store)
         self.packets = Packets(self.config, self.store, self.workspace, self.host)
         self.lifecycle = Lifecycle(self.config, self.router)
+        # The owner's analysis tool servers, started on first use (`core/external.py`).
+        self.external = ExternalTools(self.config.tool_servers,
+                                      self.store.root / "tool-servers")
         self.supervision = Supervision(
             self.config, self.store, self.router,
             self.packets, self.reporting, self.lifecycle,
@@ -2655,6 +2661,10 @@ class Supervisor:
         in_run = role is None
         stage = stage or self.lifecycle._stage_for(agent)
         system, finish, nudge = role or CONVERSATION_ROLES[agent.kind.value]
+        # The owner's analysis tools, beside the workspace's -- not in a stretch that
+        # offers only its finishing tool, which is the one where reading is over.
+        if self.external.configured and len(tools) > 1 and FIND_TOOL not in tools:
+            tools = [*tools, FIND_TOOL, USE_TOOL]
         report: dict[str, Any] | None = None
         offered = {t["name"] for t in tools}
         # Counted from here: a verifier's stretches share one Stint, and
@@ -2725,6 +2735,10 @@ class Supervisor:
                 elif call.name == "message":
                     text = stint.send(call.arguments)
                     stint.record(call, ok=bool(stint.messages), path="")
+                elif call.name in EXTERNAL_TOOLS:
+                    ok, text = await self._external_call(session, agent, call)
+                    stint.record(call, ok, path="")
+                    failures += [] if ok else [call.name]
                 else:
                     if call.name in ("edit_file", "write_file", "delete_file"):
                         await self._widen_for_write(session, agent, toolbox,
@@ -2741,6 +2755,20 @@ class Supervisor:
                                 tools=[c.name for c in response.tool_calls], failures=failures,
                                 **({"unreadable": unreadable} if unreadable else {}))
         return report
+
+    async def _external_call(self, session: RunSession, agent: AgentSpec,
+                             call: ToolCall) -> tuple[bool, str]:
+        """``find_tool`` or ``use_tool``: the owner's analysis tools (`core/external.py`)."""
+        args = call.arguments
+        if call.name == FIND_TOOL["name"]:
+            return True, await self.external.find(str(args.get("query", "")))
+        name = str(args.get("name", ""))
+        raw = args.get("arguments")
+        arguments: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        ok, text = await self.external.use(name, arguments, self._tree(session.state))
+        await session.anote("analysis tool called", actor=agent.id, tool=name, ok=ok,
+                            arguments=json.dumps(arguments)[:300])
+        return ok, text
 
     def _remember_named(self, state: RunState, agent: AgentSpec, call: ToolCall,
                         result: ToolResult, toolbox: Toolbox) -> None:
@@ -3064,6 +3092,7 @@ class Supervisor:
 
 
     async def aclose(self) -> None:
+        await self.external.aclose()
         await self.router.aclose()
         if self._owns_store:
             self.store.close()
