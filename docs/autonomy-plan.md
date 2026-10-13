@@ -1116,6 +1116,23 @@ reported. So:
    forward. A mechanical result is a fact about the tree and stays; a task's own
    part left undone is still a failure.
 
+Two more from turnstone, in the same spirit:
+
+3. **Follow up with the agent that did the work, at once.** A failed task waited
+   for the checkpoint, after every task that could start had run, and went back
+   to a fresh agent only if the checkpoint failed and the run's one remediation
+   budget allowed. Now a task whose check fails goes back when it fails, while
+   its own attempts remain, and its next attempt continues its implementer's
+   conversation -- told what the check found, with what it read still there
+   (turnstone's ``send_to_workstream``). What depends on it waits for it.
+   `policy.follow_up`.
+4. **"Blocked" is not "needs the owner".** Turnstone keeps ``blocked``, a
+   dependency the coordinator may clear, apart from ``needs_user``. A blocked
+   implementer now says which it is. One waiting for another task's work names
+   it, and its task waits behind that one -- the attempt not charged -- instead
+   of going to the owner; a decision, permission, credential or resource still
+   does.
+
 ---
 
 ## The gate between the parts

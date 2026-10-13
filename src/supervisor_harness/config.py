@@ -177,6 +177,13 @@ class Policy:
     # choosing to skip the one reading of its own changes that is not a gate.
     veto_review: bool = True
 
+    # A task whose check fails goes back at once, while attempts remain, and its
+    # next attempt continues its implementer's conversation -- not at the
+    # checkpoint, from a fresh agent (`Supervisor._follow_up`). Off restores the
+    # checkpoint as the only way back. Not protected: either way every check
+    # still has to pass.
+    follow_up: bool = True
+
     # Batch L: before the plan, a reader lists what the request and the
     # documents it points to require, quoted (`core/requirements.py`); the plan
     # must account for each and have each tested by a task other than its

@@ -80,7 +80,10 @@ brief lists the plan), fix it there: the harness lets you, unless another agent 
 working on that file. Change only what your task needs, and say in your report \
 which file you changed and why.
 - If something you cannot fix yourself blocks you -- a file outside the run's plan, \
-a missing dependency -- call report with status "blocked" and say exactly what.
+a missing dependency -- call report with status "blocked" and say exactly what, and \
+what it needs: "work" when another task in the plan must land something first (name \
+it in waiting_for; the supervisor starts you again once it is done), "owner" when only \
+the owner can give it -- a decision, a permission, a credential, a resource.
 - If you find a problem in another task's work that you may not fix, a question your \
 brief does not answer, or something the goal needs that no task does, tell the \
 supervisor with message -- then carry on with your task.
@@ -144,6 +147,11 @@ REPORT_TOOL = _spec(
         },
         "blocked_on": {"type": "string",
                        "description": "Only when blocked: what you cannot do yourself"},
+        "needs": {"type": "string", "enum": ["work", "owner"], "description": (
+            "Only when blocked. work: something another task in the plan must land first; "
+            "owner: a decision, permission, credential or resource only the owner can give")},
+        "waiting_for": {"type": "string", "description": (
+            "Only when needs is work: the title of the task in the plan you are waiting for")},
     },
     ["status", "summary"],
 )
@@ -407,6 +415,8 @@ def stint_payload(stint: Stint, report: dict[str, Any] | None) -> dict[str, Any]
         "output": f"{report.get('summary', '')}\n\nActions this stretch: {done_so_far}",
         "status": status if status in ("done", "blocked") else "done",
         "blocked_on": str(report.get("blocked_on", "")),
+        "needs": str(report.get("needs", "")),
+        "waiting_for": str(report.get("waiting_for", "")),
         "criteria_progress": [c for c in (report.get("criteria") or []) if isinstance(c, dict)],
         "files_touched": stint.written,
         "files_read": stint.read,

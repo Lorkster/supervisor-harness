@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import AgentKind, Phase, RunMode, TaskStatus
 
@@ -26,6 +28,13 @@ FAILING_CHECKPOINT: dict[str, Any] = {
     "avoidable_causes": [],
     "summary": "The task did not meet its definition of done.",
 }
+
+
+@pytest.fixture(autouse=True)
+def _the_checkpoint_path(supervisor: Supervisor) -> None:
+    """The checkpoint's way back, measured on its own. With follow-ups on, a task
+    whose check fails goes back before the checkpoint runs (`test_follow_up.py`)."""
+    supervisor.config.policy.follow_up = False
 
 
 async def _run_with_one_failed_attempt(supervisor: Supervisor, fake) -> Any:

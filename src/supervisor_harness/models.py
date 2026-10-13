@@ -490,6 +490,10 @@ class AgentTurn:
     claimed_status: AgentStatus = AgentStatus.RUNNING
     self_assessment: str = ""
     blocked_on: str = ""
+    # When blocked, what it needs: ``work`` another task in the plan lands --
+    # ``waiting_for`` names it -- or ``owner``, what only the owner can give.
+    needs: str = ""
+    waiting_for: str = ""
     # What this turn could not settle. Every analysis brief has asked for these
     # since the contract was written; nothing read them, `AgentTurn` had no
     # field for them, and they were dropped on arrival. They are the companion
