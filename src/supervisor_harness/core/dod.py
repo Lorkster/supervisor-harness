@@ -966,6 +966,45 @@ def check_what_a_review_names(task: ExecutionTask) -> list[str]:
     return lines
 
 
+#: Commands that install a project's dependencies: what they print depends on what
+#: was already there, so only their exit says whether they worked.
+_INSTALLS = (("npm", "install"), ("npm", "i"), ("npm", "ci"), ("pnpm", "install"),
+             ("pnpm", "i"), ("yarn", "install"), ("pip", "install"), ("pip3", "install"),
+             ("uv", "sync"), ("poetry", "install"), ("bundle", "install"))
+
+
+def _installs(command: str) -> bool:
+    tokens = shell_split(command)
+    if tokens[:3] in (["python", "-m", "pip"], ["python3", "-m", "pip"], ["py", "-m", "pip"]):
+        tokens = tokens[2:]
+    return ((len(tokens) >= 2 and (executable_name(tokens[0]), tokens[1]) in _INSTALLS)
+            or (len(tokens) == 1 and executable_name(tokens[0]) == "yarn"))
+
+
+def judge_installs_by_their_exit(task: ExecutionTask) -> list[str]:
+    """An install checked for text it prints is checked for its exit instead.
+
+    Measured on Minesweeper run 3: "all devDependencies install cleanly", run as
+    `npm install` expecting "added". The first attempt's install added them; the
+    retry found them there and printed "up to date", and failed -- three times,
+    which spent the run's whole remediation budget, so a task that failed for a
+    reason of its own never got its second attempt. The text an installer prints
+    depends on the tree it finds; whether it worked is its exit.
+    """
+    lines: list[str] = []
+    for crit in task.dod:
+        if (crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST) and crit.command.strip()
+                and crit.expect.strip() and not _clean_exit(crit.expect)
+                and not re.fullmatch(r"(?:exit\s*(?:code)?\s*[= ]\s*)?\d+", crit.expect.strip(),
+                                     re.IGNORECASE)
+                and _installs(crit.command)):
+            lines.append(f"criterion {crit.statement!r} looked for {crit.expect!r} in what "
+                         f"`{crit.command}` prints, which depends on what is installed "
+                         "already; it is judged by its exit")
+            crit.expect = ""
+    return lines
+
+
 def fill_what_the_harness_can(task: ExecutionTask, workspace: Path | None) -> list[str]:
     """Every repair the harness makes to proposed criteria before judging them.
 
@@ -973,7 +1012,8 @@ def fill_what_the_harness_can(task: ExecutionTask, workspace: Path | None) -> li
     prepared: what the harness can read for itself is not the model's miss.
     """
     return [*read_grep_inspections(task), *split_chained_commands(task),
-            *fill_suite_commands(task, workspace), *check_what_a_review_names(task)]
+            *fill_suite_commands(task, workspace), *check_what_a_review_names(task),
+            *judge_installs_by_their_exit(task)]
 
 
 #: A check runner's command at the start of a statement, or anywhere in

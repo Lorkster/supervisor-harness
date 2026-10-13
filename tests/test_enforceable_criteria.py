@@ -265,3 +265,49 @@ def test_the_verifier_reads_the_runs_the_review_named(tmp_path: Path) -> None:
     ran = brief.split("What the harness already ran", 1)[1]
     assert "$ python tools/gate.py\nexit=0" in ran.replace("  ", "") and "gate green" in ran
     assert "$ pytest --version" in ran
+
+
+# -- an install is judged by its exit --------------------------------------------------------
+
+
+def test_an_install_checked_for_its_wording_is_checked_for_its_exit() -> None:
+    """Minesweeper run 3: `npm install` expecting "added" failed on "up to date", three times."""
+    from supervisor_harness.core.dod import judge_installs_by_their_exit
+
+    task = _command("npm install", expect="added")
+    notes = judge_installs_by_their_exit(task)
+
+    (crit,) = task.dod
+    assert crit.expect == "" and crit.command == "npm install"
+    assert notes and "judged by its exit" in notes[0]
+
+
+@pytest.mark.parametrize("command", ["npm ci", "npm i", "pnpm install", "yarn", "yarn install",
+                                     "pip install -r requirements.txt",
+                                     "python -m pip install -e .", "uv sync", "poetry install"])
+def test_every_installer_is_read_the_same(command: str) -> None:
+    from supervisor_harness.core.dod import judge_installs_by_their_exit
+
+    task = _command(command, expect="Successfully installed")
+    judge_installs_by_their_exit(task)
+    assert task.dod[0].expect == "", command
+
+
+@pytest.mark.parametrize(("command", "expect"), [
+    ("npm test", "20 passed"),           # not an install: its output is the point
+    ("npm run build", "built in"),
+    ("npm install", "exit 0"),           # already an exit
+    ("npm install", "1"),                # an exit code, whatever it means
+    ("npm install", ""),                 # nothing asked
+])
+def test_what_is_left_as_written(command: str, expect: str) -> None:
+    from supervisor_harness.core.dod import judge_installs_by_their_exit
+
+    task = _command(command, expect=expect)
+    assert judge_installs_by_their_exit(task) == [] and task.dod[0].expect == expect
+
+
+def test_the_harness_reads_installs_before_it_judges_a_plan() -> None:
+    task = _command("npm install", expect="added")
+    fill_what_the_harness_can(task, None)
+    assert task.dod[0].expect == ""
