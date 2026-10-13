@@ -18,15 +18,19 @@ of JSON-RPC over the server's stdin and stdout, not a dependency.
 The server is started with `docs/images/` as both its read and its write root,
 so the only files it can touch are the ones it is here to write.
 
-## Why text is outlined
+## Why the fonts are embedded
 
-The diagrams are set in Inter and JetBrains Mono. A browser shows an SVG's live
-text in whatever fonts the reader has installed, so it would lay out differently
-on every machine. VectorCraft can embed the fonts instead, subset, at a fifth of
-the size -- but GitHub serves repository images under `default-src 'none'`,
-which leaves a `data:` font no way in, and the reader would get the fallback
-after all. Outlined, at two decimal places, each SVG is a few hundred KB and
-looks the same everywhere.
+The diagrams are set in Inter and JetBrains Mono, which few readers have
+installed. Each SVG carries the two as `@font-face` data, subset to the
+characters it draws in each weight, so its text stays text -- selectable,
+searchable -- and lays out the same everywhere.
+
+GitHub serves repository images under `default-src 'none'`, which looks as
+though it should block a `data:` font. It does not, for an SVG shown as an
+image: tested on GitHub in Chromium and against the raw URL in Firefox, with a
+control line in a font that does not exist beside lines in the embedded ones.
+Safari was not tested. `--outline-text` draws text as paths instead, which no
+browser can get wrong, at seven times the size.
 """
 
 from __future__ import annotations
@@ -235,8 +239,11 @@ class Sheet:
         self.note(f"Details: {source}", self.width - 56 - 420, y + 2, color=FAINT, width=420,
                   align="right")
 
-    def export(self, path: Path) -> None:
-        self.vc.tool("export", path=str(path), outlineText=True, options={"decimals": 2})
+    def export(self, path: Path, *, outline: bool = False) -> None:
+        options: dict[str, Any] = {"decimals": 2}
+        if not outline:
+            options["embedFonts"] = True
+        self.vc.tool("export", path=str(path), outlineText=outline, options=options)
 
 
 # ---- the diagrams --------------------------------------------------------------------------
@@ -465,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("names", nargs="*", metavar="name",
                         help=f"diagrams to draw (default: all of {', '.join(DIAGRAMS)})")
+    parser.add_argument("--outline-text", action="store_true",
+                        help="draw text as paths instead of embedding the fonts")
     args = parser.parse_args(argv)
     unknown = [n for n in args.names if n not in DIAGRAMS]
     if unknown:
@@ -476,7 +485,7 @@ def main(argv: list[str] | None = None) -> int:
             draw, width, height, title, description = DIAGRAMS[name]
             sheet = Sheet(vc, width, height, title, description)
             draw(sheet)
-            sheet.export(OUT / f"{name}.svg")
+            sheet.export(OUT / f"{name}.svg", outline=args.outline_text)
             print(f"wrote docs/images/{name}.svg")
     finally:
         vc.close()
