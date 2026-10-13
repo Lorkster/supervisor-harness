@@ -980,6 +980,39 @@ a packet is carried rather than how hard the supervisor pushes back:
 | --- | --- | --- |
 | `inline_briefs` | false | Put the whole brief and schema in the packet instead of pointing at them. For a host that cannot read files. |
 
+### Analysis tool servers
+
+An MCP server you installed -- [rea](https://github.com/morluto/rea), for
+reverse engineering apps and binaries, is the one this was built for -- can
+lend its tools to a run's agents (`core/external.py`). Agents in a
+conversation are offered two tools, `find_tool` and `use_tool`, not one per
+server tool. Name servers in your own `~/.supervisor/config.json`; a workspace
+file cannot, because the harness runs the command:
+
+```json
+{
+  "tool_servers": {
+    "rea": {
+      "command": "node",
+      "args": ["C:/tools/rea/node_modules/rea-agents/scripts/rea.mjs", "mcp"],
+      "allow": "read-only",
+      "effects_tool": "binary_session",
+      "read_roots": ["D:/reference-apps"]
+    }
+  }
+}
+```
+
+| Field | Default | What it controls |
+| --- | --- | --- |
+| `allow` | `read-only` | `read-only`: tools that change nothing outside the server's own session -- from the server's catalog of effects where `effects_tool` names one, else its MCP hints. `all`: every tool it offers. |
+| `effects_tool` | none | A tool that lists each tool's effects, as rea's `binary_session` does. rea's MCP read-only hint is false for every tool that records evidence. |
+| `read_roots` | none | Folders beyond the run's tree that a tool's paths may name. Every path argument, and any absolute path, is held to the tree and these. |
+| `start_seconds`, `call_seconds` | 120, 900 | How long the server may take to start, and one call to answer. |
+
+A server's own output goes to `tool-servers/<name>.log` under the harness's
+home, and its results reach agents marked as data, not instructions.
+
 ---
 
 ## MCP tools
@@ -1038,6 +1071,7 @@ src/supervisor_harness/
     review.py      batch G: a second reading of each task, which can only veto
     observe.py     batch J: the run's page rendered, for a goal check to see, not infer
     requirements.py batch L: what the request requires, quoted, accounted for and tested
+    external.py    the owner's analysis tool servers (MCP), offered to agents as find_tool and use_tool
     paths.py       path normalisation and scope matching
     placement.py   a model's paths placed in the tree, when they name no file
     baseline.py    the commit a run measures its whole-repository checks against

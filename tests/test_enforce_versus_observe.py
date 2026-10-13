@@ -89,6 +89,9 @@ BROAD_SUPPRESSION_ALLOWED = {
     # that cannot be built or rendered is not passed -- its expectation is judged
     # from the code, and the verifier is told so.
     "core/observe.py": "a page that cannot be shown is judged from the code, never passed",
+    # The owner's analysis tools inform an agent and decide nothing: a server that
+    # will not start offers no tools, and a failed call is the agent's to read.
+    "core/external.py": "a tool server that fails is reported to the agent, never a verdict",
     "core/supervisor.py": "the learning pass, the tidy-up, and one agent's crash -- "
                           "none may end a run",
     "mcp_server.py": "the ledger is a progress line over the response, not part of it",

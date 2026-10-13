@@ -29,6 +29,27 @@ PROJECT_CONFIG = "supervisor.config.json"
 
 
 @dataclass
+class ToolServer:
+    """An MCP server whose tools the run's agents may use (`core/external.py`).
+
+    Only the owner's own config may name one: the harness runs ``command``.
+    ``allow`` is ``read-only`` -- tools that change nothing outside the
+    server's session, read from ``effects_tool``'s catalog where the server
+    publishes one -- or ``all``. ``read_roots`` are folders beyond the run's
+    tree that a tool's paths may name.
+    """
+
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    allow: str = "read-only"
+    effects_tool: str = ""
+    read_roots: list[str] = field(default_factory=list)
+    start_seconds: float = 120.0
+    call_seconds: float = 900.0
+
+
+@dataclass
 class ProviderConfig:
     """One configured model source."""
 
@@ -258,6 +279,9 @@ class HarnessConfig:
     # Not a PROTECTED_SETTING: a workspace choosing this only makes its own runs
     # more expensive, which is not the direction protection exists to stop.
     inline_briefs: bool = False
+    # The owner's analysis tool servers, by name (`ToolServer`). Protected: the
+    # harness runs each one's command.
+    tool_servers: dict[str, ToolServer] = field(default_factory=dict)
     sources: list[str] = field(default_factory=list)                 # files that contributed
     # Settings a workspace file tried to set but was not permitted to; surfaced
     # to the user rather than silently dropped.
@@ -392,6 +416,9 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     ("policy", "approval"),
     ("policy", "veto_review"),
     ("policy", "requirements_ledger"),
+    # The harness runs a tool server's command, and its tools act on the owner's
+    # machine: a repository able to add one would choose what runs.
+    ("tool_servers",),
 )
 
 # Per-provider keys an untrusted file may not touch, for the same reason.
