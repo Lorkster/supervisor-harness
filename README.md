@@ -1042,6 +1042,7 @@ src/supervisor_harness/
     placement.py   a model's paths placed in the tree, when they name no file
     baseline.py    the commit a run measures its whole-repository checks against
     worktree.py    an execute-mode run's own branch: where it works, and what it leaves
+    processes.py   a command the harness runs leaves nothing running, nor does a run
     autonomy.py    approving within the envelope: what must hold first, and the task gate
     audit.py       what a finished run's agents actually did, from the record
     timing.py      where a run's wall clock went, folded from the log
