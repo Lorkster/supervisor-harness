@@ -39,6 +39,7 @@ from pathlib import Path
 
 from .baseline import _git
 from .dod import run_bounded
+from .processes import stop_processes_in
 
 #: Branches the harness creates are all under here, so they are easy to find,
 #: list and delete, and never collide with the owner's own naming.
@@ -125,15 +126,16 @@ def close(workspace: Path, tree: Path, base: str, message: str) -> Closed:
         return Closed(note="git could not stage the run's changes; the worktree is kept")
     staged = _git(tree, "diff", "--cached", "--stat", base, timeout=TIMEOUT) or ""
     if not staged.strip():
-        removed = _remove(workspace, tree)
-        return Closed(removed=removed, note="the run changed nothing; the branch is at "
-                                            "its starting commit")
+        removed, stopped = _remove(workspace, tree)
+        return Closed(removed=removed, note=_joined("the run changed nothing; the branch is "
+                                                    "at its starting commit", stopped))
     if _git(tree, "commit", "-q", "-m", message, timeout=TIMEOUT) is None:
         return Closed(diffstat=staged, note=(
             "git could not commit the run's changes (is user.name and user.email "
             f"set?); they are uncommitted in the worktree at {tree}, which is kept"))
     commit = _git(tree, "rev-parse", "HEAD") or ""
-    return Closed(commit=commit, diffstat=staged, removed=_remove(workspace, tree))
+    removed, stopped = _remove(workspace, tree)
+    return Closed(commit=commit, diffstat=staged, removed=removed, note=stopped)
 
 
 def release(workspace: Path, path: str, branch: str, *, unmerged: bool) -> str:
@@ -151,8 +153,8 @@ def release(workspace: Path, path: str, branch: str, *, unmerged: bool) -> str:
     """
     notes: list[str] = []
     if path and Path(path).exists():
-        _remove(workspace, Path(path))
-        notes.append("removed its worktree")
+        _, stopped = _remove(workspace, Path(path))
+        notes.append(_joined("removed its worktree", stopped))
     if not branch.startswith(BRANCH_PREFIX):
         return "; ".join(notes)
     tip = _git(workspace, "rev-parse", "--verify", "-q", f"refs/heads/{branch}")
@@ -168,9 +170,25 @@ def release(workspace: Path, path: str, branch: str, *, unmerged: bool) -> str:
     return "; ".join(notes)
 
 
-def _remove(workspace: Path, tree: Path) -> bool:
-    """Take the worktree down and unregister it; the branch stays."""
+def _remove(workspace: Path, tree: Path) -> tuple[bool, str]:
+    """Take the worktree down and unregister it; the branch stays.
+
+    Whether it is gone, and what had to be stopped first. On Windows a process
+    working in the tree, or running a program from it, keeps it from being
+    deleted: run 5's came down to `node_modules` and a lockfile, and the scorer
+    scored that. Every command the harness runs is stopped whole when it
+    returns (`processes.BoundedProcess`); this is for whatever escaped that --
+    and it is said, in the note, because it stops processes the harness may
+    not have started.
+    """
+    stopped = stop_processes_in(tree)
     if _git(workspace, "worktree", "remove", "--force", str(tree), timeout=TIMEOUT) is None:
         shutil.rmtree(tree, ignore_errors=True)
         _git(workspace, "worktree", "prune")
-    return not tree.exists()
+    note = (f"stopped what was still running in the worktree: {', '.join(stopped)}"
+            if stopped else "")
+    return not tree.exists(), note
+
+
+def _joined(*notes: str) -> str:
+    return "; ".join(note for note in notes if note)

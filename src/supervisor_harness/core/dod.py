@@ -40,9 +40,7 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -56,6 +54,7 @@ from ..models import (
     VerifyMethod,
 )
 from .baseline import git_baseline
+from .processes import BoundedProcess
 
 # Statements that assert a feeling rather than a fact. A criterion phrased this
 # way cannot fail, which means it cannot verify anything either.
@@ -1420,52 +1419,30 @@ def run_bounded(argv: list[str], cwd: Path | str, timeout: float,
     shims, which run inside ``cmd.exe``: the timeout killed ``cmd`` and the
     program kept running and holding the pipes, so the call returned only when
     the program finished. Measured: a 1-second timeout on a shim returned after
-    7.1 seconds. The whole tree is killed instead -- ``taskkill /T`` on Windows,
-    the process group elsewhere -- and ``TimeoutExpired`` is raised as before.
+    7.1 seconds. The whole tree is killed instead, and ``TimeoutExpired`` is
+    raised as before.
+
+    "The whole tree" is everything the command started, whether or not its
+    parent is still alive, and it is killed when the command returns as well:
+    `processes.BoundedProcess` says how, and what run 5 left running without it.
     The command also runs without the user's credentials (`child_environment`),
     plus ``extra_env``: the harness's own additions, never a model's.
     """
     env = {**child_environment(), **(extra_env or {})}
-    if sys.platform == "win32":
-        proc = subprocess.Popen(  # noqa: S603 - tokenised, no shell, allow-listed
-            argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            errors="replace", env=env,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-    else:
-        proc = subprocess.Popen(  # noqa: S603 - tokenised, no shell, allow-listed
-            argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            errors="replace", env=env, start_new_session=True,
-        )
+    bounded = BoundedProcess(argv, cwd, env)
+    proc = bounded.proc
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        _kill_tree(proc)
+        bounded.stop()
         try:
             out, err = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             out, err = "", ""
         raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err) from None
+    finally:
+        bounded.stop()
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
-
-
-def _kill_tree(proc: subprocess.Popen[str]) -> None:
-    if sys.platform == "win32":
-        subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],  # noqa: S607
-            capture_output=True, check=False,
-        )
-    # Plain try/except rather than contextlib.suppress: the project's guard
-    # counts every `suppress` as a broad one (test_enforce_versus_observe).
-    else:
-        try:  # noqa: SIM105
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass  # already gone, or not ours to signal; `kill` below still runs
-    try:  # noqa: SIM105
-        proc.kill()
-    except OSError:
-        pass  # the tree is already dead
 
 
 def resolve_runner(name: str) -> tuple[str | None, str]:
