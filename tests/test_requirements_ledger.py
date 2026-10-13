@@ -272,6 +272,65 @@ def test_a_builder_inside_the_testers_ground_is_said_not_fenced(fake: FakeProvid
     assert any("may be written before the work" in n for n in notes[tester.id])
 
 
+def _with_the_bar(fake: FakeProvider, command: str, **plan: Any) -> tuple[
+        list[ExecutionTask], dict[str, list[str]]]:
+    """The plan's tasks with the harness's test bar on each, as `prepare_tasks` adds it."""
+    from supervisor_harness.core.dod import TESTS_BAR
+    from supervisor_harness.models import DoDCriterion
+
+    data = _plan(fake, **plan)
+    tasks = parse_tasks(data, "run_X")
+    phases.resolve_dependencies(tasks)
+    for task in tasks:
+        task.dod.append(DoDCriterion(statement=TESTS_BAR, method=VerifyMethod.TEST,
+                                     command=command, expect="0", suite=True))
+    _, notes = attach_requirements(tasks, _ledger(ELEVENTH, PER_ACCOUNT), data)
+    return tasks, notes
+
+
+def test_a_builder_someone_else_tests_keeps_the_suite_green_and_writes_none(
+    fake: FakeProvider,
+) -> None:
+    """Minesweeper run 6: the bar asked the engine's builder for tests of its own, beside
+    the unit tests a separate task wrote from the brief; the two suites disagreed."""
+    from supervisor_harness.config import Policy
+    from supervisor_harness.core.dod import TESTS_BAR, apply_quality_bars
+
+    (builder, tester), notes = _with_the_bar(fake, "pytest -q", deliver=["R1", "R2"],
+                                             test=["R1"])
+
+    (suite,) = [c for c in builder.dod if c.suite]
+    assert suite.statement == ("The project's test suite passes; the tests of this task's "
+                               f"requirements are written by {TESTER!r}")
+    assert (suite.command, suite.mandatory) == ("pytest -q", True), (
+        "a suite the project already had must not break")
+    assert any("asks only that the suite passes" in n for n in notes[builder.id])
+    assert [c.statement for c in tester.dod if c.suite] == [TESTS_BAR], "the tester's stays"
+    assert TESTS_BAR not in [c.statement for c in apply_quality_bars(builder, Policy())], (
+        "not added back when approval re-runs the bars")
+
+
+def test_in_a_project_with_no_suite_yet_the_builders_suite_is_reported_not_required(
+    fake: FakeProvider,
+) -> None:
+    (builder, tester), _ = _with_the_bar(fake, "", deliver=["R1"], test=["R1"])
+
+    (suite,) = [c for c in builder.dod if c.suite]
+    assert suite.mandatory is False, "the builder comes before any test exists"
+    assert [c.mandatory for c in tester.dod if c.suite] == [True], "the tester carries it"
+
+
+def test_a_builder_nobody_else_tests_keeps_the_whole_bar(fake: FakeProvider) -> None:
+    from supervisor_harness.core.dod import TESTS_BAR
+
+    (builder, _), notes = _with_the_bar(
+        fake, "pytest -q", deliver=["R1"], test=[],
+        not_tested=[{"requirement": "R1", "reason": "visual"}])
+
+    assert [c.statement for c in builder.dod if c.suite] == [TESTS_BAR]
+    assert not any("asks only" in n for n in notes.get(builder.id, []))
+
+
 @pytest.mark.parametrize(("paths", "root"), [
     (["tests/acceptance/**"], "tests/acceptance"),
     (["e2e/*.spec.ts"], "e2e"),
@@ -299,6 +358,7 @@ def test_the_builder_and_the_tester_are_told_their_parts(fake: FakeProvider) -> 
     assert f"{TESTER!r} then tests them" in mine and "Never change: `tests/acceptance/**`" in mine
     theirs = brief(tester)
     assert "Write each test from the words quoted, not from the code" in theirs
+    assert "Write no tests of your own for them" in mine
     assert "`[R3] ...`" in theirs and f"- R2: {PER_ACCOUNT}" in theirs
     assert "Never weaken a test" in theirs
 

@@ -34,6 +34,7 @@ from typing import Any
 
 from ..contracts import REQUIREMENTS_SCHEMA, parse_quoted, parse_reasoned
 from ..models import DoDCriterion, ExecutionTask, Requirement, VerifyMethod
+from .dod import TESTS_BAR
 from .paths import globs_within
 
 #: More than this and the plan becomes bookkeeping. The Minesweeper brief, about
@@ -392,7 +393,38 @@ def attach_requirements(
                 notes.setdefault(builder.id, []).append(
                     f"may not change {pattern!r}: {tester.title!r} writes the tests of its "
                     "work there")
+    for builder in tasks:
+        testers = [t.title for t in tasks if t is not builder and set(builder.requirements)
+                   & {rid for g in t.acceptance for rid in g.requirements}]
+        if testers and _one_suite(builder, testers):
+            notes.setdefault(builder.id, []).append(
+                "the harness's test bar asks only that the suite passes: the tests of its "
+                f"requirements are written by {', '.join(repr(t) for t in testers)}")
     return accounted, notes
+
+
+def _one_suite(builder: ExecutionTask, testers: list[str]) -> bool:
+    """The test bar of a builder whose requirements another task tests: the suite passes.
+
+    Minesweeper run 6: the bar asked the engine's builder for tests of its own,
+    and it wrote `tests/engine.test.ts` beside the unit tests a separate task
+    was writing from the brief. Two suites of the same rules disagreed, one
+    broke `npm test`, and the finding about it cost a third task its last
+    attempt. The tester's suite is the one; the builder keeps the suite green.
+
+    Mandatory where the project had a suite when the plan was made: its tests
+    must not break. In a project built from nothing the builder comes before
+    any test, and a runner with none to run fails -- so there it is run and
+    reported, and the tester, after it, carries the bar; what the tester finds
+    broken goes back to the builder as a finding.
+    """
+    for i, crit in enumerate(builder.dod):
+        if crit.statement == TESTS_BAR:
+            builder.dod[i] = replace(crit, mandatory=bool(crit.command.strip()), statement=(
+                "The project's test suite passes; the tests of this task's requirements are "
+                f"written by {', '.join(repr(t) for t in testers)}"))
+            return True
+    return False
 
 
 def report_lines(ledger: list[Requirement], tasks: dict[str, ExecutionTask]) -> list[str]:
