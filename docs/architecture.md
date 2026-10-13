@@ -8,6 +8,9 @@ narrows as authority is handed down.
 Drawn in ASCII rather than a diagram format, deliberately: these are read in an
 editor and a terminal as often as on a page, and a picture that renders in one
 place and not the others is worse than a plain one that renders everywhere.
+Each also has a rendered version for the web, in [`images/`](images/), drawn by
+`tools/draw_diagrams.py`. The ASCII stays the reference: change it first, then the
+function that draws its picture, and run the tool again.
 
 - [The phase machine](#the-phase-machine)
 - [What is written where](#what-is-written-where)
@@ -20,6 +23,8 @@ place and not the others is worse than a plain one that renders everywhere.
 
 Every arrow is a `PHASE_CHANGED` event on the run's log, so a run resumes at
 whatever phase it had reached, in another process or a later session.
+
+Rendered: [`images/run-lifecycle.svg`](images/run-lifecycle.svg).
 
 ```
   supervisor start
@@ -110,6 +115,8 @@ is quietly dropped, and nothing is called done.
 The event log is the only thing that is not derived. Everything else can be
 rebuilt from it, and is.
 
+Rendered: [`images/event-log.svg`](images/event-log.svg).
+
 ```
    something happens
    (a turn, a directive, a
@@ -165,6 +172,8 @@ across runs; losing it costs the answers until `reindex`, not the run.
 Both backends run the same supervision path. The difference is who calls the
 model — and in host-delegated mode the harness is not in the model path at all.
 
+Rendered: [`images/backends.svg`](images/backends.svg).
+
 ```
         HOST-DELEGATED (default)              AUTONOMOUS
         ────────────────────────              ──────────
@@ -205,6 +214,8 @@ Three differences follow from the backend rather than being oversights:
 
 Four ceilings, each narrower than the one above it. Authority only ever
 narrows, and every narrowing is recorded.
+
+Rendered: [`images/fence.svg`](images/fence.svg).
 
 ```
   ┌────────────────────────────────────────────────────────────────┐
