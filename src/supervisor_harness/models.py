@@ -738,6 +738,9 @@ class Requirement:
     source: str = "request"
     # ``reader``, or ``audit``: the second reading, asked what the first left out.
     found_by: str = "reader"
+    # It holds only once the whole result is built -- a final gate, a "done
+    # when" -- so it is delivered by a task after every task that delivers one.
+    whole: bool = False
     set_aside: str = ""
     not_tested: str = ""
 

@@ -331,6 +331,99 @@ def test_a_builder_nobody_else_tests_keeps_the_whole_bar(fake: FakeProvider) -> 
     assert not any("asks only" in n for n in notes.get(builder.id, []))
 
 
+# -- a requirement of the whole result is delivered last ---------------------------------
+
+
+DONE = "npm run check passes, and npm run test:e2e passes against the production build"
+
+
+def _three() -> tuple[list[ExecutionTask], list[Requirement]]:
+    """Run 6's shape: the scaffold first, the engine after it, a gates task after both."""
+    scaffold = ExecutionTask(title="Scaffold", requirements=["R1", "R3"],
+                             scope=Scope(paths=["package.json"]))
+    engine = ExecutionTask(title="Engine", requirements=["R2"], depends_on=[scaffold.id],
+                           scope=Scope(paths=["src/engine.ts"]))
+    gates = ExecutionTask(title="Gates", depends_on=[engine.id],   # the scaffold, through it
+                          scope=Scope(paths=["vite.config.ts"]))
+    ledger = _ledger(ELEVENTH, PER_ACCOUNT, DONE)
+    ledger[2].whole = True
+    return [scaffold, engine, gates], ledger
+
+
+def test_the_reader_says_which_hold_only_for_the_whole(tmp_path: Path) -> None:
+    from supervisor_harness.contracts import parse_quoted
+
+    raw = {"requirements": [{"quote": ELEVENTH, "source": "request", "whole": False},
+                            {"quote": DONE, "source": "request", "whole": True},
+                            {"quote": PER_ACCOUNT, "source": "request", "whole": "true"},
+                            {"quote": "A thing someone could check", "source": "request"}]}
+    assert [q["whole"] for q in parse_quoted(raw)] == [False, True, True, False]
+    assert REQUIREMENTS_SCHEMA["properties"]["requirements"]["items"]["required"] == [
+        "quote", "source", "whole"]
+    ledger, _ = build_ledger([], raw, request=" ".join([ELEVENTH, DONE, PER_ACCOUNT]),
+                             workspace=tmp_path, found_by="reader")
+    assert [r.whole for r in ledger] == [False, True, True]
+    assert "whole: true" in requirements.READER_SYSTEM
+    assert "R2 (request, whole result)" in requirements.audit_prompt("p", ledger)
+    block = requirements.synthesis_block(ledger)
+    assert f"- R2 (whole result): {DONE}" in block and f"- R1: {ELEVENTH}" in block
+    assert "depends on every task delivering requirements" in block
+
+
+def test_a_whole_result_requirement_on_an_early_task_goes_back() -> None:
+    """Minesweeper run 6: the brief's "done" clause went to the scaffold, the first task."""
+    tasks, ledger = _three()
+
+    lines = requirements._too_early(ledger, tasks)
+    assert lines == ["R3 holds only for the whole result, but 'Scaffold' delivers it before "
+                     "'Engine': give it to a task that depends on every task delivering "
+                     "requirements"]
+    assert any(line == lines[0] for line in coverage_problems(ledger, {}, tasks))
+
+    tasks[0].requirements, tasks[2].requirements = ["R1"], ["R3"]
+    assert requirements._too_early(ledger, tasks) == [], "the gates come after every part"
+
+    # Two whole-result requirements on two last tasks: neither is a part of the other.
+    docs = ExecutionTask(title="Docs", requirements=["R4"], depends_on=[tasks[1].id])
+    ledger.append(Requirement(id="R4", quote="the README says how to run it", whole=True))
+    assert requirements._too_early(ledger, [*tasks, docs]) == []
+
+
+def test_what_the_send_back_left_early_is_moved_after_every_part() -> None:
+    tasks, ledger = _three()
+    scaffold, _, gates = tasks
+
+    accounted, notes = attach_requirements(tasks, ledger, {})
+
+    assert (scaffold.requirements, gates.requirements) == (["R1"], ["R3"])
+    assert any("moved to 'Gates'" in n for n in notes[scaffold.id])
+    assert any("delivers R3, moved from 'Scaffold'" in n for n in notes[gates.id])
+    assert any(c.statement == "Delivers R3 as the request states them" for c in gates.dod)
+    assert not any("R3" in c.statement for c in scaffold.dod), "not checked too early"
+    assert accounted[2].whole
+
+
+def test_a_whole_result_requirement_is_not_moved_to_its_tester_nor_nowhere() -> None:
+    tasks, ledger = _three()
+    _, engine, gates = tasks
+    gates.acceptance = [AcceptanceTests(["R3"], "npm run check")]
+
+    attach_requirements(tasks, ledger, {})
+    assert "R3" in engine.requirements and "R3" not in gates.requirements, (
+        "not to the task that tests it; to the last that builds a part")
+
+    tasks, ledger = _three()
+    tasks[1].depends_on = tasks[2].depends_on = []
+    attach_requirements(tasks, ledger, {})
+    assert "R3" in tasks[0].requirements, "no task comes after every part"
+
+
+def test_the_report_says_which_hold_for_the_whole() -> None:
+    tasks, ledger = _three()
+    lines = requirements.report_lines(ledger, {t.id: t for t in tasks})
+    assert any(line.startswith("- **R3** (docs/SPEC.md, whole result):") for line in lines)
+
+
 @pytest.mark.parametrize(("paths", "root"), [
     (["tests/acceptance/**"], "tests/acceptance"),
     (["e2e/*.spec.ts"], "e2e"),

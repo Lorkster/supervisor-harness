@@ -123,7 +123,7 @@ def build_ledger(
             break
         seen.append((flat, source))
         ledger.append(Requirement(id=f"R{len(ledger) + 1}", quote=quote, source=source,
-                                  found_by=found_by))
+                                  found_by=found_by, whole=bool(item["whole"])))
     return ledger, notes
 
 
@@ -147,6 +147,9 @@ a table row stating one element's contract is one.
 - Leave out background, motivation, examples that only illustrate, and \
 instructions about how to work.
 - Do not leave out what seems too obvious to state: that is what a plan forgets.
+- Mark whole: true where it can only hold once everything is built -- the gates \
+that must pass at the end, a 'done when', what every part contributes to -- so it \
+is checked last, not on the first task that touches it.
 - At most 60. If there are more, merge the smallest into their neighbours.
 
 Then call list_requirements with them."""
@@ -181,7 +184,8 @@ def reader_prompt(request: str) -> str:
 
 def audit_prompt(request: str, ledger: list[Requirement]) -> str:
     """The second reading: the request, and the list to find gaps in."""
-    listed = "\n".join(f"- {r.id} ({r.source}): {r.quote}" for r in ledger) or "(empty)"
+    listed = "\n".join(f"- {r.id} ({r.source}{', whole result' if r.whole else ''}): "
+                       f"{r.quote}" for r in ledger) or "(empty)"
     return f"# The request\n\n{request}\n\n# The list so far\n\n{listed}\n"
 
 
@@ -192,7 +196,8 @@ def synthesis_block(ledger: list[Requirement]) -> str:
     """What the planner is told of the ledger, and what it must do with it."""
     if not ledger:
         return ""
-    listed = "\n".join(f"- {r.id}: {r.quote}" for r in ledger)
+    listed = "\n".join(f"- {r.id}{' (whole result)' if r.whole else ''}: {r.quote}"
+                       for r in ledger)
     return (
         "\n\n# Requirements\n\n"
         "What the request requires, quoted. The supervisor holds this list; the plan "
@@ -204,7 +209,10 @@ def synthesis_block(ledger: list[Requirement]) -> str:
         "`acceptance_tests`, a command that runs those tests and the ids they cover. "
         "Or put it in `not_tested` with why. The testing task's scope is the test "
         "files it writes, which the delivering task may not change; each test's "
-        "title carries its id in brackets, like `[R3] ...`.\n\n"
+        "title carries its id in brackets, like `[R3] ...`.\n"
+        "- One marked (whole result) holds only once everything is built: give it to "
+        "a task that depends on every task delivering requirements, such as a last "
+        "task that runs the final gates.\n\n"
         f"{listed}"
     )
 
@@ -272,6 +280,7 @@ def coverage_problems(ledger: list[Requirement], data: dict[str, Any],
                      "`acceptance_tests` of a task other than the one that delivers it, with "
                      "the command that runs its tests, or in `not_tested` with why")
     lines += _who_tests_whom(tasks)
+    lines += _too_early(ledger, tasks)
     lines += [f"{rid} is set aside or not tested without a reason; say why"
               for rid, reason in {**set_aside, **not_tested}.items() if not reason]
     return list(dict.fromkeys(lines))
@@ -292,6 +301,64 @@ def _who_tests_whom(tasks: list[ExecutionTask]) -> list[str]:
                   if builder is not task and rid in builder.requirements
                   and _depends_on(deps, builder.id, task.id)]
     return lines
+
+
+def _not_yet_built(task: ExecutionTask, tasks: list[ExecutionTask],
+                   whole: set[str], deps: dict[str, set[str]]) -> list[ExecutionTask]:
+    """The tasks delivering a part of the result that ``task`` does not come after."""
+    return [t for t in tasks if t is not task and set(t.requirements) - whole
+            and not _depends_on(deps, task.id, t.id)]
+
+
+def _too_early(ledger: list[Requirement], tasks: list[ExecutionTask]) -> list[str]:
+    """A requirement of the whole result, given to a task before the parts are built.
+
+    Minesweeper run 6: the brief's "done" clause -- both gates pass, the tests
+    cover the rules -- went to the scaffold, the first task, whose verifier
+    then found no browser tests and failed it, and every task behind it waited.
+    """
+    whole = {r.id for r in ledger if r.whole}
+    deps = _deps(tasks)
+    lines = []
+    for task in tasks:
+        for rid in [r for r in task.requirements if r in whole]:
+            early = _not_yet_built(task, tasks, whole, deps)
+            if early:
+                lines.append(
+                    f"{rid} holds only for the whole result, but {task.title!r} delivers it "
+                    f"before {', '.join(repr(t.title) for t in early)}: give it to a task "
+                    "that depends on every task delivering requirements")
+    return lines
+
+
+def _deliver_last(tasks: list[ExecutionTask], whole: set[str],
+                  notes: dict[str, list[str]]) -> None:
+    """Move a whole-result requirement given too early to a task after every part.
+
+    What the send-back did not put right: the first task, in plan order, that
+    comes after every task delivering a part, and does not test it. Left where
+    it is, and said, when there is none.
+    """
+    deps = _deps(tasks)
+    for task in tasks:
+        for rid in [r for r in task.requirements if r in whole]:
+            if not _not_yet_built(task, tasks, whole, deps):
+                continue
+            able = [t for t in tasks if t is not task
+                    and rid not in {r for g in t.acceptance for r in g.requirements}
+                    and not _not_yet_built(t, tasks, whole, deps)]
+            # The furthest along: one no other candidate comes after.
+            last = next((t for t in able
+                         if not any(_depends_on(deps, o.id, t.id) for o in able)), None)
+            if last is None:
+                continue
+            task.requirements.remove(rid)
+            last.requirements.append(rid)
+            notes.setdefault(task.id, []).append(
+                f"{rid} holds only for the whole result: moved to {last.title!r}, which "
+                "comes after every task delivering a part")
+            notes.setdefault(last.id, []).append(
+                f"delivers {rid}, moved from {task.title!r}: it holds only for the whole result")
 
 
 def _tests_root(paths: list[str]) -> str:
@@ -361,6 +428,8 @@ def attach_requirements(
     deps = _deps(tasks)
     for task in tasks:
         task.requirements = [rid for rid in task.requirements if rid in by_id]
+    _deliver_last(tasks, {r.id for r in accounted if r.whole}, notes)
+    for task in tasks:
         if task.requirements:
             task.dod.append(builder_criterion(by_id, task.requirements))
     for tester in tasks:
@@ -381,18 +450,7 @@ def attach_requirements(
                 deps[tester.id].add(builder.id)
                 notes.setdefault(tester.id, []).append(
                     f"depends on {builder.title!r}: the tests come after the work they test")
-            for pattern in tester.scope.paths:
-                if pattern in builder.scope.forbidden_paths:
-                    continue
-                if any(globs_within([own], [pattern]) for own in builder.scope.paths):
-                    notes.setdefault(builder.id, []).append(
-                        f"its scope lies inside {pattern!r}, where {tester.title!r} writes "
-                        "the tests of its work; not fenced off")
-                    continue
-                builder.scope.forbidden_paths.append(pattern)
-                notes.setdefault(builder.id, []).append(
-                    f"may not change {pattern!r}: {tester.title!r} writes the tests of its "
-                    "work there")
+            _fence(builder, tester, notes)
     for builder in tasks:
         testers = [t.title for t in tasks if t is not builder and set(builder.requirements)
                    & {rid for g in t.acceptance for rid in g.requirements}]
@@ -401,6 +459,21 @@ def attach_requirements(
                 "the harness's test bar asks only that the suite passes: the tests of its "
                 f"requirements are written by {', '.join(repr(t) for t in testers)}")
     return accounted, notes
+
+
+def _fence(builder: ExecutionTask, tester: ExecutionTask, notes: dict[str, list[str]]) -> None:
+    """The tester's files, forbidden to the builder whose work they test."""
+    for pattern in tester.scope.paths:
+        if pattern in builder.scope.forbidden_paths:
+            continue
+        if any(globs_within([own], [pattern]) for own in builder.scope.paths):
+            notes.setdefault(builder.id, []).append(
+                f"its scope lies inside {pattern!r}, where {tester.title!r} writes the tests "
+                "of its work; not fenced off")
+            continue
+        builder.scope.forbidden_paths.append(pattern)
+        notes.setdefault(builder.id, []).append(
+            f"may not change {pattern!r}: {tester.title!r} writes the tests of its work there")
 
 
 def _one_suite(builder: ExecutionTask, testers: list[str]) -> bool:
@@ -437,7 +510,8 @@ def report_lines(ledger: list[Requirement], tasks: dict[str, ExecutionTask]) -> 
         testers = [t for t in tasks.values()
                    if any(req.id in g.requirements for g in t.acceptance)]
         quote = " ".join(req.quote.split())
-        lines.append(f"- **{req.id}** ({req.source}): {quote[:200]}")
+        whole = ", whole result" if req.whole else ""
+        lines.append(f"- **{req.id}** ({req.source}{whole}): {quote[:200]}")
         if req.set_aside:
             lines.append(f"    - set aside: {req.set_aside}")
         for label, group in (("delivered by", builders), ("tested by", testers)):

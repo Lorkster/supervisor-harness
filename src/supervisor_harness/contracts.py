@@ -333,8 +333,16 @@ REQUIREMENTS_SCHEMA: dict[str, Any] = {
                         "description": ("Where the quote is: 'request', or the workspace "
                                         "path of the document, such as docs/SPEC.md"),
                     },
+                    "whole": {
+                        "type": "boolean",
+                        "description": (
+                            "true when it can only hold once the whole result is built -- "
+                            "a final gate, a 'done when', something every part contributes "
+                            "to; false when one part of the work can deliver it"
+                        ),
+                    },
                 },
-                "required": ["quote", "source"],
+                "required": ["quote", "source", "whole"],
             },
         },
     },
@@ -759,14 +767,17 @@ def parse_goal(data: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
-def parse_quoted(data: dict[str, Any]) -> list[dict[str, str]]:
-    """A reader's requirements, each a quote and its source; the rest dropped."""
-    out: list[dict[str, str]] = []
+def parse_quoted(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """A reader's requirements, each a quote, its source and whether it is the whole
+    result's; the rest dropped."""
+    out: list[dict[str, Any]] = []
     for raw in data.get("requirements") or []:
         if not isinstance(raw, dict) or not str(raw.get("quote", "")).strip():
             continue
         out.append({"quote": str(raw["quote"]).strip(),
-                    "source": str(raw.get("source", "")).strip() or "request"})
+                    "source": str(raw.get("source", "")).strip() or "request",
+                    "whole": raw.get("whole") is True
+                    or str(raw.get("whole", "")).strip().lower() == "true"})
     return out
 
 
