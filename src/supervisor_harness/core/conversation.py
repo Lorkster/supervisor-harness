@@ -81,6 +81,9 @@ working on that file. Change only what your task needs, and say in your report \
 which file you changed and why.
 - If something you cannot fix yourself blocks you -- a file outside the run's plan, \
 a missing dependency -- call report with status "blocked" and say exactly what.
+- If you find a problem in another task's work that you may not fix, a question your \
+brief does not answer, or something the goal needs that no task does, tell the \
+supervisor with message -- then carry on with your task.
 - Your report is a claim. An independent verifier and the harness check every \
 criterion, so claim only what you did.
 """
@@ -143,6 +146,29 @@ REPORT_TOOL = _spec(
                        "description": "Only when blocked: what you cannot do yourself"},
     },
     ["status", "summary"],
+)
+
+
+#: The blackboard's channel, in the conversation: a message routed by the
+#: supervisor (`core/blackboard.py`), answered with its next directive.
+MESSAGE_TOOL = _spec(
+    "message",
+    "Tell the supervisor, or another agent, something they need to know: a bug you "
+    "found in another task's work, a question your brief does not answer, something "
+    "the goal needs that no task does, or two things that contradict each other. It "
+    "does not end your work: carry on with your task. An answer comes with the "
+    "supervisor's next message to you.",
+    {
+        "to": {"type": "string",
+               "description": "'supervisor', another agent's id, or '*' for every agent"},
+        "kind": {"type": "string", "enum": ["question", "finding", "warning",
+                                               "contradiction", "handoff"]},
+        "subject": {"type": "string"},
+        "content": {"type": "string",
+                    "description": "What it is, where (file:line), and what it means "
+                                   "for the work"},
+    },
+    ["to", "kind", "content"],
 )
 
 
@@ -218,6 +244,8 @@ def native_tool_specs(agent: AgentSpec, policy: Policy) -> list[dict[str, Any]]:
             "make -- to see whether your change works. Name only paths inside your "
             "scope, use no shell operators, and never git.",
             {"command": {"type": "string"}}, ["command"]))
+    if agent.kind.value in ("execution", "verification"):
+        specs.append(MESSAGE_TOOL)
     specs.append(VERDICT_TOOL if agent.kind.value == "verification" else REPORT_TOOL)
     return specs
 
@@ -235,6 +263,22 @@ class Stint:
     usage: Usage = field(default_factory=Usage)
     #: The model call failed and the agent has been ended; nothing to record.
     failed: bool = False
+    #: What it sent with `message`, in the turn contract's shape, for routing.
+    messages: list[dict[str, str]] = field(default_factory=list)
+
+    def send(self, arguments: dict[str, Any]) -> str:
+        """Keep one `message` call for its turn; what the agent is told."""
+        content = str(arguments.get("content", "")).strip()
+        if not content:
+            return "Not sent: a message needs content."
+        self.messages.append({
+            "recipient": str(arguments.get("to", "")).strip() or "supervisor",
+            "kind": str(arguments.get("kind", "")).strip() or "note",
+            "subject": str(arguments.get("subject", "")).strip(),
+            "content": content,
+        })
+        return ("Sent. The supervisor routes it, and any answer comes with its next "
+                "message to you. Carry on with your task.")
 
     def record(self, call: ToolCall, ok: bool, path: str) -> None:
         self.tool_calls += 1
@@ -353,7 +397,8 @@ def stint_payload(stint: Stint, report: dict[str, Any] | None) -> dict[str, Any]
         said = " ".join(t for t in stint.text if t.strip())[-3000:]
         output = (f"{said}\n\n" if said else "") + f"Actions this stretch: {done_so_far}"
         return {"output": output, "status": "running", "files_touched": stint.written,
-                "files_read": stint.read, "reasoning": stint.reasoning[-4000:]}
+                "files_read": stint.read, "reasoning": stint.reasoning[-4000:],
+                "messages": stint.messages}
     status = str(report.get("status", "")).lower()
     return {
         "output": f"{report.get('summary', '')}\n\nActions this stretch: {done_so_far}",
@@ -363,6 +408,7 @@ def stint_payload(stint: Stint, report: dict[str, Any] | None) -> dict[str, Any]
         "files_touched": stint.written,
         "files_read": stint.read,
         "reasoning": stint.reasoning[-4000:],
+        "messages": stint.messages,
     }
 
 

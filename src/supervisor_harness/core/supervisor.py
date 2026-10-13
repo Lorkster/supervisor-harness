@@ -62,6 +62,7 @@ from ..ids import now_iso
 from ..models import (
     ACTIVE_AGENT_STATUSES,
     BASELINE_FACT,
+    SUPERVISOR,
     AgentKind,
     AgentSpec,
     AgentStatus,
@@ -77,6 +78,8 @@ from ..models import (
     Escalation,
     EscalationReason,
     ExecutionTask,
+    GoalExpectation,
+    MessageKind,
     Phase,
     Resolution,
     RunMode,
@@ -2272,6 +2275,7 @@ class Supervisor:
                 return
 
             turn = await self.supervision._record_turn(session, agent, payload)
+            await self._route_findings(session, agent, turn)
             await self._flush_assists(session, agent)
             directive = await self.supervision._supervise(session, agent, turn)
 
@@ -2340,6 +2344,7 @@ class Supervisor:
             payload = stint_payload(stint, report)
             payload["usage"] = {**to_jsonable(stint.usage), "tool_calls": stint.tool_calls}
             turn = await self.supervision._record_turn(session, agent, payload)
+            await self._route_findings(session, agent, turn)
             await self._flush_assists(session, agent)
             directive = await self.supervision._supervise(session, agent, turn)
             if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP,
@@ -2379,13 +2384,63 @@ class Supervisor:
         payload = {
             "output": str(verdict.get("summary", "")) or "; ".join(stint.actions[-20:]),
             "results": [r for r in (verdict.get("results") or []) if isinstance(r, dict)],
-            "status": "done", "files_read": stint.read,
+            "status": "done", "files_read": stint.read, "messages": stint.messages,
             "usage": {**to_jsonable(stint.usage), "tool_calls": stint.tool_calls},
         }
         turn = await self.supervision._record_turn(session, agent, payload)
+        await self._route_findings(session, agent, turn)
         await self._flush_assists(session, agent)
         await self.supervision._assess_drift(session, agent, turn)
         await self._report_verification(session, agent, payload)
+
+    async def _route_findings(self, session: RunSession, agent: AgentSpec,
+                              turn: AgentTurn) -> None:
+        """A finding about another task's work refines the goal, on that task.
+
+        Batch K. The agent writing Minesweeper's browser tests found the bug that
+        failed five of them in the page task's file, already verified, and had no
+        way to say so but to stop. Now a warning, finding or contradiction sent to
+        the supervisor that names files in another approved task's scope becomes
+        an expectation of the goal (`goal_set`, its source the agent), a
+        mandatory criterion of that task, and -- if the task was already verified
+        and has attempts left -- reopens it, with the finding in its action. The
+        task that did the work fixes it; the owner hears nothing. Judges only
+        tighten: a finding adds a check, never removes one.
+        """
+        state = session.state
+        mine = state.tasks.get(agent.task_id or "")
+        toolbox = self._toolbox_for(state)
+        for message in turn.messages:
+            if (message.recipient != SUPERVISOR or message.kind not in _FINDING_KINDS
+                    or sum(1 for e in state.goal if e.source.startswith("agent "))
+                    >= MAX_ROUTED_FINDINGS):
+                continue
+            named = _files_named(f"{message.subject}\n{message.content}", toolbox)
+            owner = next((t for t in state.approved_tasks()
+                          if (mine is None or t.id != mine.id)
+                          and any(matches_any(rel, t.scope.paths) for rel in named)), None)
+            if owner is None:
+                continue
+            said = " -- ".join(p for p in (message.subject, message.content) if p)[:400]
+            expectation = GoalExpectation(statement=said, task_id=owner.id,
+                                          source=f"agent {agent.id}")
+            await session.aemit(EventType.GOAL_SET,
+                                {"goal": to_jsonable([*state.goal, expectation])})
+            owner.dod.append(phases.goal_criterion(expectation, state.prompt))
+            found_by = f"{agent.id}, working on {mine.title!r}" if mine else agent.id
+            owner.action = f"{owner.action}\n\nFound by {found_by}: {said}"
+            reopened = (owner.status is TaskStatus.VERIFIED
+                        and owner.attempts < self.config.policy.max_task_attempts)
+            if reopened:
+                owner.status = TaskStatus.APPROVED
+                owner.assigned_agent_id = None
+                await self._reopen_criteria(session, owner)
+            owner.updated_at = now_iso()
+            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(owner)})
+            await session.anote(
+                "a finding was routed to the task whose work it concerns"
+                + (", which was reopened" if reopened else ""),
+                actor=agent.id, task_id=owner.id, message_id=message.id)
 
     async def _look_at_the_goal(self, session: RunSession,
                                 task: ExecutionTask) -> tuple[str, list[str]]:
@@ -2598,6 +2653,9 @@ class Supervisor:
                 elif call.name not in offered:
                     text = f"{call.name} is not available now. Call {finish}."
                     failures.append(call.name)
+                elif call.name == "message":
+                    text = stint.send(call.arguments)
+                    stint.record(call, ok=bool(stint.messages), path="")
                 else:
                     if call.name in ("edit_file", "write_file", "delete_file"):
                         await self._widen_for_write(session, agent, toolbox,
@@ -3010,6 +3068,13 @@ def _is_a_check(state: RunState, command: str) -> bool:
     wanted = normal_command(command)
     return bool(wanted) and wanted in _run_checks(state)
 
+
+#: What an agent sends the supervisor that may concern another task's work.
+_FINDING_KINDS = frozenset({MessageKind.WARNING, MessageKind.FINDING,
+                            MessageKind.CONTRADICTION})
+#: Findings routed to other tasks in one run: each can reopen a task, and a
+#: model that warns about everything must not keep a run reopening for ever.
+MAX_ROUTED_FINDINGS = 5
 
 #: How the log says a blocked report was handed back (`_blocked_within_reach`).
 SENT_BACK_BLOCKED = "a blocked report was sent back"
