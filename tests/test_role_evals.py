@@ -285,7 +285,8 @@ def test_what_is_left_of_a_worktree_is_not_scored(tmp_path: Path) -> None:
     (husk / "node_modules").mkdir(parents=True)
     state = RunState(prompt="p", workspace=str(repo),
                      worktree=RunWorktree(path=str(husk), commit=commit, removed=False))
-    has = f'"{sys.executable}" -c "import os; raise SystemExit(not os.path.exists(\'package.json\'))"'
+    has = (f'"{sys.executable}" -c '
+           '"import os; raise SystemExit(not os.path.exists(\'package.json\'))"')
 
     card = scorecard(state, [has])
 
