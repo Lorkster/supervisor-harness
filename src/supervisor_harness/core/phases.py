@@ -20,6 +20,7 @@ from ..agents.registry import AgentRegistry
 from ..agents.roles import ROLES_BY_ID, Role, role_catalog, role_for_task, select_lenses
 from ..assists import record_assist
 from ..config import HarnessConfig, Policy
+from ..contracts import parse_goal
 from ..ids import now_iso
 from ..models import (
     AgentKind,
@@ -28,9 +29,11 @@ from ..models import (
     Budget,
     Checkpoint,
     CriterionStatus,
+    DoDCriterion,
     EscalationReason,
     ExecutionTask,
     Finding,
+    GoalExpectation,
     Lesson,
     LessonCategory,
     ModelBinding,
@@ -441,6 +444,70 @@ def unenforceable_criteria(tasks: list[ExecutionTask], policy: Policy,
                     lines.append(f"task {task.title!r}, criterion {crit.statement!r}: "
                                  f"the harness will not run {crit.command!r}: {refusal}")
     return lines + [line for _, line in criteria_running_missing_files(tasks, workspace)]
+
+
+def goal_problems(data: dict[str, Any], tasks: list[ExecutionTask]) -> list[str]:
+    """What keeps a plan's goal from being checked, a line each, for the send-back.
+
+    A plan that proposes work must say what the result is for: the first
+    green-field run verified every task of a Minesweeper whose board was one
+    column, because no criterion said it should look like Minesweeper. And each
+    expectation needs the task that delivers it, which is when it is checked.
+    """
+    if not tasks:
+        return []
+    goal = parse_goal(data)
+    if not goal:
+        return ["the plan names no goal: list the few things someone who asked for this "
+                "would check first when they try the result, each with the task that "
+                "delivers it"]
+    titles = {t.title.strip().casefold() for t in tasks}
+    return [f"goal expectation {g['statement']!r}: delivered_by {g['delivered_by']!r} "
+            "names no task in this plan; give the title of the task that delivers it"
+            for g in goal if g["delivered_by"].casefold() not in titles]
+
+
+def attach_goal(tasks: list[ExecutionTask], data: dict[str, Any],
+                request: str) -> tuple[list[GoalExpectation], list[str]]:
+    """The plan's goal, held by the run, and a criterion on each delivering task.
+
+    Each expectation becomes a mandatory review of the task that delivers it,
+    judged when that task settles -- not at the end, after the rest of the run
+    has been built on it. An expectation that names no task is kept on the goal
+    and reported, not guessed onto one. Returns the goal and the report lines.
+    """
+    by_title = {t.title.strip().casefold(): t for t in tasks}
+    goal: list[GoalExpectation] = []
+    unplaced: list[str] = []
+    for raw in parse_goal(data):
+        task = by_title.get(raw["delivered_by"].casefold())
+        expectation = GoalExpectation(statement=raw["statement"],
+                                      task_id=task.id if task else "",
+                                      look=raw["look"], build=raw["build"])
+        goal.append(expectation)
+        if task is None:
+            unplaced.append(f"goal expectation {raw['statement']!r} names no task in the "
+                            f"plan ({raw['delivered_by']!r}); it is not checked")
+            continue
+        task.dod.append(goal_criterion(expectation, request))
+    return goal, unplaced
+
+
+def goal_criterion(expectation: GoalExpectation, request: str) -> DoDCriterion:
+    """The review that checks one expectation against the result, for whoever asked."""
+    asked = request.strip().splitlines()[0][:300] if request.strip() else "the request"
+    seen = (" You are shown the page as a person opening it would see it: judge what you "
+            "see, and say what you see." if expectation.look else "")
+    return DoDCriterion(
+        statement=f"For whoever asked: {expectation.statement}",
+        method=VerifyMethod.REVIEW,
+        rubric=(f"The run's goal: {asked}. Pass only if someone who asked for that would "
+                f"find this true when they try the result: {expectation.statement}.{seen} "
+                "Something that exists in the code but is not shown, laid out or wired as "
+                "expected fails. Cite what you see, or file:line."),
+        mandatory=True,
+        goal_id=expectation.id,
+    )
 
 
 def revision_prompt(user: str, weak: list[str]) -> str:

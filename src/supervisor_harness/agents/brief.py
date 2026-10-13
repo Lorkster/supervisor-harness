@@ -436,6 +436,18 @@ def build_execution_brief(
 IMPLEMENTER_FINDINGS_CHARS = 2_500
 
 
+def _goal_block(run: RunState, task: ExecutionTask) -> str:
+    """The run's goal, as the whoever-asked expectations; this task's marked."""
+    if not run.goal:
+        return ""
+    lines = ["Whoever asked will check these when they try the result. Yours are checked "
+             "when your task is done; the rest must not be broken by it:"]
+    for expectation in run.goal:
+        mine = " (yours)" if expectation.task_id == task.id else ""
+        lines.append(f"- {expectation.statement}{mine}")
+    return "\n".join(lines)
+
+
 def build_implementer_brief(
     run: RunState,
     agent: AgentSpec,
@@ -471,6 +483,7 @@ def build_implementer_brief(
         _section("Why", task.motivation),
         _section("Findings behind it", findings),
         _section("Done means", _dod_block(task.dod)),
+        _section("What the result is for", _goal_block(run, task)),
         _section("Scope", scope),
         _section("Held for the owner", _held_tasks(run, task)),
         _section(

@@ -320,6 +320,46 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
         },
         "open_questions": {"type": "array", "items": {"type": "string"}},
         "recommended_mode": {"type": "string", "enum": ["report", "execute"]},
+        "goal": {
+            "type": "array",
+            "minItems": 1,
+            "description": (
+                "What the result must be for whoever asked: the few things they would "
+                "check first when they try it -- what they would see or be able to do -- "
+                "each delivered by one task. Include what is too obvious to write "
+                "anywhere else: a game must look like that game, a page must open, a "
+                "command must run. Each is checked when its task is done"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "statement": {
+                        "type": "string",
+                        "description": (
+                            "One expectation, as a person trying the result would put "
+                            "it -- for a command-line CSV converter: 'converting a CSV "
+                            "file prints one JSON object per row'"
+                        ),
+                    },
+                    "delivered_by": {"type": "string",
+                                     "description": "The title of the task that delivers it"},
+                    "look": {
+                        "type": "string",
+                        "description": (
+                            "When it can be seen on a page this project builds: the page "
+                            "to open, relative to the repository, as it is after `build` "
+                            "-- for example dist/index.html; prefix it with file: when it "
+                            "must work opened straight from disk. Empty when there is no page"
+                        ),
+                    },
+                    "build": {
+                        "type": "string",
+                        "description": "The command that builds that page; empty if none",
+                    },
+                },
+                "required": ["statement", "delivered_by", "look", "build"],
+            },
+        },
         "tasks": {
             "type": "array",
             "description": "Proposed execution tasks. Empty when the deliverable is a report.",
@@ -387,7 +427,7 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": ["summary", "recommended_mode"],
+    "required": ["summary", "recommended_mode", "goal"],
 }
 
 DRIFT_SCHEMA: dict[str, Any] = {
@@ -625,6 +665,17 @@ def parse_tool_calls(data: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 
 def parse_status(value: Any) -> AgentStatus:
     return _enum(value, AgentStatus, AgentStatus.RUNNING)
+
+
+def parse_goal(data: dict[str, Any]) -> list[dict[str, str]]:
+    """The plan's goal expectations, each with a statement; the rest dropped."""
+    out: list[dict[str, str]] = []
+    for raw in data.get("goal") or []:
+        if not isinstance(raw, dict) or not str(raw.get("statement", "")).strip():
+            continue
+        out.append({key: str(raw.get(key, "")).strip()
+                    for key in ("statement", "delivered_by", "look", "build")})
+    return out
 
 
 def parse_dod(items: Any) -> list[DoDCriterion]:

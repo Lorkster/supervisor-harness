@@ -85,6 +85,10 @@ BROAD_SUPPRESSION_ALLOWED = {
     # the stricter heuristic assessment standing, noted on the log.
     "core/supervision.py": "a failed drift second opinion leaves the stricter heuristic "
                            "assessment standing, noted on the log",
+    # Not an observing surface either, and it fails closed the same way: a page
+    # that cannot be built or rendered is not passed -- its expectation is judged
+    # from the code, and the verifier is told so.
+    "core/observe.py": "a page that cannot be shown is judged from the code, never passed",
     "core/supervisor.py": "the learning pass, the tidy-up, and one agent's crash -- "
                           "none may end a run",
     "mcp_server.py": "the ledger is a progress line over the response, not part of it",

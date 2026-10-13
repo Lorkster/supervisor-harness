@@ -170,6 +170,8 @@ def _wire_message(message: ChatMessage) -> dict[str, Any]:
         ]
     if message.tool_name:
         wire["tool_name"] = message.tool_name
+    if message.images:
+        wire["images"] = list(message.images)
     return wire
 
 
