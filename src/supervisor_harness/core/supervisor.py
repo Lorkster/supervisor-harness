@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agents.brief import (
+    build_follow_up,
     build_implementer_brief,
     build_verifier_brief,
     render_directive,
@@ -276,6 +277,10 @@ class Supervisor:
         # The owner's analysis tool servers, started on first use (`core/external.py`).
         self.external = ExternalTools(self.config.tool_servers,
                                       self.store.root / "tool-servers")
+        # Each task's implementer conversation, kept for its next attempt: a
+        # follow-up to the agent that did the work, not a fresh start. In memory:
+        # a resumed run starts afresh, with the follow-up in the brief instead.
+        self._conversations: dict[str, list[ChatMessage]] = {}
         self.supervision = Supervision(
             self.config, self.store, self.router,
             self.packets, self.reporting, self.lifecycle,
@@ -1173,6 +1178,7 @@ class Supervisor:
                 active = fresh
             else:
                 self._settle_tasks(session)
+                await self._follow_up(session)
                 # A task that waited on one just verified starts now; the
                 # checkpoint judges the run once nothing more can start.
                 # Measured: with the planner naming its dependencies, four runs
@@ -1512,6 +1518,43 @@ class Supervisor:
                     session, agent, AgentStatus.STOPPED, cause=EndCause.REMEDIATION,
                     reason="its task was reopened by the checkpoint",
                 )
+        return count
+
+    async def _follow_up(self, session: RunSession) -> int:
+        """Send each task that just failed back at once, while attempts remain.
+
+        Turnstone's coordinator, when a child reports: decide whether the goal is
+        met, then close it out or "push a follow-up". Here a failed task waited
+        for the checkpoint, after every task that could start had run, and was
+        sent back only if the checkpoint failed and the run's remediation budget
+        allowed -- one budget for all of them. Now it goes back when its check
+        fails; what depends on it waits for it. The next attempt continues the
+        agent's own conversation where it is kept (`_converse`), and its brief
+        says what failed where it is not.
+        """
+        if not self.config.policy.follow_up:
+            return 0
+        state = session.state
+        count = 0
+        for task in list(state.tasks.values()):
+            # Failed by a check, not ended unchecked: an abandoned agent's task is
+            # the host's "do not send this again" (`supervisor_abandon`).
+            if (task.status is not TaskStatus.FAILED
+                    or task.attempts >= self.config.policy.max_task_attempts
+                    or not any(c.status is CriterionStatus.FAIL for c in task.dod)):
+                continue
+            failed = [c.statement for c in task.unmet_criteria()]
+            task.status = TaskStatus.APPROVED
+            task.assigned_agent_id = None
+            await self._reopen_criteria(session, task)
+            task.action = (f"{task.action}\n\nFollow-up from attempt {task.attempts}, which "
+                           "did not pass:\n" + "\n".join(f"- {c}" for c in failed[:6]))
+            task.updated_at = now_iso()
+            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+            await session.anote(f"{task.title!r} followed up at once: {len(failed)} check(s) "
+                                f"did not pass; attempt {task.attempts + 1} comes next",
+                                task_id=task.id)
+            count += 1
         return count
 
     async def _reopen_criteria(self, session: RunSession, task: ExecutionTask) -> None:
@@ -2403,12 +2446,25 @@ class Supervisor:
         task = state.tasks.get(agent.task_id or "") or ExecutionTask(
             run_id=state.id, title=agent.title)
         brief = state.briefs.get(agent.id)
-        if brief is None:
-            findings = [f"[{f.severity.value}] {f.title}: {f.detail}"
-                        for f in state.findings if f.id in task.rationale_refs]
-            brief = build_implementer_brief(state, agent, task, findings)
+        earlier = self._conversations.pop(task.id, None) if brief is None else None
+        if earlier:
+            # The same conversation, told what the check found: what it read and
+            # decided is still there (turnstone's send_to_workstream).
+            follow_up = build_follow_up(task)
+            messages = [*earlier, ChatMessage("user", follow_up)]
+            brief = f"{earlier[0].content}\n\n## Follow-up\n\n{follow_up}"
             await session.aemit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
-        messages = [ChatMessage("user", brief)]
+            await session.anote("followed up in the same conversation", actor=agent.id,
+                                task_id=task.id, attempt=task.attempts)
+        else:
+            if brief is None:
+                findings = [f"[{f.severity.value}] {f.title}: {f.detail}"
+                            for f in state.findings if f.id in task.rationale_refs]
+                brief = build_implementer_brief(state, agent, task, findings)
+                await session.aemit(EventType.BRIEF_RENDERED,
+                                    {"agent_id": agent.id, "brief": brief})
+            messages = [ChatMessage("user", brief)]
+        self._conversations[task.id] = messages
         tools = native_tool_specs(agent, self.config.policy)
 
         for _ in range(agent.budget.max_turns):

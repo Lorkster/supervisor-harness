@@ -256,6 +256,8 @@ EXECUTION_TURN_SCHEMA: dict[str, Any] = {
         "status": {"type": "string", "enum": ["running", "blocked", "done"]},
         "self_assessment": {"type": "string"},
         "blocked_on": {"type": "string"},
+        "needs": {"type": "string", "enum": ["work", "owner"]},
+        "waiting_for": {"type": "string"},
     },
     "required": ["output", "status"],
 }

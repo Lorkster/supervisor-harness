@@ -478,6 +478,24 @@ def _requirements_block(run: RunState, task: ExecutionTask) -> str:
     return "\n\n".join(parts)
 
 
+def build_follow_up(task: ExecutionTask) -> str:
+    """What an implementer is told when its task comes back: what the check found.
+
+    Turnstone's coordinator pushes a follow-up to the same child -- "also
+    capture the test-coverage delta" -- rather than starting another. The
+    harness's verdicts were reopened for the new attempt; each carries what
+    the last one found, and those that failed are what this is about.
+    """
+    failed = [c for c in task.mandatory_criteria
+              if "recorded fail" in c.evidence or "recorded blocked" in c.evidence]
+    lines = [f"- {c.statement}\n  What the check found: "
+             f"{c.evidence.split(': ', 1)[-1][:700]}" for c in failed]
+    return ("Your work on this task was checked, and these did not pass:\n"
+            + ("\n".join(lines) or "- (the check recorded no detail)")
+            + "\n\nFix what they found -- only that, and what it needs -- run the checks "
+            "again, and report. Everything else you did stands.")
+
+
 def build_implementer_brief(
     run: RunState,
     agent: AgentSpec,
