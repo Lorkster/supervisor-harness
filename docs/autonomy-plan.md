@@ -1053,7 +1053,11 @@ what one planner wrote down.
    (its id in that task's `requirements`), or set aside with a reason. One no
    task delivers and nobody set aside goes back to the planner by id, in the
    plan's one send-back. The delivering task gains a review criterion quoting
-   its requirements, judged when it settles.
+   its requirements, judged when it settles. A requirement the reader marks as
+   the whole result's -- a final gate, a "done when" -- goes to a task after
+   every task delivering a part; given earlier, it goes back, and if the
+   revision leaves it there the harness moves it to the furthest such task
+   (run 6 gave the brief's "done" clause to the scaffold, which failed on it).
 3. **Tested by someone other than the builder.** Each delivered requirement is
    tested by a different task, in its `acceptance_tests` (a command and the ids
    it covers), or listed as not tested, with a reason. The tests are written
