@@ -161,3 +161,62 @@ async def test_nor_widened_to_write_it(supervisor: Supervisor) -> None:
                                                            supervisor.config.policy),
                                       "docs/design.md")
     assert "docs/design.md" not in me.scope.paths
+
+
+# -- only behind what is checked by running the result --------------------------------------
+
+
+def test_what_is_checked_by_reading_files_is_not_hidden() -> None:
+    """Minesweeper run 14: the browser tester tested a few of the scaffold's tooling
+    requirements, lost package.json and playwright.config.ts with the rest of the
+    scaffold, and spent an attempt finding out by trial how its own tests were served."""
+    scaffold = ExecutionTask(title="Scaffold", requirements=["R1"],
+                             scope=Scope(paths=["package.json", "playwright.config.ts"]))
+    page = ExecutionTask(title="Build the page", requirements=["R2"],
+                         scope=Scope(paths=["src/ui.ts"]))
+    tests = ExecutionTask(title="Write the browser tests", scope=Scope(paths=["e2e/**"]),
+                          acceptance=[AcceptanceTests(["R1", "R2"], "npm run test:e2e")])
+    ledger = [Requirement(id="R1", quote="npm run test:e2e runs against the production build",
+                          checked_by="reading"),
+              Requirement(id="R2", quote="Space reveals the focused cell")]
+
+    attach_requirements([scaffold, page, tests], ledger, {})
+
+    assert tests.scope.unread_paths == ["src/ui.ts"], "the page, not the scaffold"
+
+
+def test_a_builder_with_any_requirement_checked_by_running_is_hidden() -> None:
+    tasks, _ = _plan()
+    ledger = [Requirement(id="R1", quote=CHORD, checked_by="reading"),
+              Requirement(id="R2", quote="a chord on a wrong flag loses")]
+    tasks[0].requirements = ["R1", "R2"]
+    tasks[1].acceptance = [AcceptanceTests(["R1", "R2"], "npm test")]
+
+    attach_requirements(tasks, ledger, {})
+
+    assert tasks[1].scope.unread_paths == ["src/game/engine.ts"]
+
+
+def test_the_reader_says_how_each_is_checked_and_unsaid_is_running() -> None:
+    from supervisor_harness.contracts import REQUIREMENTS_SCHEMA, parse_quoted
+    from supervisor_harness.core.requirements import READER_SYSTEM
+
+    field = REQUIREMENTS_SCHEMA["properties"]["requirements"]["items"]["properties"]
+    assert field["checked_by"]["enum"] == ["running", "reading"]
+    assert "checked_by: running where someone checks it by using" in READER_SYSTEM
+    parsed = parse_quoted({"requirements": [
+        {"quote": "a", "checked_by": "reading"}, {"quote": "b", "checked_by": "Reading "},
+        {"quote": "c"}, {"quote": "d", "checked_by": "looking"}]})
+    assert [q["checked_by"] for q in parsed] == ["reading", "reading", "running", "running"]
+
+
+def test_the_ledger_keeps_how_each_is_checked(tmp_path: Path) -> None:
+    from supervisor_harness.core.requirements import build_ledger
+
+    request = "Space reveals the focused cell. package.json has no runtime dependencies."
+    ledger, _ = build_ledger([], {"requirements": [
+        {"quote": "Space reveals the focused cell", "source": "request", "whole": False},
+        {"quote": "package.json has no runtime dependencies", "source": "request",
+         "whole": False, "checked_by": "reading"}]},
+        request=request, workspace=tmp_path, found_by="reader")
+    assert [r.checked_by for r in ledger] == ["running", "reading"]

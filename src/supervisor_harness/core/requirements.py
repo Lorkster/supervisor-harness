@@ -123,7 +123,8 @@ def build_ledger(
             break
         seen.append((flat, source))
         ledger.append(Requirement(id=f"R{len(ledger) + 1}", quote=quote, source=source,
-                                  found_by=found_by, whole=bool(item["whole"])))
+                                  found_by=found_by, whole=bool(item["whole"]),
+                                  checked_by=item["checked_by"]))
     return ledger, notes
 
 
@@ -150,6 +151,9 @@ instructions about how to work.
 - Mark whole: true where it can only hold once everything is built -- the gates \
 that must pass at the end, a 'done when', what every part contributes to -- so it \
 is checked last, not on the first task that touches it.
+- Say how each is checked: checked_by: running where someone checks it by using \
+the result -- what it does when run, opened, clicked or called; reading where by \
+reading files -- a script, a dependency list, a configuration, where a file is.
 - At most 60. If there are more, merge the smallest into their neighbours.
 
 Then call list_requirements with them."""
@@ -470,7 +474,11 @@ def attach_requirements(
                 notes.setdefault(tester.id, []).append(
                     f"depends on {builder.title!r}: the tests come after the work they test")
             _fence(builder, tester, notes)
-            _blind(builder, tester, notes)
+            # Hidden only behind what its tester checks by running the result: what
+            # is checked by reading files is tested by reading them.
+            if any(by_id[rid].checked_by == "running"
+                   for rid in set(ids) & set(builder.requirements)):
+                _blind(builder, tester, notes)
     for builder in tasks:
         testers = [t.title for t in tasks if t is not builder and set(builder.requirements)
                    & {rid for g in t.acceptance for rid in g.requirements}]
@@ -509,7 +517,11 @@ def _blind(builder: ExecutionTask, tester: ExecutionTask, notes: dict[str, list[
     read the code tests what the request says, by running the result.
 
     Not where the tester's own files may be among them: it must read what it
-    writes.
+    writes. And only behind a requirement checked by running the result (its
+    caller): Minesweeper run 14's browser tester tested a few of the scaffold's
+    tooling requirements, lost `package.json` and `playwright.config.ts` with
+    the rest of the scaffold, and spent an attempt finding out by trial how its
+    own tests were served.
     """
     hidden = [p for p in builder.scope.paths
               if p not in tester.scope.unread_paths
