@@ -365,6 +365,39 @@ def test_a_behaviour_claim_with_no_command_is_judged_not_escalated(tmp_path: Pat
     assert untested.dod[0].method is VerifyMethod.COMMAND
 
 
+def test_a_check_the_harness_will_not_run_is_judged_not_escalated(tmp_path: Path) -> None:
+    """Minesweeper run 9: a `node -e` check, kept through the send-back, sent the
+    scaffold -- and every task waiting on it -- to the owner before any work began."""
+    from supervisor_harness.core.autonomy import gate
+    from supervisor_harness.core.dod import review_what_cannot_run
+
+    inline = DoDCriterion(statement="dist/index.html has no external script src",
+                          method=VerifyMethod.COMMAND, mandatory=True,
+                          command='node -e "process.exit(0)"')
+    runnable = DoDCriterion(statement="npm run typecheck passes", method=VerifyMethod.COMMAND,
+                            mandatory=True, command="npm run typecheck")
+    task = _task(inline, runnable)
+    notes = review_what_cannot_run(task, Policy())
+
+    assert inline.method is VerifyMethod.REVIEW and inline.mandatory and inline.command == ""
+    assert "dist/index.html has no external script src" in inline.rubric
+    assert runnable.method is VerifyMethod.COMMAND, "a check the harness runs is still run"
+    (note,) = notes
+    assert 'was given as `node -e "process.exit(0)"`, which the harness will not run' in note
+    assert not [r for r, _ in gate(task, Policy())
+                if r.value == "unrunnable_criterion"], "nothing left for the owner"
+
+    other = DoDCriterion(statement="the cache is cleared first", method=VerifyMethod.COMMAND,
+                         mandatory=True, command="rm -rf node_modules")
+    assert review_what_cannot_run(_task(other), Policy()) == []
+    assert other.method is VerifyMethod.COMMAND, "a program that is no check runner is the owner's"
+
+    kept = DoDCriterion(statement="s", method=VerifyMethod.COMMAND,
+                        command='node -e "process.exit(0)"')
+    assert review_what_cannot_run(_task(kept), Policy(require_tests=False)) == []
+    assert kept.method is VerifyMethod.COMMAND, "only with the harness's test bar behind it"
+
+
 def test_after_preparation_such_a_task_carries_the_test_bar(tmp_path: Path) -> None:
     task = _task(_no_command("the ledger shows conc"), title="Add conc to src/ledger.py")
     _, notes = prepare_tasks([task], Policy(require_tests=True), _node_project(tmp_path))
