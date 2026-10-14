@@ -1178,6 +1178,50 @@ where the harness's own test bar stands behind the task
    program that is not a check runner at all is not a check, and still goes to
    the owner.
 
+### After run 11: the tester tested what the builder wrote
+
+*Written 2026-10-14.* Run 11 was the first to verify every task: six of six,
+both project gates passing, nothing for the owner. The owner's hidden suite
+failed four tests, all on chord, for two reasons:
+
+- **A plain bug.** The engine's win check flagged each mine it passed while
+  scanning the board, before it knew the game was won. A mine before the first
+  hidden safe cell, in row order, became flagged by a reveal. The player's own
+  flag then took it off, and a chord on its neighbour did nothing. The run's
+  tests never put a mine there.
+- **A reading the builder and the tester shared.** The spec says the chorded
+  cell's distance "is 0 but not itself newly revealed", and that `lastRevealed`
+  lists "every cell the call revealed". The engine listed the chorded cell at 0,
+  and its comment said so. The tester's test asserted the same, in nearly the
+  same words. So did the verifier's review.
+
+The tester's brief already said "write each test from the words quoted, not
+from the code". It read the code anyway, and both misses are what a test shaped
+by the code it tests looks like: it goes where the code works, and it agrees with
+it.
+
+### Batch M -- The tester is not shown the code it tests
+
+1. **The tester's read tools hold a fence.** When the plan has a task testing
+   another task's requirements, the builder's files go into the tester's
+   `unread_paths` (`requirements._blind`). The exception is a path that may
+   hold the tester's own files: it must read what it writes. `read_file`
+   refuses those files, saying why, and `search` leaves them out, as do the
+   owner's analysis tools. The tester finds out what the result does by running
+   it.
+2. **Its brief says how to test without the code.** Choose its own inputs from
+   the quoted words, corners and edges included. When a test fails, decide from
+   the quote alone which side is wrong. If it is the product, send a finding
+   (routed to the builder, which is reopened) and report blocked with needs
+   `work`, waiting for the builder (#113).
+3. **No widening reaches that code.** Neither a blocked report nor a failing
+   check's named file hands a tester the code it is not shown. A fix there is
+   the builder's.
+
+It is not a security boundary: the tests the tester writes run that code, and
+could print it. It closes the shortcut that was taken. The verifier is not
+fenced; it judges the tests against the quotes.
+
 ---
 
 ## The gate between the parts

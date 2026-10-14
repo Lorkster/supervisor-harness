@@ -813,6 +813,7 @@ def build_execution_agent(
             paths=list(task.scope.paths),
             forbidden_paths=list(task.scope.forbidden_paths),
             out_of_scope=[*task.scope.out_of_scope, *role.out_of_scope],
+            unread_paths=list(task.scope.unread_paths),
         ),
         binding=binding,
         backend=state.backend,

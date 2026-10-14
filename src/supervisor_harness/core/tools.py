@@ -522,7 +522,8 @@ class Toolbox:
         rel = self._rel(target)
         return ToolResult("read_file", True, f"{rel}\n{body}{suffix}", path=rel)
 
-    def search(self, pattern: str, glob: str = "**/*") -> ToolResult:
+    def search(self, pattern: str, glob: str = "**/*",
+               unread: Collection[str] = ()) -> ToolResult:
         if len(pattern) > MAX_PATTERN_CHARS:
             return ToolResult("search", False, f"pattern is over {MAX_PATTERN_CHARS} characters")
         if _NESTED_REPETITION.search(pattern):
@@ -540,6 +541,8 @@ class Toolbox:
         for path in self._walk():
             rel = self._rel(path)
             if glob not in ("", "**/*") and not fnmatch.fnmatch(rel, glob):
+                continue
+            if unread and matches_any(rel, list(unread)):
                 continue
             if time.monotonic() > deadline:
                 stopped = True
@@ -563,6 +566,35 @@ class Toolbox:
             body += (f"\n(search stopped after {SEARCH_SECONDS:.0f} s; narrow it with a glob "
                      "to see the rest)")
         return ToolResult("search", True, body)
+
+    def unread_refusal(self, path: str, scope: Scope) -> str | None:
+        """Why this agent may not read ``path``; None if it may.
+
+        Only a testing task's fence (`Scope.unread_paths`): the code of the
+        work it tests. It is not a security boundary -- the tests it writes run
+        that code, and could print it -- but the shortcut it closes is the one
+        that was taken: Minesweeper run 11's tester wrote its chord test from
+        the engine's own comment, both read rule 10 the same wrong way, and the
+        run verified a chord the owner's hidden tests failed.
+        """
+        if not scope.unread_paths:
+            return None
+        if Path(path).is_absolute():
+            # `_resolve` reads a leading slash as the workspace root, as an agent
+            # means it; a tool's argument may be a real absolute path. Outside the
+            # workspace it is read as rooted there, as `_resolve` does.
+            absolute = Path(path).resolve()
+            if absolute.is_relative_to(self.workspace):
+                path = absolute.relative_to(self.workspace).as_posix()
+        target = self._resolve(path)
+        if target is None:
+            return None
+        rel = self._rel(target)
+        if not matches_any(rel, scope.unread_paths):
+            return None
+        return (f"{rel} is the work this task tests, and its code is not shown to you: "
+                "write each test from the requirement as quoted, and find out what the "
+                "result does by running it")
 
     def _write_refusal(self, rel: str, scope: Scope | None) -> str | None:
         """Why this agent may not modify ``rel``; None if it may."""
@@ -942,6 +974,9 @@ class Toolbox:
         if name == "list_files":
             return self.list_files(str(args.get("pattern", "**/*")))
         if name == "read_file":
+            unread = self.unread_refusal(str(args.get("path", "")), agent.scope)
+            if unread is not None:
+                return ToolResult("read_file", False, unread)
             lines, chars = ((WHOLE_FILE_LINES, WHOLE_FILE_CHARS) if whole_files
                             else (MAX_READ_LINES, MAX_READ_CHARS))
             return self.read_file(
@@ -951,7 +986,8 @@ class Toolbox:
                 max_lines=lines, max_chars=chars,
             )
         if name == "search":
-            return self.search(str(args.get("pattern", "")), str(args.get("glob", "**/*")))
+            return self.search(str(args.get("pattern", "")), str(args.get("glob", "**/*")),
+                               agent.scope.unread_paths)
         if name == "write_file":
             if not writable:
                 return ToolResult(
