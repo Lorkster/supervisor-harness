@@ -1289,6 +1289,86 @@ mechanical result is not open to the verifier:
     space and code's punctuation in it -- `id="status"`, not a bare name -- found
     in the file as it stands.
 
+### Batch N -- The owner's skills, for the run's agents
+
+*Written 2026-10-14, at the owner's request.* The replica skills were installed
+"so it's accessible to all agents we launch". They sit in `~/.claude/skills/`,
+where only Claude Code sessions and their subagents can load them. None of the
+harness's own agents can. Nor can they use rea or the ArtCraft apps, though #111
+gave the harness the way to lend them: no configuration lists them.
+
+A skill is not a Claude Code feature. It is an open format: a `SKILL.md` with
+YAML frontmatter (`name`, `description`, `allowed-tools`, ...), and a directory
+that may bundle files and scripts. Turnstone supports it for its agents:
+
+- **A governed catalog.** Skills are installed from skills.sh or GitHub by their
+  `SKILL.md`. An MCP server's prompts are synced in as read-only skills.
+- **One tool, `skills`.** `find` and `get` are read-only and need no approval.
+  `load` puts the skill's text into the session as its own message, and needs
+  approval. The write actions need a permission no role has by default.
+- **A session can start with a skill.** Its saved copy of the skill stands even
+  if the skill changes later. Its bundled files come with it, its `scripts/`
+  first on `PATH`.
+- **Risk is read from the skill.** It comes from `allowed-tools`, and a high-risk
+  skill is the operator's to load. The safety judge reviews the `SKILL.md` text
+  itself.
+- **Who gets it.** Interactive and coordinator sessions, not task sub-agents.
+
+#### The batch
+
+1. **The catalog is the owner's.** `skills.dirs` is a protected setting, as
+   `tool_servers` is (#111). It lists directories of skills, each skill a folder
+   with a `SKILL.md`, for example `~/.claude/skills`. Read at the run's start
+   into a catalog of name, description, `allowed-tools` and path. A file that
+   does not parse, or has no name or description, is noted and left out. Nothing
+   is fetched from the network: installing a skill stays the owner's act, after
+   an audit like rea's.
+2. **Agents find and read skills as they find tools.** A `find_skill` tool ranks
+   the catalog by the agent's query, as `find_tool` ranks the owner's tool
+   servers, and returns names and descriptions, never the text. A `get_skill`
+   tool returns one skill's text, marked as the owner's guidance and not as the
+   task's brief. Both are read-only.
+3. **Loading is a turn in the conversation, not a change of authority.** A
+   skill's text guides how an agent works. It cannot widen what the agent may
+   do:
+   - its scope, its unread paths (batch M) and the command allow-list stand;
+   - a skill whose `allowed-tools` the agent has not got says so, and is
+     refused, rather than half-followed.
+   The brief records which skills were read, so a verifier can see what shaped
+   the work, and the run's report lists them.
+4. **Bundled scripts run as the project's own would.** A skill's scripts are run
+   through `run_command`, by a check runner (`python <path>`). Never with `-c`
+   or a chain, and only from the skill's own directory, read-only. A skill that
+   needs anything else is the owner's to grant.
+5. **Who gets them.** By the planner, for choosing how work is done, and by
+   implementers, who do it. Turnstone stops at its coordinator; the harness's
+   implementers are the ones the replica skills are written for (`replica-test`
+   writes Playwright tests, `replica-diff` compares a build with its target).
+   Not by verifiers: a verifier judges against the request's quoted words and
+   the result, and a skill's advice is a third voice it should not need. A
+   tester (batch M) may read a skill. A skill is not the code it tests.
+6. **The owner's tool servers, at last.** In the same batch, rea (read-only tools
+   first) and the ArtCraft apps (read roots `E:\ArtCraft`) go into
+   `tool_servers`, for runs the owner starts on their own work.
+7. **The trials stay as they were.** `~/.supervisor/config.json` is read even when
+   a trial sets `SUPERVISOR_HOME` (`config.candidate_paths`), so anything added
+   there reaches the Minesweeper agents. The trials' own config pins
+   `skills.dirs` and `tool_servers` to empty, and a test asserts that a later
+   config replaces these settings rather than merging into them. Only then is
+   anything added for the owner.
+
+**Measured by:**
+- **Mechanism:** a run on the owner's own work, not Minesweeper. Each skill read
+  and each analysis tool called is on the log, and nothing outside the fence is
+  read or run.
+- **Effect:** a Minesweeper run with `replica-test` in the catalog, kept apart
+  from the comparable series, shows whether the testers use it and whether it
+  helps.
+
+**Open for the owner:**
+- Whether implementers should load skills, or only find and read them.
+- Whether rea's write-effect tools join later.
+
 ---
 
 ## The gate between the parts
