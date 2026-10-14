@@ -2763,9 +2763,15 @@ class Supervisor:
                     >= MAX_ROUTED_FINDINGS):
                 continue
             named = _files_named(f"{message.subject}\n{message.content}", toolbox)
-            owner = next((t for t in state.approved_tasks()
-                          if (mine is None or t.id != mine.id)
-                          and any(matches_any(rel, t.scope.paths) for rel in named)), None)
+            owners = [t for t in state.approved_tasks()
+                      if (mine is None or t.id != mine.id)
+                      and any(matches_any(rel, t.scope.paths) for rel in named)]
+            # A task not yet verified before one that is: a message names the files
+            # that work as well as the one that does not. Minesweeper run 8: "engine
+            # done, all 46 tests in tests/engine.test.ts pass; the typecheck fails
+            # in e2e/minesweeper.spec.ts" reopened the verified engine tests.
+            owner = next((t for t in owners if t.status is not TaskStatus.VERIFIED),
+                         owners[0] if owners else None)
             if owner is None:
                 continue
             said = " -- ".join(p for p in (message.subject, message.content) if p)[:400]

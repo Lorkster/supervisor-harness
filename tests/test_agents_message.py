@@ -155,6 +155,25 @@ async def test_a_finding_reopens_the_verified_task_whose_work_it_names(
     assert [e.statement for e in reloaded.goal] == [expectation.statement], "on the log"
 
 
+async def test_a_task_not_yet_verified_is_preferred_to_one_that_is(
+    supervisor: Supervisor,
+) -> None:
+    from supervisor_harness.models import Decision, ExecutionTask, Scope, TaskStatus
+
+    session, me, page, _ = _two_tasks(supervisor)
+    (supervisor.workspace / "e2e").mkdir()
+    (supervisor.workspace / "e2e" / "game.spec.ts").write_text("test()\n", encoding="utf-8")
+    browser = ExecutionTask(title="Write the browser tests", scope=Scope(paths=["e2e/**"]),
+                            status=TaskStatus.IN_PROGRESS, attempts=1, decision=Decision.APPROVE)
+    session.state.tasks[browser.id] = browser
+
+    await supervisor._route_findings(session, me, _turn(
+        ("supervisor", "finding", "src/page.ts renders fine; e2e/game.spec.ts fails to typecheck")))
+
+    assert page.status is TaskStatus.VERIFIED and not any(c.goal_id for c in page.dod)
+    assert any(c.goal_id for c in browser.dod)
+
+
 async def test_a_task_not_yet_done_just_gains_the_check(supervisor: Supervisor) -> None:
     from supervisor_harness.models import TaskStatus
 
