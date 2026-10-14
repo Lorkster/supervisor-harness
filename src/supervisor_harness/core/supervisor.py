@@ -1411,7 +1411,7 @@ class Supervisor:
         candidates = [t for t in state.tasks.values()
                       if t.id != task.id and any(t.id in owners_of(rel) for rel in named)]
         owners = [t for t in candidates if t.status is not TaskStatus.VERIFIED] or candidates
-        if not all(self._can_change(t) and not _waits_on(state, t, task) for t in owners):
+        if not all(self._can_change(state, t) and not _waits_on(state, t, task) for t in owners):
             return named, []
         return named, owners
 
@@ -1438,12 +1438,20 @@ class Supervisor:
                    and a.attempt == task.attempts}
         ids = {e.task_id for e in state.goal if e.source in sources}
         return [t for t in state.tasks.values() if t.id in ids and t.id != task.id
-                and self._can_change(t) and not _waits_on(state, t, task)]
+                and self._can_change(state, t) and not _waits_on(state, t, task)]
 
-    def _can_change(self, task: ExecutionTask) -> bool:
-        """Whether a task is still to run, or can be sent back to."""
+    def _can_change(self, state: RunState, task: ExecutionTask) -> bool:
+        """Whether a task is still to run, or can be sent back to.
+
+        One held for the owner can: their answer sends it on. Minesweeper run 15:
+        the page's type check failed on the unit tests' file, whose task was
+        waiting for the owner, and the page was charged for it, sent back, and
+        escalated in turn for wanting to edit the file itself.
+        """
         if task.status in (TaskStatus.APPROVED, TaskStatus.IN_PROGRESS,
                            TaskStatus.AWAITING_VERIFICATION):
+            return True
+        if _awaits_owner(state, task):
             return True
         return (task.status in (TaskStatus.VERIFIED, TaskStatus.FAILED)
                 and task.attempts < self.config.policy.max_task_attempts)
@@ -1498,6 +1506,8 @@ class Supervisor:
                     and holder.attempts < self.config.policy.max_task_attempts
                     and any(c.status is CriterionStatus.FAIL for c in holder.dod)):
                 return True
+            if _awaits_owner(state, holder):
+                return True
         return False
 
     @staticmethod
@@ -1509,7 +1519,8 @@ class Supervisor:
         """Whether a held check is to run again before anything else starts.
 
         One whose tasks have settled, and every one once nothing can start: a
-        check does not wait for work that is not coming.
+        check does not wait for work that is not coming. Except for a task held
+        for the owner, which comes when they answer (`_await_owner`).
         """
         state = session.state
         waiting = [(task, crit) for task in state.tasks.values()
@@ -1519,11 +1530,14 @@ class Supervisor:
             return False
         if phases.runnable_tasks(state):
             return any(not self._still_held(state, crit) for _, crit in waiting)
-        for task, crit in waiting:
+        let_go = [(task, crit) for task, crit in waiting
+                  if not any(_awaits_owner(state, state.tasks[t]) for t in crit.held_for
+                             if t in state.tasks)]
+        for task, crit in let_go:
             crit.held_for = []
             task.updated_at = now_iso()
             session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
-        return True
+        return bool(let_go)
 
     def _verify_fails_before(
         self, state: RunState, task: ExecutionTask, crit: DoDCriterion
@@ -1690,9 +1704,13 @@ class Supervisor:
         if not waiting:
             # A granted task is runnable again; nothing granted means nothing
             # more to execute, and the run wraps up with the rest deferred.
+            # A check held for a task the owner answered runs again first.
+            awaiting = any(t.status is TaskStatus.AWAITING_VERIFICATION
+                           for t in state.tasks.values())
             self._transition(
                 session,
-                Phase.EXECUTING if phases.runnable_tasks(state) else Phase.IMPROVING,
+                Phase.EXECUTING if phases.runnable_tasks(state)
+                else Phase.VERIFYING if awaiting else Phase.IMPROVING,
             )
             return None
 
@@ -2848,9 +2866,17 @@ class Supervisor:
             owner.dod.append(phases.goal_criterion(expectation, state.prompt))
             found_by = f"{agent.id}, working on {mine.title!r}" if mine else agent.id
             owner.action = f"{owner.action}\n\nFound by {found_by}: {said}"
+            # A finding is the most useful thing a run can hand back, and the task
+            # it concerns may have spent its attempts getting verified. Minesweeper
+            # run 15: the blind tester found the engine's distance, flood and chord
+            # bugs -- the four the owner's hidden suite failed -- and the engine,
+            # verified on its third attempt, could not be reopened. Once more, then.
+            spent = owner.attempts >= self.config.policy.max_task_attempts
             reopened = (owner.status is TaskStatus.VERIFIED
-                        and owner.attempts < self.config.policy.max_task_attempts)
+                        and (not spent or owner.finding_reopens < MAX_FINDING_REOPENS))
             if reopened:
+                if spent:
+                    owner.finding_reopens += 1
                 owner.status = TaskStatus.APPROVED
                 owner.assigned_agent_id = None
                 await self._reopen_criteria(session, owner)
@@ -3532,6 +3558,8 @@ _FINDING_KINDS = frozenset({MessageKind.WARNING, MessageKind.FINDING,
 #: Findings routed to other tasks in one run: each can reopen a task, and a
 #: model that warns about everything must not keep a run reopening for ever.
 MAX_ROUTED_FINDINGS = 5
+#: How often a finding may reopen a task past its own attempts, per task.
+MAX_FINDING_REOPENS = 1
 
 #: How the log says a blocked report was handed back (`_blocked_within_reach`).
 SENT_BACK_BLOCKED = "a blocked report was sent back"
@@ -3600,6 +3628,12 @@ def _reopenings(task: ExecutionTask) -> list[dict[str, Any]]:
         for crit in task.dod
         if crit.status not in (CriterionStatus.UNVERIFIED, CriterionStatus.WAIVED)
     ]
+
+
+def _awaits_owner(state: RunState, task: ExecutionTask) -> bool:
+    """Whether a task is held for the owner: blocked, with an escalation still open."""
+    return task.status is TaskStatus.BLOCKED and any(
+        e.task_id == task.id for e in state.open_escalations())
 
 
 def _waits_on(state: RunState, task: ExecutionTask, other: ExecutionTask) -> bool:

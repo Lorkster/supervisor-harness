@@ -1301,6 +1301,27 @@ mechanical result is not open to the verifier:
     space and code's punctuation in it -- `id="status"`, not a bare name -- found
     in the file as it stands.
 
+### After run 15: a finding with nowhere to go
+
+*Written 2026-10-15.* The blind unit tester reported the engine's distance, flood
+and chord bugs. They are the four tests the owner's hidden suite failed. The
+finding went to the engine (#120), but the engine had been verified on its third
+and last attempt, so it could not be reopened. With nothing to wait for, the
+tester went to the owner. Its test file then broke the page's type check. That
+check was not held, because the file's task was waiting for the owner, and a
+task in that state counted as one that could not change. So the page was charged,
+sent back, and escalated in turn for wanting to edit the file itself.
+
+11. **A finding reopens a task once past its attempts** (`MAX_FINDING_REOPENS`).
+    A finding is the most useful thing a run hands back, and the task it concerns
+    may have spent its attempts getting verified. Once per task, and within the
+    run's cap on routed findings, so it cannot loop.
+12. **A check waits for a task held for the owner.** A task blocked with an
+    escalation still open can change: the owner's answer sends it on
+    (`_awaits_owner`). A check failed on its files is held for it, and is not let
+    go when nothing else can start. Once the owner has answered, a held check
+    runs again before the run ends (`_await_owner`).
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed
