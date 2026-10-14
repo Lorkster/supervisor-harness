@@ -1264,6 +1264,31 @@ The other two were the tester's own misreading. None of the four reached a fix:
    failing there would fail every task. A failure in another task's files is that
    task's (#115).
 
+### After run 13: two checks that could not be met
+
+*Written 2026-10-14.* Two tasks failed three times over work that was done, and a
+mechanical result is not open to the verifier:
+
+- **A compound expectation.** The unit suite's criterion expected "exit code 0 and
+  output contains at least '30 passed'". It was looked for as text, so 51
+  passing tests failed it on every attempt. The tester cut its suite to 30
+  trying to meet it.
+- **A quote paired the wrong way.** The page's inspection named a sentence rather
+  than text in the file, so it went to the verifier. The verifier's pass cited
+  the page's attributes bare, `id="status" (12), id="mines-left" (13)`. Pairing
+  their quote marks found only the text between them, and the pass was thrown
+  out as quoting nothing.
+
+9. **An expectation is read part by part.** Joined by "and", where one part is an
+   exit code or a count of passing tests, each part is judged: the code, the
+   floor, or text to find (`_meets`). An exit code among them governs the exit,
+   so its text need only appear. "Output contains" and quote marks are not part
+   of the text. A quoted count is a floor.
+10. **Code cited bare is a quote.** Beside quoted text, a verifier's pass counts as
+    quoting the file when it carries a run of eight or more characters with no
+    space and code's punctuation in it -- `id="status"`, not a bare name -- found
+    in the file as it stands.
+
 ---
 
 ## The gate between the parts

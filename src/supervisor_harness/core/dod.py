@@ -1631,26 +1631,8 @@ def verify_command(
         # command that printed "3 tests failed" and exited 1 satisfied an
         # expectation of "tests", so the check whose whole purpose is refusing
         # unproven work certified a failing suite.
-        exit_match = re.fullmatch(r"(?:exit\s*(?:code)?\s*[= ]\s*)?(\d+)", expect, re.IGNORECASE)
-        at_least = _AT_LEAST_PASSED.fullmatch(expect)
-        if exit_match:
-            ok = completed.returncode == int(exit_match.group(1))
-        elif at_least:
-            # "20 passed" is a floor, not text to find: Minesweeper run 2's suite
-            # printed "35 passed" and its criterion failed for want of "20 passed".
-            counts = [int(n) for n in _PASSED_COUNT.findall(_ANSI.sub("", output))]
-            ok = completed.returncode == 0 and bool(counts) and max(counts) >= int(
-                at_least.group(1))
-            evidence += (f"\n\n[supervisor] read as at least {at_least.group(1)} passing; "
-                         f"the run reported {max(counts) if counts else 'no count of'} passed.")
-        else:
-            ok = completed.returncode == 0 and expect.lower() in output.lower()
-            if completed.returncode != 0 and expect.lower() in output.lower():
-                evidence += (
-                    f"\n\n[supervisor] the expected text {expect!r} appeared, but the "
-                    f"command exited {completed.returncode}; a criterion is not met by "
-                    "a command that failed. Express an expected failure as an exit code."
-                )
+        ok, said = _meets(expect, completed.returncode, output)
+        evidence += said
 
     # A filter that selects nothing is not an error to most runners, so exit 0
     # here means either "everything passed" or "nothing ran", and only the
@@ -1678,6 +1660,63 @@ def verify_command(
     return VerificationOutcome(
         CriterionStatus.PASS if ok else CriterionStatus.FAIL, evidence, output=output
     )
+
+
+#: An exit code, as an expectation: "0", "exit 0", "exit code = 2".
+_EXIT_CODE = re.compile(r"(?:exit\s*(?:code)?\s*[= ]\s*)?(\d+)", re.IGNORECASE)
+#: Where a compound expectation divides: "exit code 0 and at least '30 passed'".
+_AND = re.compile(r"\s*[,;]?\s+and\s+", re.IGNORECASE)
+#: What a planner writes before the text it expects: "output contains '...'".
+_SAYS = re.compile(r"^(?:the\s+)?(?:output\s+)?(?:contains|includes|prints|shows)\s+",
+                   re.IGNORECASE)
+_QUOTES = "'\"`"
+
+
+def _meets(expect: str, code: int, output: str) -> tuple[bool, str]:
+    """Whether a command's exit code and output meet ``expect``, and what to add to the evidence.
+
+    An expectation is an exit code; a count of passing tests, read as a floor;
+    or text that must appear in the output of a command that also succeeded.
+    Or several of these joined by "and", where one of them is a code or a count:
+    Minesweeper run 13 planned "exit code 0 and output contains at least '30
+    passed'", which was looked for as text, and 51 passing tests and exit 0
+    failed it on all three attempts -- and a mechanical result is not open to
+    the verifier.
+    """
+    parts = [_SAYS.sub("", part.strip()) for part in _AND.split(expect)]
+    if len(parts) > 1 and any(_EXIT_CODE.fullmatch(_unquoted(part))
+                              or _AT_LEAST_PASSED.fullmatch(_unquoted(part)) for part in parts):
+        # An exit code among them governs the exit: its text need only appear.
+        coded = any(_EXIT_CODE.fullmatch(_unquoted(part)) for part in parts)
+        judged = [_meets_one(part, code, output, coded=coded) for part in parts]
+        return all(ok for ok, _ in judged), "".join(said for _, said in judged)
+    return _meets_one(expect, code, output)
+
+
+def _unquoted(text: str) -> str:
+    return " ".join(text.translate({ord(q): None for q in _QUOTES}).split())
+
+
+def _meets_one(expect: str, code: int, output: str, *, coded: bool = False) -> tuple[bool, str]:
+    """One expectation: an exit code, a floor of passing tests, or text to find."""
+    exit_match = _EXIT_CODE.fullmatch(_unquoted(expect))
+    at_least = _AT_LEAST_PASSED.fullmatch(_unquoted(expect))
+    if exit_match:
+        return code == int(exit_match.group(1)), ""
+    if at_least:
+        # "20 passed" is a floor, not text to find: Minesweeper run 2's suite
+        # printed "35 passed" and its criterion failed for want of "20 passed".
+        counts = [int(n) for n in _PASSED_COUNT.findall(_ANSI.sub("", output))]
+        return (code == 0 and bool(counts) and max(counts) >= int(at_least.group(1)),
+                f"\n\n[supervisor] read as at least {at_least.group(1)} passing; "
+                f"the run reported {max(counts) if counts else 'no count of'} passed.")
+    text = _SAYS.sub("", expect.strip()).strip(_QUOTES) or expect
+    found = text.lower() in output.lower()
+    if code != 0 and found and not coded:
+        return False, (f"\n\n[supervisor] the expected text {text!r} appeared, but the command "
+                       f"exited {code}; a criterion is not met by a command that failed. "
+                       "Express an expected failure as an exit code.")
+    return found, ""
 
 
 def verify_inspection(criterion: DoDCriterion, workspace: Path) -> VerificationOutcome:
@@ -1794,11 +1833,21 @@ def quotes_the_file(criterion: DoDCriterion, evidence: str, workspace: Path) -> 
     # piece of it in the file, and its pass was thrown out as quoting nothing.
     pieces = (piece for m in _EVIDENCE_QUOTE.finditer(evidence)
               for piece in _ELLIPSIS.split(next(g for g in m.groups() if g)))
-    return any(len(text) >= 8 and text in flat
-               for text in (" ".join(piece.split()) for piece in pieces))
+    if any(len(text) >= 8 and text in flat
+           for text in (" ".join(piece.split()) for piece in pieces)):
+        return True
+    # Code cited bare, its own quotes inside it: Minesweeper run 13's verifier
+    # gave `index.html:12-27 -- id="status" (12), id="mines-left" (13), ...`,
+    # every attribute in the file, and pairing its quote marks found only the
+    # text between them. A run of eight or more characters with no space in it,
+    # with code's punctuation inside it -- not a bare name, which says nothing
+    # of what the file does with it -- found in the file as it stands, is a quote.
+    return any(len(token) >= 8 and _CODE_PUNCTUATION.search(token.strip("=<>")) and token in flat
+               for token in (raw.strip(".,;:()") for raw in evidence.split()))
 
 
 _ELLIPSIS = re.compile(r"\.{3,}|…")
+_CODE_PUNCTUATION = re.compile(r"[=<>\"'(){}\[\]]")
 
 
 def verify_criterion(
