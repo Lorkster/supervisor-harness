@@ -1133,6 +1133,31 @@ Two more from turnstone, in the same spirit:
    of going to the owner; a decision, permission, credential or resource still
    does.
 
+### After run 8: a project-wide check charged to the wrong task
+
+*Written 2026-10-14.* Run 8 got past what stopped run 7: the scaffold's browser
+checks moved to the task writing the browser tests, and the scaffold and the
+engine were each followed up at once, in their own agents' conversations. Then
+the engine failed `npm run typecheck` and `npm test` on nothing but
+`e2e/minesweeper.spec.ts`, which the browser-test task was writing at the same
+time -- its type errors, and the unit runner collecting it. The engine was sent
+back for it, on its last attempt, and could not touch the file; its agent said
+so to the supervisor, and routing that message reopened the verified engine
+tests, a file it had named as passing.
+
+5. **A check that fails only on another task's files is that task's.** When a
+   task's command check fails, the harness reads the files the whole output
+   names. If none is the task's own -- by what its agents wrote, or its scope --
+   and they belong to other tasks, the check goes on those tasks: added to their
+   definition of done, recorded as failed if they are being checked now,
+   reopened if they had settled. Those not yet verified are preferred: a check
+   names the files it passed as well as those it failed. The task's own check
+   waits, its verifier's verdict on it set aside, and runs again once those
+   tasks settle. Never for an optional check, an owner that cannot change any
+   more or waits on the task, and a bounded number of times, so a check that
+   keeps failing is charged where it was; and never waiting for work that is not
+   coming.
+
 ---
 
 ## The gate between the parts

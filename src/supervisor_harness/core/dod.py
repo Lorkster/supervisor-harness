@@ -1249,6 +1249,9 @@ class VerificationOutcome:
     # A failed inspection whose file exists but lacks the expected text: what
     # was missing is the planner's guess at the wording, not the statement.
     wording_only: bool = False
+    # A command's whole output, where ``evidence`` keeps only its tail: which
+    # files a failure names is read from all of it.
+    output: str = ""
 
 
 def unquoted_metacharacter(command: str, characters: str = _METACHARACTERS) -> str | None:
@@ -1636,7 +1639,7 @@ def verify_command(
         )
 
     return VerificationOutcome(
-        CriterionStatus.PASS if ok else CriterionStatus.FAIL, evidence
+        CriterionStatus.PASS if ok else CriterionStatus.FAIL, evidence, output=output
     )
 
 

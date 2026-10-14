@@ -1180,6 +1180,8 @@ class Supervisor:
             else:
                 self._settle_tasks(session)
                 await self._follow_up(session)
+                if self._release_holds(session):
+                    return None  # a held check runs again, before anything else starts
                 # A task that waited on one just verified starts now; the
                 # checkpoint judges the run once nothing more can start.
                 # Measured: with the planner naming its dependencies, four runs
@@ -1214,9 +1216,10 @@ class Supervisor:
                 continue
             if task.status is TaskStatus.AWAITING_VERIFICATION:
                 self._find_the_suite(session, task, tree)
-            for crit in task.dod:
-                if crit.status is not CriterionStatus.UNVERIFIED:
+            for crit in list(task.dod):
+                if crit.status is not CriterionStatus.UNVERIFIED or self._still_held(state, crit):
                     continue
+                crit.held_for = []  # what it waited for has settled: it runs again now
                 if (task.status is TaskStatus.IN_PROGRESS and crit.suite
                         and not crit.command.strip()):
                     # Not blocked yet: the project may not have its runner until the
@@ -1239,6 +1242,8 @@ class Supervisor:
                     if (outcome is not None and outcome.status is CriterionStatus.FAIL
                             and crit.method in (VerifyMethod.TEST, VerifyMethod.COMMAND)
                             and task.status is TaskStatus.AWAITING_VERIFICATION):
+                        if self._hold_for_owner(session, task, crit, outcome):
+                            continue
                         outcome = self._attributed(state, crit, outcome)
                 if outcome is None:
                     continue
@@ -1296,6 +1301,169 @@ class Supervisor:
             return outcome
         return VerificationOutcome(outcome.status, f"{outcome.evidence}\n\n{verdict}")
 
+    def _hold_for_owner(self, session: RunSession, task: ExecutionTask, crit: DoDCriterion,
+                        outcome: VerificationOutcome) -> bool:
+        """A project-wide check this task failed only on another task's files, sent there.
+
+        Minesweeper run 8: the engine task's `npm run typecheck` and `npm test`
+        failed on nothing but `e2e/minesweeper.spec.ts`, written at the same time
+        by the task writing the browser tests. The engine was sent back for it,
+        on its last attempt, and could not fix a file outside its scope. Now the
+        check is the owner's: it goes on the task whose files the failure names,
+        which is reopened if it had settled, and this task's check waits for that
+        task to settle and is run again then. Only when every file named is
+        another task's -- a failure that names any of this task's files is its
+        own -- and a bounded number of times, so a check that keeps failing is
+        charged here in the end.
+        """
+        state = session.state
+        if (not crit.mandatory
+                or crit.holds >= self.config.policy.max_task_attempts):
+            return False
+        files, owners = self._owners_of_failure(state, task, outcome)
+        if not owners:
+            return False
+        for owner in owners:
+            self._charge(session, owner, task, crit, outcome, files)
+        crit.held_for = [o.id for o in owners]
+        crit.holds += 1
+        crit.evidence = (f"held for {', '.join(repr(o.title) for o in owners)}: it failed only "
+                         f"on their files ({', '.join(sorted(files))}); run again when they "
+                         f"settle\n\n{outcome.evidence}")
+        task.updated_at = now_iso()
+        session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        session.note(f"a check of {task.title!r} failed only on another task's files; it "
+                     f"waits for {', '.join(repr(o.title) for o in owners)}",
+                     task_id=task.id, criterion=crit.statement[:200], files=sorted(files))
+        return True
+
+    def _owners_of_failure(
+        self, state: RunState, task: ExecutionTask, outcome: VerificationOutcome
+    ) -> tuple[set[str], list[ExecutionTask]]:
+        """The files a failed check names, and the other tasks they belong to.
+
+        A file belongs to the tasks whose agents touched it, or, if none did, to
+        the tasks whose scope holds it. None, if a file named is this task's:
+        the failure may be its own. Of the owners, those not yet verified, if
+        there are any -- a verified task's files passed its own checks, and a
+        check names the files it passed as well as those it failed. None, too,
+        if one of those cannot change any more or waits on this task: the
+        check is then this task's, as it always was.
+        """
+        tree = self._tree(state)
+        named = _files_named(_ANSI_ESCAPE.sub("", outcome.output or outcome.evidence),
+                             self._toolbox_for(state))
+        if not named:
+            return set(), []
+        touched: dict[str, set[str]] = {}
+        for turn in state.turns:
+            agent = state.agents.get(turn.agent_id)
+            if agent is None or agent.kind is not AgentKind.EXECUTION or not agent.task_id:
+                continue
+            for raw in turn.files_touched:
+                rel = safe_relative(raw, tree)
+                if rel is not None:
+                    touched.setdefault(rel, set()).add(agent.task_id)
+
+        def owners_of(rel: str) -> set[str]:
+            return touched.get(rel) or {t.id for t in state.tasks.values()
+                                        if matches_any(rel, t.scope.paths)}
+
+        if any(task.id in owners_of(rel) for rel in named) or any(
+                matches_any(rel, task.scope.paths) for rel in named):
+            return named, []
+        candidates = [t for t in state.tasks.values()
+                      if t.id != task.id and any(t.id in owners_of(rel) for rel in named)]
+        owners = [t for t in candidates if t.status is not TaskStatus.VERIFIED] or candidates
+        if not all(self._can_change(t) and not _waits_on(state, t, task) for t in owners):
+            return named, []
+        return named, owners
+
+    def _can_change(self, task: ExecutionTask) -> bool:
+        """Whether a task is still to run, or can be sent back to."""
+        if task.status in (TaskStatus.APPROVED, TaskStatus.IN_PROGRESS,
+                           TaskStatus.AWAITING_VERIFICATION):
+            return True
+        return (task.status in (TaskStatus.VERIFIED, TaskStatus.FAILED)
+                and task.attempts < self.config.policy.max_task_attempts)
+
+    def _charge(self, session: RunSession, owner: ExecutionTask, task: ExecutionTask,
+                crit: DoDCriterion, outcome: VerificationOutcome, files: set[str]) -> None:
+        """Put a check another task failed on ``owner``'s files on ``owner``."""
+        command = crit.command.strip()
+        mine = next((c for c in owner.dod
+                     if c.method is crit.method and c.command.strip() == command), None)
+        if mine is None:
+            mine = replace(crit, id=new_id("dod"), status=CriterionStatus.UNVERIFIED,
+                           evidence="", verified_at="", verified_by="", goal_id="",
+                           held_for=[], holds=0)
+            owner.dod.append(mine)
+        ours = sorted(f for f in files if matches_any(f, owner.scope.paths)) or sorted(files)
+        owner.action = (f"{owner.action}\n\nFound by the harness while checking "
+                        f"{task.title!r}: `{command}` fails on {', '.join(ours)}, which are "
+                        f"this task's work. Make it pass.\n{outcome.evidence[-600:]}")
+        reopened = owner.status in (TaskStatus.VERIFIED, TaskStatus.FAILED)
+        if reopened:
+            owner.status = TaskStatus.APPROVED
+            owner.assigned_agent_id = None
+            for event in _reopenings(owner):
+                session.emit(EventType.CRITERION_VERIFIED, event, actor="harness")
+        owner.updated_at = now_iso()
+        session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(owner)})
+        if (owner.status is TaskStatus.AWAITING_VERIFICATION
+                and mine.status is CriterionStatus.UNVERIFIED):
+            # The same command on the same tree: its result is this one.
+            session.emit(EventType.CRITERION_VERIFIED,
+                         {"task_id": owner.id, "criterion_id": mine.id,
+                          "status": str(CriterionStatus.FAIL), "evidence": outcome.evidence},
+                         actor="harness")
+        session.note(f"a check failed on {owner.title!r}'s files was put on it"
+                     + (", which was reopened" if reopened else ""),
+                     task_id=owner.id, from_task=task.id, criterion=crit.statement[:200])
+
+    def _still_held(self, state: RunState, crit: DoDCriterion) -> bool:
+        """Whether a held check still waits: a task it was held for is yet to settle.
+
+        A task that failed counts while it is about to be followed up.
+        """
+        for task_id in crit.held_for:
+            holder = state.tasks.get(task_id)
+            if holder is None:
+                continue
+            if holder.status in (TaskStatus.APPROVED, TaskStatus.IN_PROGRESS,
+                                 TaskStatus.AWAITING_VERIFICATION):
+                return True
+            if (holder.status is TaskStatus.FAILED and self.config.policy.follow_up
+                    and holder.attempts < self.config.policy.max_task_attempts
+                    and any(c.status is CriterionStatus.FAIL for c in holder.dod)):
+                return True
+        return False
+
+    @staticmethod
+    def _held(state: RunState, task: ExecutionTask) -> bool:
+        """Whether one of a task's mandatory checks was held and has not run again."""
+        return any(c.mandatory and c.held_for for c in task.dod)
+
+    def _release_holds(self, session: RunSession) -> bool:
+        """Whether a held check is to run again before anything else starts.
+
+        One whose tasks have settled, and every one once nothing can start: a
+        check does not wait for work that is not coming.
+        """
+        state = session.state
+        waiting = [(task, crit) for task in state.tasks.values()
+                   if task.status is TaskStatus.AWAITING_VERIFICATION
+                   for crit in task.dod if crit.held_for]
+        if not waiting:
+            return False
+        if phases.runnable_tasks(state):
+            return any(not self._still_held(state, crit) for _, crit in waiting)
+        for task, crit in waiting:
+            crit.held_for = []
+            task.updated_at = now_iso()
+            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        return True
+
     def _verify_fails_before(
         self, state: RunState, task: ExecutionTask, crit: DoDCriterion
     ) -> VerificationOutcome:
@@ -1335,7 +1503,8 @@ class Supervisor:
     def _settle_tasks(self, session: RunSession) -> None:
         state = session.state
         for task in state.tasks.values():
-            if task.status not in (TaskStatus.AWAITING_VERIFICATION, TaskStatus.IN_PROGRESS):
+            if (task.status not in (TaskStatus.AWAITING_VERIFICATION, TaskStatus.IN_PROGRESS)
+                    or self._held(state, task)):
                 continue
             task.status = TaskStatus.VERIFIED if task.dod_satisfied() else TaskStatus.FAILED
             task.updated_at = now_iso()
@@ -1570,24 +1739,8 @@ class Supervisor:
         A waiver is a person's decision about the criterion, not a verdict on
         the tree, and stands.
         """
-        attempt = task.attempts + 1
-        for crit in task.dod:
-            if crit.status in (CriterionStatus.UNVERIFIED, CriterionStatus.WAIVED):
-                continue
-            await session.aemit(
-                EventType.CRITERION_VERIFIED,
-                {
-                    "task_id": task.id,
-                    "criterion_id": crit.id,
-                    "status": str(CriterionStatus.UNVERIFIED),
-                    "evidence": (
-                        f"reopened for attempt {attempt}; attempt {task.attempts} "
-                        f"recorded {crit.status}: {crit.evidence[:300]}"
-                    ),
-                    "reopened_for_attempt": attempt,
-                },
-                actor="harness",
-            )
+        for event in _reopenings(task):
+            await session.aemit(EventType.CRITERION_VERIFIED, event, actor="harness")
 
     # -- improvement ---------------------------------------------------
 
@@ -1939,7 +2092,7 @@ class Supervisor:
             if not isinstance(result, dict):
                 continue
             crit = by_id.get(str(result.get("criterion_id", "")))
-            if crit is None:
+            if crit is None or crit.held_for:
                 continue
             raw = str(result.get("status", "")).lower()
             status = {
@@ -2025,7 +2178,10 @@ class Supervisor:
         # the replacement. The fold updates in place now, so `task` is that
         # object; the re-fetch was the only place that compensated, and the fix
         # is in the fold rather than repeated at each call site.
-        task.status = TaskStatus.VERIFIED if task.dod_satisfied() else TaskStatus.FAILED
+        # A check held for another task's work leaves it to be settled once that
+        # work is in (`_hold_for_owner`).
+        if not self._held(state, task):
+            task.status = TaskStatus.VERIFIED if task.dod_satisfied() else TaskStatus.FAILED
         task.updated_at = now_iso()
         await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
         session.sync_index()
@@ -3270,6 +3426,7 @@ _FILE_IN_TEXT = re.compile(r"[\w./-]*\w\.(?:[a-z]{1,4}\.)?[a-z]{1,5}\b", re.IGNO
 
 #: A path in a command's output: relative, or absolute with a drive, either slash.
 _PATH_IN_OUTPUT = re.compile(r"(?:[A-Za-z]:)?[\w.\\/-]*\w\.[A-Za-z0-9]{1,8}\b")
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def _run_checks(state: RunState) -> frozenset[str]:
@@ -3335,6 +3492,37 @@ def _in_the_plan(state: RunState, rel: str) -> bool:
     plan = Ceiling("the run's plan", list(current.paths),
                    [*current.forbidden_paths, *(grant.forbidden_paths if grant else [])])
     return bool(widen_within(current, plan, [rel])[1])
+
+
+def _reopenings(task: ExecutionTask) -> list[dict[str, Any]]:
+    """The verdicts `Supervisor._reopen_criteria` returns to unverified, as events."""
+    attempt = task.attempts + 1
+    return [
+        {
+            "task_id": task.id,
+            "criterion_id": crit.id,
+            "status": str(CriterionStatus.UNVERIFIED),
+            "evidence": (f"reopened for attempt {attempt}; attempt {task.attempts} "
+                         f"recorded {crit.status}: {crit.evidence[:300]}"),
+            "reopened_for_attempt": attempt,
+        }
+        for crit in task.dod
+        if crit.status not in (CriterionStatus.UNVERIFIED, CriterionStatus.WAIVED)
+    ]
+
+
+def _waits_on(state: RunState, task: ExecutionTask, other: ExecutionTask) -> bool:
+    """Whether ``task`` depends on ``other``, directly or through other tasks."""
+    seen: set[str] = set()
+    stack = list(task.depends_on)
+    while stack:
+        current = stack.pop()
+        if current == other.id:
+            return True
+        if current not in seen:
+            seen.add(current)
+            stack.extend(state.tasks[current].depends_on if current in state.tasks else [])
+    return False
 
 
 def _files_named(text: str, toolbox: Toolbox) -> set[str]:
