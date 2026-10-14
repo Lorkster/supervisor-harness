@@ -1156,7 +1156,8 @@ tests, a file it had named as passing.
    tasks settle. Never for an optional check, an owner that cannot change any
    more or waits on the task, and a bounded number of times, so a check that
    keeps failing is charged where it was; and never waiting for work that is not
-   coming.
+   coming. A finding an agent sends about other tasks' files is routed the same
+   way: to a task not yet verified before one that is.
 
 ---
 
