@@ -1355,19 +1355,8 @@ class Supervisor:
                              self._toolbox_for(state))
         if not named:
             return set(), []
-        touched: dict[str, set[str]] = {}
-        for turn in state.turns:
-            agent = state.agents.get(turn.agent_id)
-            if agent is None or agent.kind is not AgentKind.EXECUTION or not agent.task_id:
-                continue
-            for raw in turn.files_touched:
-                rel = safe_relative(raw, tree)
-                if rel is not None:
-                    touched.setdefault(rel, set()).add(agent.task_id)
-
         def owners_of(rel: str) -> set[str]:
-            return touched.get(rel) or {t.id for t in state.tasks.values()
-                                        if matches_any(rel, t.scope.paths)}
+            return _owners_of_file(state, tree, rel)
 
         if any(task.id in owners_of(rel) for rel in named) or any(
                 matches_any(rel, task.scope.paths) for rel in named):
@@ -2763,9 +2752,14 @@ class Supervisor:
                     >= MAX_ROUTED_FINDINGS):
                 continue
             named = _files_named(f"{message.subject}\n{message.content}", toolbox)
+            # Whose a file is, as for a failed check (`_owners_of_failure`): the
+            # task whose agent wrote it, before every task whose scope holds it.
+            # Minesweeper run 12: the engine tests' finding about
+            # src/game/engine.ts went to the page task, whose scope was `src/`.
+            tree = self._tree(state)
+            owning = {tid for rel in named for tid in _owners_of_file(state, tree, rel)}
             owners = [t for t in state.approved_tasks()
-                      if (mine is None or t.id != mine.id)
-                      and any(matches_any(rel, t.scope.paths) for rel in named)]
+                      if (mine is None or t.id != mine.id) and t.id in owning]
             # A task not yet verified before one that is: a message names the files
             # that work as well as the one that does not. Minesweeper run 8: "engine
             # done, all 46 tests in tests/engine.test.ts pass; the typecheck fails
@@ -3507,6 +3501,16 @@ def _in_the_plan(state: RunState, rel: str) -> bool:
     plan = Ceiling("the run's plan", list(current.paths),
                    [*current.forbidden_paths, *(grant.forbidden_paths if grant else [])])
     return bool(widen_within(current, plan, [rel])[1])
+
+
+def _owners_of_file(state: RunState, tree: Path, rel: str) -> set[str]:
+    """The tasks a workspace file is the work of: those whose agents wrote it, or,
+    if none did, those whose scope holds it."""
+    written = {agent.task_id for turn in state.turns
+               if (agent := state.agents.get(turn.agent_id)) is not None
+               and agent.kind is AgentKind.EXECUTION and agent.task_id
+               and any(safe_relative(raw, tree) == rel for raw in turn.files_touched)}
+    return written or {t.id for t in state.tasks.values() if matches_any(rel, t.scope.paths)}
 
 
 def _reopenings(task: ExecutionTask) -> list[dict[str, Any]]:

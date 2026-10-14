@@ -247,3 +247,48 @@ async def test_every_conversation_turn_is_routed(
     await _conversing(supervisor, fake).run(PROMPT, mode=RunMode.EXECUTE, auto_approve=True)
 
     assert "execution" in routed and "verification" in routed
+
+
+async def test_a_finding_goes_to_the_task_whose_agent_wrote_the_file(
+    supervisor: Supervisor,
+) -> None:
+    """Minesweeper run 12: the engine tests' finding about src/game/engine.ts went to
+    the page task, whose scope was `src/`, and the tester's wait for the verified
+    engine went to the owner. The engine's agent wrote the file: it is the engine's."""
+    from supervisor_harness.core.supervision import waits_for
+    from supervisor_harness.models import (
+        AgentStatus,
+        AgentTurn,
+        Decision,
+        ExecutionTask,
+        RunState,
+        Scope,
+        TaskStatus,
+    )
+
+    (supervisor.workspace / "src" / "game").mkdir(parents=True)
+    (supervisor.workspace / "src" / "game" / "engine.ts").write_text("x\n", encoding="utf-8")
+    engine = ExecutionTask(title="Build the engine", scope=Scope(paths=["src/game/engine.ts"]),
+                           status=TaskStatus.VERIFIED, attempts=1, decision=Decision.APPROVE)
+    page = ExecutionTask(title="Build the page", scope=Scope(paths=["src/"]),
+                         status=TaskStatus.IN_PROGRESS, attempts=1, decision=Decision.APPROVE)
+    tests = ExecutionTask(title="Write the engine tests", scope=Scope(paths=["tests/"]),
+                          status=TaskStatus.IN_PROGRESS, attempts=1, decision=Decision.APPROVE,
+                          depends_on=[engine.id])
+    builder = AgentSpec(id="agt_eng", kind=AgentKind.EXECUTION, task_id=engine.id,
+                        status=AgentStatus.DONE)
+    me = AgentSpec(id="agt_me", kind=AgentKind.EXECUTION, task_id=tests.id)
+    session = supervisor.store.create(RunState(
+        id="run_Wr", prompt="Build a browser game",
+        tasks={t.id: t for t in (engine, page, tests)},
+        agents={a.id: a for a in (builder, me)},
+        turns=[AgentTurn(agent_id=builder.id, files_touched=["src/game/engine.ts"])]))
+
+    await supervisor._route_findings(session, me, _turn(
+        ("supervisor", "finding", "src/game/engine.ts: chord distances are not measured "
+                                  "from the chorded cell")))
+
+    assert any(c.goal_id for c in engine.dod) and engine.status is TaskStatus.APPROVED
+    assert not any(c.goal_id for c in page.dod), "not the page, whose scope only holds it"
+    blocked = AgentTurn(agent_id=me.id, needs="work", waiting_for="Build the engine")
+    assert waits_for(session.state, tests, blocked) is engine, "so the tester can wait for it"
