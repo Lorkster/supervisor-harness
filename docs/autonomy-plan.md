@@ -1328,9 +1328,17 @@ that may bundle files and scripts. Turnstone supports it for its agents:
    servers, and returns names and descriptions, never the text. A `get_skill`
    tool returns one skill's text, marked as the owner's guidance and not as the
    task's brief. Both are read-only.
-3. **Loading is a turn in the conversation, not a change of authority.** A
-   skill's text guides how an agent works. It cannot widen what the agent may
-   do:
+3. **Implementers load skills.** *Decided by the owner:* implementers should
+   "actually implement things efficiently, and skills would help with that". A
+   `load_skill` tool puts the skill's text into the implementer's conversation as
+   its own message, as turnstone's `load` does. It stays loaded for the rest of
+   the attempt, and comes along when the same conversation is followed up
+   (#113). No approval is asked each time: the catalog is the owner's, and
+   loading changes how the agent works, not what it may do. A loaded skill's
+   text is still the owner's guidance, below the task's brief and its quoted
+   requirements: where they disagree, the brief and the request win. Loading is a
+   turn in the conversation, not a change of authority. A skill cannot widen
+   what the agent may do:
    - its scope, its unread paths (batch M) and the command allow-list stand;
    - a skill whose `allowed-tools` the agent has not got says so, and is
      refused, rather than half-followed.
@@ -1340,16 +1348,33 @@ that may bundle files and scripts. Turnstone supports it for its agents:
    through `run_command`, by a check runner (`python <path>`). Never with `-c`
    or a chain, and only from the skill's own directory, read-only. A skill that
    needs anything else is the owner's to grant.
-5. **Who gets them.** By the planner, for choosing how work is done, and by
-   implementers, who do it. Turnstone stops at its coordinator; the harness's
+5. **Who gets them.** The planner finds and reads them, for choosing how work is
+   done. Implementers find, read and load them, to do it. Turnstone stops at its coordinator; the harness's
    implementers are the ones the replica skills are written for (`replica-test`
    writes Playwright tests, `replica-diff` compares a build with its target).
    Not by verifiers: a verifier judges against the request's quoted words and
    the result, and a skill's advice is a third voice it should not need. A
    tester (batch M) may read a skill. A skill is not the code it tests.
-6. **The owner's tool servers, at last.** In the same batch, rea (read-only tools
-   first) and the ArtCraft apps (read roots `E:\ArtCraft`) go into
-   `tool_servers`, for runs the owner starts on their own work.
+6. **The owner's tool servers, at last, rea's write tools included.** *Decided by
+   the owner:* rea's write tools join in this batch. rea goes into `tool_servers`
+   with `allow: all`, and the ArtCraft apps with read roots `E:\ArtCraft`, for runs
+   the owner starts on their own work. rea's effects catalog says what each tool
+   does (`writesFilesystem`, `launchesProcess`, `accessesNetwork`,
+   `mutatesTarget`, `mayDiscardData`). The harness holds each effect to what
+   the agent may already do:
+   - **Who:** a tool with any write or process effect is lent to implementers
+     only. The planner, testers and verifiers keep the read-only ones.
+   - **Writing:** a tool that writes the filesystem has every path argument held
+     to the implementer's writable scope, not merely the tree: its scope paths,
+     less its forbidden and unread paths and the floor. That is the fence
+     `write_file` already holds.
+   - **Processes:** a tool that launches a process -- a terminal session, a
+     debugger, a build -- runs outside the command allow-list. That is the
+     owner's decision, and the reason the server runs inside the run's job
+     object (#108): what it starts ends with the run, and every call is on the
+     log with its arguments.
+   - **Network and discarding data:** a tool that reaches the network or may
+     discard data is lent like the rest, and named in the run's report.
 7. **The trials stay as they were.** `~/.supervisor/config.json` is read even when
    a trial sets `SUPERVISOR_HOME` (`config.candidate_paths`), so anything added
    there reaches the Minesweeper agents. The trials' own config pins
@@ -1365,9 +1390,8 @@ that may bundle files and scripts. Turnstone supports it for its agents:
   from the comparable series, shows whether the testers use it and whether it
   helps.
 
-**Open for the owner:**
-- Whether implementers should load skills, or only find and read them.
-- Whether rea's write-effect tools join later.
+**Decided by the owner (2026-10-14):** implementers load skills; rea's write
+tools join in this batch.
 
 ---
 
