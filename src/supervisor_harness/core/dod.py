@@ -53,7 +53,7 @@ from ..models import (
     Severity,
     VerifyMethod,
 )
-from .baseline import git_baseline
+from .baseline import _git, git_baseline
 from .processes import BoundedProcess
 
 # Statements that assert a feeling rather than a fact. A criterion phrased this
@@ -563,6 +563,27 @@ def touches_code(task: ExecutionTask) -> bool:
     """Whether the quality bars meaningfully apply to this task."""
     haystack = " ".join([task.title, task.action, *task.scope.paths])
     return bool(_CODE_HINT.search(haystack))
+
+
+#: The project's own static checks, by the `package.json` script that runs each:
+#: what a task's files must pass beside its tests (`Supervisor._find_the_gates`).
+PROJECT_GATES = ("typecheck", "lint")
+
+
+def project_scripts(workspace: Path, commit: str = "") -> set[str]:
+    """The scripts in the project's `package.json`, as the tree has it or at ``commit``."""
+    if commit:
+        text = _git(workspace, "show", f"{commit}:package.json") or ""
+    else:
+        try:
+            text = (workspace / "package.json").read_text(encoding="utf-8")
+        except OSError:
+            return set()
+    try:
+        scripts = json.loads(text).get("scripts", {}) if text else {}
+    except (json.JSONDecodeError, AttributeError):
+        return set()
+    return set(scripts) if isinstance(scripts, dict) else set()
 
 
 def detect_test_command(workspace: Path) -> str:
