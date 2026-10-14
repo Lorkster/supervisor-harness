@@ -343,6 +343,16 @@ REQUIREMENTS_SCHEMA: dict[str, Any] = {
                             "to; false when one part of the work can deliver it"
                         ),
                     },
+                    "checked_by": {
+                        "type": "string",
+                        "enum": ["running", "reading"],
+                        "description": (
+                            "How someone checks it: 'running' when by using the result -- "
+                            "what it does when it is run, opened, clicked or called; "
+                            "'reading' when by reading files -- a script, a dependency "
+                            "list, a configuration, where a file is"
+                        ),
+                    },
                 },
                 "required": ["quote", "source", "whole"],
             },
@@ -794,7 +804,10 @@ def parse_quoted(data: dict[str, Any]) -> list[dict[str, Any]]:
         out.append({"quote": str(raw["quote"]).strip(),
                     "source": str(raw.get("source", "")).strip() or "request",
                     "whole": raw.get("whole") is True
-                    or str(raw.get("whole", "")).strip().lower() == "true"})
+                    or str(raw.get("whole", "")).strip().lower() == "true",
+                    # Unsaid is running: its tester then tests it blind, the stricter.
+                    "checked_by": ("reading" if str(raw.get("checked_by", "")).strip().lower()
+                                   == "reading" else "running")})
     return out
 
 

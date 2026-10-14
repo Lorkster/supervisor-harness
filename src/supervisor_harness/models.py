@@ -757,6 +757,10 @@ class Requirement:
     # It holds only once the whole result is built -- a final gate, a "done
     # when" -- so it is delivered by a task after every task that delivers one.
     whole: bool = False
+    # How someone checks it: ``running`` the result, or ``reading`` files -- a
+    # script, a dependency list. Only work behind a requirement checked by
+    # running is hidden from its tester (`requirements._blind`).
+    checked_by: str = "running"
     set_aside: str = ""
     not_tested: str = ""
 

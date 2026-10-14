@@ -1221,6 +1221,18 @@ it.
 3. **No widening reaches that code.** Neither a blocked report nor a failing
    check's named file hands a tester the code it is not shown. A fix there is
    the builder's.
+4. **Only behind what is checked by running the result** (after run 14). The
+   reader says, for each requirement, whether it is checked by running the
+   result or by reading files (`checked_by`; unsaid is running). A builder's
+   files are hidden from a tester only where the tester tests one of its
+   requirements checked by running. Run 14's browser tester tested a few of the
+   scaffold's tooling requirements, lost `package.json` and
+   `playwright.config.ts` with the rest of the scaffold, and spent an attempt
+   finding out by trial how its own tests were served. What is checked by
+   reading files is tested by reading them. *Chosen by the owner over sparing
+   the test runner's files (a table of runners, and no help to a tester of
+   tooling) and hiding only a builder tested whole (no help to a tester of
+   tooling either, and none where two testers share a builder).*
 
 It is not a security boundary: the tests the tester writes run that code, and
 could print it. It closes the shortcut that was taken. The verifier is not
