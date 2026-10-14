@@ -474,8 +474,26 @@ def _requirements_block(run: RunState, task: ExecutionTask) -> str:
             "Done means. When one fails because the product is wrong, fix the product if "
             "the run's plan lets you, or send the supervisor a finding naming the file and "
             "the requirement. Never weaken a test to make it pass.\n"
-            + "\n".join(f"- {r.id}: {r.quote}" for r in tested))
+            + "\n".join(f"- {r.id}: {r.quote}" for r in tested)
+            + _unread_block(run, task))
     return "\n\n".join(parts)
+
+
+def _unread_block(run: RunState, task: ExecutionTask) -> str:
+    """What a testing task is not shown, and how it tests without it."""
+    if not task.scope.unread_paths:
+        return ""
+    builders = [t.title for t in run.tasks.values() if t.id != task.id
+                and any(p in task.scope.unread_paths for p in t.scope.paths)]
+    by = f", built by {', '.join(repr(b) for b in builders)}" if builders else ""
+    return (
+        "\n\nThe code of the work you test is not shown to you "
+        f"({', '.join(task.scope.unread_paths)}{by}). Choose your own inputs from the words "
+        "quoted -- the corners and edges they allow, not only the easy middle -- and find "
+        "out what the result does by running it. When a test fails, decide from the quote "
+        "alone whether your test misread it or the product does something else. If the "
+        "product: send the supervisor a finding naming its file and the requirement, and "
+        "report blocked with needs `work`, waiting for the task that builds it.")
 
 
 def build_follow_up(task: ExecutionTask) -> str:

@@ -279,6 +279,10 @@ class Scope:
     forbidden_paths: list[str] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)
     out_of_scope: list[str] = field(default_factory=list)
+    # What the agent's read tools will not show it: for a task that tests other
+    # tasks' work, that work's files (`requirements._blind`), so its tests come
+    # from the request's words and from running the result, not from the code.
+    unread_paths: list[str] = field(default_factory=list)
 
 
 @dataclass

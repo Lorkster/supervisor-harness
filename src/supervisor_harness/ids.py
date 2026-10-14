@@ -30,11 +30,15 @@ def new_id(prefix: str) -> str:
 
 
 def now_iso() -> str:
-    """UTC timestamp with millisecond precision, always ``Z``-suffixed."""
-    return (
-        time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        + f".{int(time.time() * 1000) % 1000:03d}Z"
-    )
+    """UTC timestamp with millisecond precision, always ``Z``-suffixed.
+
+    One reading of the clock. The seconds and the milliseconds were two, and
+    across a second's boundary the stamp went back by up to a second -- "43.000"
+    after "43.848" -- which failed a test of a renewed grant on CI.
+    """
+    millis = int(time.time() * 1000)
+    return (time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(millis // 1000))
+            + f".{millis % 1000:03d}Z")
 
 
 def age_days(stamp: str) -> float | None:

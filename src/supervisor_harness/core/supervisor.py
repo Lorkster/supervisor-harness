@@ -3043,6 +3043,12 @@ class Supervisor:
         name = str(args.get("name", ""))
         raw = args.get("arguments")
         arguments: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        # The fence a tester's own read tools hold (`Toolbox.unread_refusal`).
+        toolbox = self._toolbox_for(session.state)
+        unread = next((why for value in _strings(arguments)
+                       if (why := toolbox.unread_refusal(value, agent.scope))), None)
+        if unread is not None:
+            return False, unread
         ok, text = await self.external.use(name, arguments, self._tree(session.state))
         await session.anote("analysis tool called", actor=agent.id, tool=name, ok=ok,
                             arguments=json.dumps(arguments)[:300])
@@ -3090,8 +3096,10 @@ class Supervisor:
                        if not matches_any(rel, agent.scope.paths))
         if task is None or not agent.scope.paths or not named:
             return []
-        # The tests of its own work are not its to change (batch L).
-        if any(matches_any(rel, agent.scope.forbidden_paths) for rel in named):
+        # The tests of its own work are not its to change (batch L), nor the work
+        # a tester is not shown its to fix (batch M): that goes back as a finding.
+        if any(matches_any(rel, [*agent.scope.forbidden_paths, *agent.scope.unread_paths])
+               for rel in named):
             return []
         if any(_another_writer(state, agent, rel) or _held_holder(state, task, rel)
                or not _in_the_plan(state, rel) for rel in named):
@@ -3125,7 +3133,8 @@ class Supervisor:
         task = state.tasks.get(agent.task_id or "")
         rel = toolbox.writable_path(raw)
         if (task is None or rel is None or not agent.scope.paths
-                or matches_any(rel, agent.scope.paths)):
+                or matches_any(rel, agent.scope.paths)
+                or matches_any(rel, agent.scope.unread_paths)):
             return
         # Forbidden to this agent: the tests of its own work (batch L), which no
         # widening reaches; the toolbox refuses the write and says so.
@@ -3529,6 +3538,17 @@ def _waits_on(state: RunState, task: ExecutionTask, other: ExecutionTask) -> boo
             seen.add(current)
             stack.extend(state.tasks[current].depends_on if current in state.tasks else [])
     return False
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string in a tool's arguments, however deep."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
 
 
 def _files_named(text: str, toolbox: Toolbox) -> set[str]:

@@ -35,7 +35,7 @@ from typing import Any
 from ..contracts import REQUIREMENTS_SCHEMA, parse_quoted, parse_reasoned
 from ..models import DoDCriterion, ExecutionTask, Requirement, VerifyMethod
 from .dod import TESTS_BAR
-from .paths import globs_within
+from .paths import globs_may_overlap, globs_within
 
 #: More than this and the plan becomes bookkeeping. The Minesweeper brief, about
 #: 1,500 words, states about fifty things someone could check.
@@ -470,6 +470,7 @@ def attach_requirements(
                 notes.setdefault(tester.id, []).append(
                     f"depends on {builder.title!r}: the tests come after the work they test")
             _fence(builder, tester, notes)
+            _blind(builder, tester, notes)
     for builder in tasks:
         testers = [t.title for t in tasks if t is not builder and set(builder.requirements)
                    & {rid for g in t.acceptance for rid in g.requirements}]
@@ -493,6 +494,32 @@ def _fence(builder: ExecutionTask, tester: ExecutionTask, notes: dict[str, list[
         builder.scope.forbidden_paths.append(pattern)
         notes.setdefault(builder.id, []).append(
             f"may not change {pattern!r}: {tester.title!r} writes the tests of its work there")
+
+
+def _blind(builder: ExecutionTask, tester: ExecutionTask, notes: dict[str, list[str]]) -> None:
+    """The builder's files, not shown to the tester of its work.
+
+    Minesweeper run 11 verified every task and failed four of the owner's
+    hidden tests, all on chord. The engine listed the chorded cell in
+    `lastRevealed`, and its comment said why; the tester's test said the same,
+    in nearly the same words, and asserted it. Its brief already said to write
+    each test "from the words quoted, not from the code". And its boards never
+    put a mine where the engine's win check flagged one on the way -- a test
+    shaped by the code it tests goes where the code works. A tester that cannot
+    read the code tests what the request says, by running the result.
+
+    Not where the tester's own files may be among them: it must read what it
+    writes.
+    """
+    hidden = [p for p in builder.scope.paths
+              if p not in tester.scope.unread_paths
+              and not globs_may_overlap([p], tester.scope.paths)]
+    if not hidden:
+        return
+    tester.scope.unread_paths.extend(hidden)
+    notes.setdefault(tester.id, []).append(
+        f"is not shown {', '.join(hidden)}: it tests {builder.title!r}'s work from the "
+        "requirements, by running it")
 
 
 def _one_suite(builder: ExecutionTask, testers: list[str]) -> bool:

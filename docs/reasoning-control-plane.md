@@ -88,7 +88,7 @@ consults the model about whether it should apply.
 
 **The execution fence.** Writes and commands are checked against the agent's
 scope, and under that scope sits a floor nothing can lower: `VCS_DIRS` and
-`STORE_DIRS` in [core/tools.py:125](../src/supervisor_harness/core/tools.py:125)
+`STORE_DIRS` in [core/tools.py:127](../src/supervisor_harness/core/tools.py:127)
 keep every agent out of `.git` and out of the harness's own run store, whatever
 its scope says. The command fence is **universal** — every agent gets it, not
 only those with a declared scope. An empty scope relaxes the per-path check
@@ -141,7 +141,7 @@ where the fence came from. The synthesis model drew the boundary that its own
 tasks then ran inside.
 
 **The run envelope** is the answer. `ScopeEnvelope`
-([models.py:285](../src/supervisor_harness/models.py:285)) is a run-level grant,
+([models.py:289](../src/supervisor_harness/models.py:289)) is a run-level grant,
 established once: configuration is the floor, the plan may **narrow** it, and
 nothing may widen it (`establish`,
 [envelope.py:83](../src/supervisor_harness/core/envelope.py:83)).
@@ -155,7 +155,7 @@ authority is handed on — when synthesis creates a task (`attenuate` at
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:3566](../src/supervisor_harness/core/supervisor.py:3566)). It
+[supervisor.py:3566](../src/supervisor_harness/core/supervisor.py:3586)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -241,7 +241,7 @@ Parallel lenses that each rediscover the same thing are wasting turns; parallel
 lenses that quietly assume *different* things about the same thing are worse,
 because the contradiction only surfaces in the work.
 
-**A `Fact`** ([models.py:313](../src/supervisor_harness/models.py:313)) is
+**A `Fact`** ([models.py:317](../src/supervisor_harness/models.py:317)) is
 something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
 `FACT_ESTABLISHED` ([events.py:53](../src/supervisor_harness/store/events.py:53)),
