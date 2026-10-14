@@ -1131,7 +1131,9 @@ Two more from turnstone, in the same spirit:
    implementer now says which it is. One waiting for another task's work names
    it, and its task waits behind that one -- the attempt not charged -- instead
    of going to the owner; a decision, permission, credential or resource still
-   does.
+   does. The name is the plan's title; one with the agent's own words around it
+   counts when exactly one title fits (run 10 went to the owner for "Write unit
+   tests for the game rules (the task owning src/game/engine.test.ts)").
 
 ### After run 8: a project-wide check charged to the wrong task
 
