@@ -679,7 +679,7 @@ def fill_suite_commands(task: ExecutionTask, workspace: Path | None) -> list[str
 
 
 def review_what_cannot_run(task: ExecutionTask, policy: Policy) -> list[str]:
-    """A behaviour claim with no command, judged by the verifier instead of escalated.
+    """A behaviour claim with no command the harness runs, judged by the verifier instead.
 
     The last resort, after the synthesis has been sent back once and a command
     named in the sentence or a whole-suite claim has been filled in. Measured
@@ -697,14 +697,30 @@ def review_what_cannot_run(task: ExecutionTask, policy: Policy) -> list[str]:
         return []
     lines: list[str] = []
     for crit in task.dod:
-        if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST) and not crit.command.strip():
-            crit.method = VerifyMethod.REVIEW
-            crit.rubric = (f"Pass only if the code and its tests show this: {crit.statement}. "
-                           "Cite the test that proves it, by file and line, and the code it "
-                           "exercises. A claim with no test behind it fails.")
-            crit.expect = ""
-            lines.append(f"criterion {crit.statement!r} named no command it could be run by; "
-                         "the verifier judges it against the code and its tests")
+        if crit.method not in (VerifyMethod.COMMAND, VerifyMethod.TEST):
+            continue
+        # A command the harness refuses to run is no command at all. Minesweeper
+        # run 9: "dist/index.html contains no external script src" as `node -e
+        # "..."`, kept through the send-back, sent the scaffold -- and so every
+        # task, all of which waited on it -- to the owner before any work began.
+        # Only a check runner's, refused for its shape: a program that is not one
+        # is not a check, and the owner still hears of it (`autonomy.gate`).
+        command = crit.command.strip()
+        refusal = unsafe_command(command) if command else None
+        tokens = shell_split(command) if command else []
+        if command and (refusal is None or not tokens
+                        or executable_name(tokens[0]) not in VERIFY_EXECUTABLES):
+            continue
+        crit.method = VerifyMethod.REVIEW
+        crit.rubric = (f"Pass only if the code and its tests show this: {crit.statement}. "
+                       "Cite the test that proves it, by file and line, and the code it "
+                       "exercises. A claim with no test behind it fails.")
+        crit.expect = ""
+        crit.command = ""
+        lines.append(f"criterion {crit.statement!r} "
+                     + (f"was given as `{command}`, which the harness will not run "
+                        f"({refusal})" if command else "named no command it could be run by")
+                     + "; the verifier judges it against the code and its tests")
     return lines
 
 

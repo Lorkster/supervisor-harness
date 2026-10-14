@@ -1159,6 +1159,23 @@ tests, a file it had named as passing.
    coming. A finding an agent sends about other tasks' files is routed the same
    way: to a task not yet verified before one that is.
 
+### After run 9: stopped before any work for a check written as a program
+
+*Written 2026-10-14.* Run 9 ended at ten minutes, at `awaiting_owner`. The
+scaffold carried "dist/index.html contains no external script src" as
+`node -e "..."`, kept through the send-back; the envelope gate parks a task with
+a mandatory check the harness will not run, and every other task waited on the
+scaffold. A check with no command was already judged by the verifier instead,
+where the harness's own test bar stands behind the task
+(`review_what_cannot_run`).
+
+6. **A check runner's command the harness will not run is judged, like one with
+   no command.** After the send-back, a `node -e`, a `;` or `&&` chain, or any
+   other shape the harness refuses from a check runner becomes a mandatory
+   review with the statement as its rubric, and the note says what was given. A
+   program that is not a check runner at all is not a check, and still goes to
+   the owner.
+
 ---
 
 ## The gate between the parts
