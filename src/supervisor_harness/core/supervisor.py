@@ -121,9 +121,11 @@ from .conversation import (
 )
 from .conversation import ROLE as CONVERSATION_ROLES
 from .dod import (
+    PROJECT_GATES,
     VerificationOutcome,
     detect_test_command,
     fill_what_the_harness_can,
+    project_scripts,
     quotes_the_file,
     verify_criterion,
     verify_inspection,
@@ -1216,6 +1218,7 @@ class Supervisor:
                 continue
             if task.status is TaskStatus.AWAITING_VERIFICATION:
                 self._find_the_suite(session, task, tree)
+                self._find_the_gates(session, task, tree)
             for crit in list(task.dod):
                 if crit.status is not CriterionStatus.UNVERIFIED or self._still_held(state, crit):
                     continue
@@ -1282,6 +1285,44 @@ class Supervisor:
                      f"its test bar runs `{command}`, found on the tree the task left",
                      task_id=task.id)
 
+    def _find_the_gates(self, session: RunSession, task: ExecutionTask, tree: Path) -> None:
+        """Hold a task's files to the project's own static checks, once it has them.
+
+        Minesweeper runs 8 and 12: the browser tests' spec had type errors.
+        Playwright runs a spec without type-checking it, so the task's own checks
+        passed; `npm run check` and the build failed, and in run 12 the owner's
+        hidden browser suite could not run at all. Only the final gate ran the
+        project's checks, and there it never ran. So each task carrying the
+        harness's test bar is held, when it is done, to the project's `typecheck`
+        and `lint` scripts as the tree has them: mandatory where this run made
+        the script, reported where the project had it before -- a check already
+        failing there would fail every task. A failure in another task's files is
+        that task's (`_hold_for_owner`).
+        """
+        if not any(c.suite for c in task.dod):
+            return
+        scripts = project_scripts(tree)
+        if not scripts.intersection(PROJECT_GATES):
+            return
+        baseline = commit_from_fact(session.state.facts.get(BASELINE_FACT, ""))
+        before = project_scripts(tree, baseline) if baseline else set()
+        present = {c.command.strip() for c in task.dod}
+        added = []
+        for name in PROJECT_GATES:
+            command = f"npm run {name}"
+            if name not in scripts or command in present:
+                continue
+            task.dod.append(DoDCriterion(
+                statement=f"The project's `{name}` script passes", method=VerifyMethod.COMMAND,
+                command=command, expect="0", mandatory=name not in before))
+            added.append(command)
+        if not added:
+            return
+        task.updated_at = now_iso()
+        session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        session.note(f"task {task.title!r} is held to the project's own checks: "
+                     + ", ".join(f"`{c}`" for c in added), task_id=task.id)
+
     def _attributed(
         self, state: RunState, crit: DoDCriterion, outcome: VerificationOutcome
     ) -> VerificationOutcome:
@@ -1321,15 +1362,21 @@ class Supervisor:
                 or crit.holds >= self.config.policy.max_task_attempts):
             return False
         files, owners = self._owners_of_failure(state, task, outcome)
+        reported = False
+        if not owners and self._tests_it(task, crit):
+            owners = self._reported_to(state, task)
+            reported = bool(owners)
         if not owners:
             return False
-        for owner in owners:
+        # A failure the task reported is on its owner already, as the finding.
+        for owner in [] if reported else owners:
             self._charge(session, owner, task, crit, outcome, files)
         crit.held_for = [o.id for o in owners]
         crit.holds += 1
-        crit.evidence = (f"held for {', '.join(repr(o.title) for o in owners)}: it failed only "
-                         f"on their files ({', '.join(sorted(files))}); run again when they "
-                         f"settle\n\n{outcome.evidence}")
+        why = ("its tests fail where this task reported their work wrong" if reported else
+               f"it failed only on their files ({', '.join(sorted(files))})")
+        crit.evidence = (f"held for {', '.join(repr(o.title) for o in owners)}: {why}; run "
+                         f"again when they settle\n\n{outcome.evidence}")
         task.updated_at = now_iso()
         session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
         session.note(f"a check of {task.title!r} failed only on another task's files; it "
@@ -1367,6 +1414,31 @@ class Supervisor:
         if not all(self._can_change(t) and not _waits_on(state, t, task) for t in owners):
             return named, []
         return named, owners
+
+    @staticmethod
+    def _tests_it(task: ExecutionTask, crit: DoDCriterion) -> bool:
+        """Whether a check runs this task's tests: the suite, or an acceptance command."""
+        command = crit.command.strip()
+        return crit.suite or (bool(command) and command in {
+            g.command.strip() for g in task.acceptance})
+
+    def _reported_to(self, state: RunState, task: ExecutionTask) -> list[ExecutionTask]:
+        """The tasks this attempt's agent sent a finding about their work, which can change.
+
+        Minesweeper run 12: the agent writing the browser tests found, without
+        reading the page's code, that Space acted on a cell other than the one
+        focused. It said so to the supervisor, kept its test, and was failed
+        three times for it. A test that fails where its writer reported the
+        product wrong waits for the product, as a check failed on another task's
+        files does; run again once the reported task has settled, a test that
+        still fails is its writer's.
+        """
+        sources = {f"agent {a.id}" for a in state.agents.values()
+                   if a.task_id == task.id and a.kind is AgentKind.EXECUTION
+                   and a.attempt == task.attempts}
+        ids = {e.task_id for e in state.goal if e.source in sources}
+        return [t for t in state.tasks.values() if t.id in ids and t.id != task.id
+                and self._can_change(t) and not _waits_on(state, t, task)]
 
     def _can_change(self, task: ExecutionTask) -> bool:
         """Whether a task is still to run, or can be sent back to."""

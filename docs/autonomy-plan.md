@@ -1226,6 +1226,44 @@ It is not a security boundary: the tests the tester writes run that code, and
 could print it. It closes the shortcut that was taken. The verifier is not
 fenced; it judges the tests against the quotes.
 
+### After run 12: what a blind tester found, and what became of it
+
+*Written 2026-10-14.* The testers read none of the code they tested. Between them
+they reported four things. Two were real bugs:
+
+- **Chord distances** were not measured from the chorded cell. The hidden suite
+  fails on exactly that.
+- **Space acted on a cell other than the one focused.** The page tracks focus in
+  its own variable, which only the arrow keys update. The verifier, reading the
+  code, called it the test's fault.
+
+The other two were the tester's own misreading. None of the four reached a fix:
+
+- **The engine finding went to the page,** whose scope was `src/`. #120 fixed
+  this.
+- **The browser tester was failed three times for keeping a test the product
+  failed.**
+- **The browser tests' spec had type errors.** Playwright runs a spec without
+  type-checking it, so the task's checks passed while `npm run check` and the
+  build failed. The owner's hidden browser suite could not run. Run 8 had the
+  same.
+
+7. **A tester's test that fails where it reported the product wrong waits for the
+   product.** When a task's own tests fail -- its suite, or a command the plan
+   gave it for its acceptance tests -- and this attempt's agent sent a finding
+   that was routed to another task that can still change, the check is held for
+   that task (`_reported_to`), as one failed on another task's files is. The
+   finding is the charge, so nothing more is put on the product. Run again once
+   the product has settled, a test that still fails is its writer's, and the
+   holds are bounded as before.
+8. **Every task is held to the project's own static checks once it has them.**
+   When a task carrying the harness's test bar is done, the project's `typecheck`
+   and `lint` scripts, as the tree has them, join its checks
+   (`_find_the_gates`). They are mandatory where this run made the script. Where
+   the project had the script before, they are reported, because a check already
+   failing there would fail every task. A failure in another task's files is that
+   task's (#115).
+
 ---
 
 ## The gate between the parts
