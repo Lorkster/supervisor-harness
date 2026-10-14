@@ -285,3 +285,68 @@ def test_a_failed_owner_counts_while_it_is_about_to_be_followed_up(
     assert supervisor._still_held(session.state, gate)
     supervisor.config.policy.follow_up = False
     assert not supervisor._still_held(session.state, gate), "no follow-up is coming"
+
+
+# -- a task held for the owner comes back when they answer ----------------------------------
+
+
+def _owner_holds(session: RunSession, task: ExecutionTask) -> None:
+    from supervisor_harness.models import Escalation, EscalationReason
+
+    task.status = TaskStatus.BLOCKED
+    escalation = Escalation(reason=EscalationReason.AGENT_BLOCKED, task_id=task.id)
+    session.state.escalations[escalation.id] = escalation
+
+
+def test_a_check_waits_for_a_task_held_for_the_owner(
+    supervisor: Supervisor, project: Path,
+) -> None:
+    """Minesweeper run 15: the page's type check failed on the unit tests' file, whose
+    task was waiting for the owner; the page was charged, sent back, and escalated in
+    turn for wanting to edit the file itself."""
+    session, tasks = _plan(supervisor, "run_OwnerHold")
+    engine, e2e = tasks["engine"], tasks["e2e"]
+    _owner_holds(session, e2e)
+    _break(project)
+
+    supervisor._verify_mechanically(session)
+    assert engine.dod[0].held_for == [e2e.id], "not charged to the engine"
+
+    supervisor._settle_tasks(session)
+    assert engine.status is TaskStatus.AWAITING_VERIFICATION
+    assert not supervisor._release_holds(session), "it comes back when the owner answers"
+    assert engine.dod[0].held_for == [e2e.id]
+    supervisor._verify_mechanically(session)
+    assert engine.dod[0].holds == 1, "not run again while it waits"
+
+
+def test_blocked_with_nothing_for_the_owner_is_not_coming(
+    supervisor: Supervisor, project: Path,
+) -> None:
+    session, tasks = _plan(supervisor, "run_NoEsc")
+    tasks["e2e"].status = TaskStatus.BLOCKED      # no escalation open
+    _break(project)
+    supervisor._verify_mechanically(session)
+    assert tasks["engine"].dod[0].status is CriterionStatus.FAIL
+
+
+async def test_when_the_owner_has_answered_it_runs_again(
+    supervisor: Supervisor, project: Path,
+) -> None:
+    from supervisor_harness.models import Phase
+
+    session, tasks = _plan(supervisor, "run_Answered")
+    engine, e2e = tasks["engine"], tasks["e2e"]
+    _owner_holds(session, e2e)
+    _break(project)
+    supervisor._verify_mechanically(session)
+
+    from supervisor_harness.models import Resolution
+
+    for escalation in session.state.escalations.values():   # declined: deferred
+        escalation.resolution = Resolution.DECLINE
+    e2e.status = TaskStatus.DEFERRED
+    session.state.phase = Phase.AWAITING_OWNER
+    supervisor._await_owner(session)
+    assert session.state.phase is Phase.VERIFYING, "the held check runs before the run ends"
+    assert supervisor._release_holds(session) and engine.dod[0].held_for == []

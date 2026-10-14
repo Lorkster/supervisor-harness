@@ -798,6 +798,8 @@ class ExecutionTask:
     # tests it writes for requirements other tasks delivered: from the plan.
     requirements: list[str] = field(default_factory=list)
     acceptance: list[AcceptanceTests] = field(default_factory=list)
+    # Reopened by a finding after its own attempts were spent (`Supervisor._route_findings`).
+    finding_reopens: int = 0
     status: TaskStatus = TaskStatus.PROPOSED
     decision: Decision | None = None
     decision_note: str = ""

@@ -185,9 +185,13 @@ async def test_a_task_not_yet_done_just_gains_the_check(supervisor: Supervisor) 
     assert not any("reopened" in n.text for n in session.state.notes)
 
 
-async def test_out_of_attempts_the_check_is_added_but_nothing_reopens(
+async def test_out_of_attempts_a_finding_reopens_it_once_more(
     supervisor: Supervisor,
 ) -> None:
+    """Minesweeper run 15: the blind tester found the engine's distance, flood and
+    chord bugs -- the four the owner's hidden suite failed -- and the engine, verified
+    on its third and last attempt, could not be reopened to fix them."""
+    from supervisor_harness.core.supervisor import MAX_FINDING_REOPENS
     from supervisor_harness.models import TaskStatus
 
     most = supervisor.config.policy.max_task_attempts
@@ -195,7 +199,14 @@ async def test_out_of_attempts_the_check_is_added_but_nothing_reopens(
     await supervisor._route_findings(session, me, _turn(
         ("supervisor", "contradiction", "src/page.ts contradicts the spec")))
 
-    assert page.status is TaskStatus.VERIFIED and any(c.goal_id for c in page.dod)
+    assert page.status is TaskStatus.APPROVED and page.finding_reopens == 1
+    assert any("which was reopened" in n.text for n in session.state.notes)
+
+    page.status, page.attempts = TaskStatus.VERIFIED, most + MAX_FINDING_REOPENS
+    await supervisor._route_findings(session, me, _turn(
+        ("supervisor", "contradiction", "src/page.ts still contradicts the spec")))
+    assert page.status is TaskStatus.VERIFIED, "once: a finding cannot reopen it forever"
+    assert sum(1 for c in page.dod if c.goal_id) == 2, "the check is added all the same"
 
 
 async def test_what_is_not_routed(supervisor: Supervisor) -> None:
