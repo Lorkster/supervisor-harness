@@ -97,8 +97,14 @@ def waits_for(state: RunState, task: ExecutionTask, turn: AgentTurn) -> Executio
     name = turn.waiting_for.strip().casefold()
     if not name:
         return None
-    waited = next((t for t in state.tasks.values()
-                   if t.title.strip().casefold() == name and t.id != task.id), None)
+    others = [t for t in state.tasks.values() if t.id != task.id and t.title.strip()]
+    waited = next((t for t in others if t.title.strip().casefold() == name), None)
+    if waited is None:
+        # The title with words of the agent's own around it. Minesweeper run 10:
+        # "Write unit tests for the game rules (the task owning
+        # src/game/engine.test.ts)" went to the owner. Only when one title fits.
+        within = [t for t in others if t.title.strip().casefold() in name]
+        waited = within[0] if len(within) == 1 else None
     if waited is None or waited.status not in _UNSETTLED:
         return None
     seen: set[str] = set()

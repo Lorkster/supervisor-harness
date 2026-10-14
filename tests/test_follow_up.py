@@ -88,6 +88,8 @@ async def test_the_turn_carries_what_it_needs(supervisor: Supervisor) -> None:
 
 @pytest.mark.parametrize(("name", "found"), [
     ("Build the page", "Build the page"), ("build the PAGE", "Build the page"),
+    ("Build the page (the task owning src/page.ts)", "Build the page"),  # its words around it
+    ("Build the page, or Run the gates", None),                          # two titles fit
     ("Run the gates", None),            # it comes after this task: a loop
     ("Scaffold", None),                 # already settled
     ("Write the browser tests", None),  # itself

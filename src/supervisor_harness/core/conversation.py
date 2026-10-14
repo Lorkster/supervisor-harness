@@ -151,7 +151,8 @@ REPORT_TOOL = _spec(
             "Only when blocked. work: something another task in the plan must land first; "
             "owner: a decision, permission, credential or resource only the owner can give")},
         "waiting_for": {"type": "string", "description": (
-            "Only when needs is work: the title of the task in the plan you are waiting for")},
+            "Only when needs is work: the title of the task in the plan you are waiting for, "
+            "exactly as the plan gives it")},
     },
     ["status", "summary"],
 )
