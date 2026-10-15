@@ -1322,6 +1322,31 @@ sent back, and escalated in turn for wanting to edit the file itself.
     go when nothing else can start. Once the owner has answered, a held check
     runs again before the run ends (`_await_owner`).
 
+### After run 17: stopped for another task's line
+
+*Written 2026-10-15.* The project's lint failed on one line of the unit tests'
+file (`let` for `const`). The page and the engine each stopped for it, and
+neither could change the file:
+
+- **The page** said it needed the owner.
+- **The engine,** reopened by the unit tester's finding, said it waited for the
+  unit tests. The unit tests were waiting for the engine, so that was a loop.
+
+Both went to the owner, and the run with them. The harness would have held that
+check for the file's task (#115), so neither had a reason to stop. And had
+either been checked, the engine's check could not have been held: the file's task
+waited on the engine.
+
+14. **An agent stopped only for other tasks' files is checked as it stands.** A
+    blocked report that names files, none of them its own, all the work of other
+    tasks that can change, does not go to the owner. The task is verified as it
+    stands: its own criteria are judged, and what fails in those files goes to
+    their tasks (`Supervisor._blocked_by_others`). Implementers are also told not
+    to stop for it.
+15. **A check failed only on the files of a task that waits on this one moves to
+    that task.** It comes after, so the check is judged there, as #112 moves a
+    check to the later task that builds the part (`_hand_check`).
+
 ### After run 16: a finding sent to the file's first writer
 
 *Written 2026-10-15.* The blind browser tester found that the page ignored

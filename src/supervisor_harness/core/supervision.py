@@ -160,6 +160,8 @@ class Supervision:
         reporting: Reporting,
         lifecycle: Lifecycle,
         scope_files: Callable[[Scope], list[str]] | None = None,
+        blocked_by_others: Callable[[RunState, ExecutionTask, str],
+                                    list[ExecutionTask]] | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -170,6 +172,9 @@ class Supervision:
         # The files an agent's scope covers, for the coverage check. None turns
         # the check off, which is what a caller with no workspace to list wants.
         self.scope_files = scope_files
+        # The other tasks whose files are all a blocked report names
+        # (`Supervisor._blocked_by_others`); None never spares the owner.
+        self.blocked_by_others = blocked_by_others
 
     async def _record_turn(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
@@ -462,6 +467,14 @@ class Supervision:
         waited = waits_for(session.state, task, turn) if turn.needs == "work" else None
         if waited is not None:
             await self._wait_behind(session, agent, task, waited, turn)
+            return
+        others = (self.blocked_by_others(session.state, task, turn.blocked_on)
+                  if self.blocked_by_others is not None else [])
+        if others:
+            await session.anote(
+                f"{task.title!r} stopped only for other tasks' files; it is checked as it "
+                f"stands, and what fails there goes to {', '.join(repr(t.title) for t in others)}",
+                task_id=task.id, actor=agent.id)
             return
         escalation = Escalation(
             run_id=session.state.id,

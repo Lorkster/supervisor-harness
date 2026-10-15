@@ -152,12 +152,25 @@ def test_a_failure_that_may_be_its_own_is_charged_to_it(
     assert gate.status is CriterionStatus.FAIL and gate.held_for == [], case
 
 
-def test_not_for_an_owner_that_waits_on_it(supervisor: Supervisor, project: Path) -> None:
+def test_an_owner_that_waits_on_it_takes_the_check(supervisor: Supervisor, project: Path) -> None:
+    """Minesweeper run 17: the engine's lint failed on the unit tests' file, whose task
+    waited for the engine. Held for it, the check would never run again; charged here,
+    the engine could not fix it. The owner comes after: the check moves there."""
     session, tasks = _plan(supervisor, "run_Loop")
-    tasks["e2e"].depends_on = [tasks["engine"].id]
+    engine, e2e = tasks["engine"], tasks["e2e"]
+    e2e.depends_on, e2e.status = [engine.id], TaskStatus.APPROVED   # waiting for the engine
+    e2e.action = "Write the browser tests."
     _break(project)
+
     supervisor._verify_mechanically(session)
-    assert tasks["engine"].dod[0].status is CriterionStatus.FAIL
+
+    assert engine.dod == [], "not the engine's"
+    moved = [c for c in e2e.dod if c.command == "python check.py"]
+    assert len(moved) == 1 and moved[0].status is CriterionStatus.UNVERIFIED
+    assert e2e.action.startswith("Write the browser tests.")
+    assert "Found by the harness while checking 'Build the engine'" in e2e.action
+    assert any("which waits on it and whose files it failed on" in n.text
+               for n in session.state.notes)
 
 
 def test_held_a_bounded_number_of_times(supervisor: Supervisor, project: Path) -> None:
