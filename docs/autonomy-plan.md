@@ -1386,6 +1386,14 @@ code was in the tester's view.
     from the other side. Where another task builds it, the tester keeps only the
     testing.
 
+**After run 19, the engine:** its implementer compiled its file into
+`.tmp-verify/engine.js` to try it, outside its scope. The project's lint failed
+on that file, and the engine was sent back three times for it. Each attempt said
+it could not delete the file "with the available tools". The harness would have
+let it: a file a failing check names widens the scope within the owner's grant.
+The implementer's rules now say to leave nothing the project's checks read, and
+that it may delete its own scratch output wherever it is.
+
 ### After run 16: a finding sent to the file's first writer
 
 *Written 2026-10-15.* The blind browser tester found that the page ignored
