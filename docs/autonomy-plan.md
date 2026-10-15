@@ -1379,6 +1379,12 @@ code was in the tester's view.
     plan on a tie, using that task's own test command. Batch L's marks and review,
     and batch M's fence, then apply to it as to any other. The same fallback the
     plan has for a whole-result requirement given too early (#110).
+17. **A tester does not also deliver what another task builds** (after run 19,
+    `requirements._not_its_own`). Run 19's plan gave the browser tests R22-R29 to
+    deliver as well as to test, and the page delivered them too. A requirement a
+    task both delivers and tests is not one it tests, so the same hole opened
+    from the other side. Where another task builds it, the tester keeps only the
+    testing.
 
 ### After run 16: a finding sent to the file's first writer
 

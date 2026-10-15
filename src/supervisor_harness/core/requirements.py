@@ -451,6 +451,7 @@ def attach_requirements(
     deps = _deps(tasks)
     for task in tasks:
         task.requirements = [rid for rid in task.requirements if rid in by_id]
+    _not_its_own(tasks, notes)
     _deliver_last(tasks, {r.id for r in accounted if r.whole}, notes)
     _assign_testers(tasks, accounted, deps, notes)
     for task in tasks:
@@ -488,6 +489,28 @@ def attach_requirements(
                 "the harness's test bar asks only that the suite passes: the tests of its "
                 f"requirements are written by {', '.join(repr(t) for t in testers)}")
     return accounted, notes
+
+
+def _not_its_own(tasks: list[ExecutionTask], notes: dict[str, list[str]]) -> None:
+    """A requirement another task builds is not delivered by the task that tests it.
+
+    Minesweeper run 19: the plan gave the unit tests R9-R16 to deliver as well as
+    to test, and the browser tests R22-R29, which the page delivers too. A
+    requirement a task both delivers and tests is not one it tests, so neither
+    tester took batch L's marks or review, nor batch M's fence: the same hole as
+    run 18's, dug from the other side. Where another task builds it, the tester
+    keeps only the testing.
+    """
+    for tester in tasks:
+        tested = set(_tested_ids(tester))
+        dropped = [rid for rid in tester.requirements if rid in tested
+                   and any(rid in t.requirements for t in tasks if t is not tester)]
+        if not dropped:
+            continue
+        tester.requirements = [rid for rid in tester.requirements if rid not in dropped]
+        notes.setdefault(tester.id, []).append(
+            f"tests {_listed(dropped)}, which another task builds: it no longer also "
+            "delivers them")
 
 
 def _distance(deps: dict[str, set[str]], task_id: str, other: str) -> int | None:
