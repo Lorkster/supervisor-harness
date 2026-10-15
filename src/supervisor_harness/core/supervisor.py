@@ -288,6 +288,7 @@ class Supervisor:
             self.config, self.store, self.router,
             self.packets, self.reporting, self.lifecycle,
             scope_files=self.toolbox.scope_files,
+            blocked_by_others=self._blocked_by_others,
         )
 
     # ------------------------------------------------------------------
@@ -1368,8 +1369,20 @@ class Supervisor:
             reported = bool(owners)
         if not owners:
             return False
+        # An owner that waits on this task cannot settle before it: held for it,
+        # the check would never run again. It comes after this task, so the check
+        # moves to it, as a check a later task builds the part for does (#112).
+        # Minesweeper run 17: the engine's lint failed on the unit tests' file,
+        # whose task was waiting for the engine.
+        later = [o for o in owners if _waits_on(state, o, task)]
+        owners = [o for o in owners if o not in later]
+        if not owners:
+            if reported:
+                return False
+            self._hand_check(session, task, crit, later[0], outcome.evidence, files)
+            return True
         # A failure the task reported is on its owner already, as the finding.
-        for owner in [] if reported else owners:
+        for owner in [] if reported else [*owners, *later]:
             self._charge(session, owner, task, crit, outcome, files)
         crit.held_for = [o.id for o in owners]
         crit.holds += 1
@@ -1383,6 +1396,48 @@ class Supervisor:
                      f"waits for {', '.join(repr(o.title) for o in owners)}",
                      task_id=task.id, criterion=crit.statement[:200], files=sorted(files))
         return True
+
+    def _hand_check(self, session: RunSession, task: ExecutionTask, crit: DoDCriterion,
+                    later: ExecutionTask, evidence: str, files: set[str]) -> None:
+        """A check this task failed only on a later task's files, moved to that task."""
+        task.dod = [c for c in task.dod if c.id != crit.id]
+        command = crit.command.strip()
+        if not any(c.method is crit.method and c.command.strip() == command for c in later.dod):
+            later.dod.append(replace(crit, id=new_id("dod"), status=CriterionStatus.UNVERIFIED,
+                                     evidence="", verified_at="", verified_by="", goal_id="",
+                                     held_for=[], holds=0))
+        later.action = (f"{later.action}\n\nFound by the harness while checking "
+                        f"{task.title!r}: `{command}` fails on {', '.join(sorted(files))}, "
+                        f"which are this task's work. Make it pass.\n{evidence[-600:]}")
+        for each in (task, later):
+            each.updated_at = now_iso()
+            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(each)})
+        session.note(f"a check moved from {task.title!r} to {later.title!r}, which waits on "
+                     "it and whose files it failed on", task_id=task.id, to_task=later.id,
+                     criterion=crit.statement[:200], files=sorted(files))
+
+    def _blocked_by_others(self, state: RunState, task: ExecutionTask,
+                           text: str) -> list[ExecutionTask]:
+        """The other tasks whose files are all a blocked report names, if they can change.
+
+        Minesweeper run 17: the page and the engine both stopped because the
+        project's lint failed on a line in the unit tests' file, which neither
+        could change, and both went to the owner. The harness holds such a check
+        for the file's task (#115), so an agent stopped for it is checked as it
+        stands instead: its own criteria judged, the failure sent to the owner.
+        """
+        tree = self._tree(state)
+        named = _files_named(text, self._toolbox_for(state))
+        if not named or any(matches_any(rel, task.scope.paths) for rel in named):
+            return []
+        owning: dict[str, ExecutionTask] = {}
+        for rel in named:
+            owners = [state.tasks[t] for t in _owners_of_file(state, tree, rel)
+                      if t in state.tasks and t != task.id]
+            if not owners or not all(self._can_change(state, o) for o in owners):
+                return []
+            owning.update((o.id, o) for o in owners)
+        return list(owning.values())
 
     def _owners_of_failure(
         self, state: RunState, task: ExecutionTask, outcome: VerificationOutcome
@@ -1411,7 +1466,7 @@ class Supervisor:
         candidates = [t for t in state.tasks.values()
                       if t.id != task.id and any(t.id in owners_of(rel) for rel in named)]
         owners = [t for t in candidates if t.status is not TaskStatus.VERIFIED] or candidates
-        if not all(self._can_change(state, t) and not _waits_on(state, t, task) for t in owners):
+        if not all(self._can_change(state, t) for t in owners):
             return named, []
         return named, owners
 

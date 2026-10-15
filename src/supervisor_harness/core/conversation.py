@@ -79,6 +79,10 @@ file is part of the job.
 brief lists the plan), fix it there: the harness lets you, unless another agent is \
 working on that file. Change only what your task needs, and say in your report \
 which file you changed and why.
+- A project-wide check -- the type check, the lint, the test suite -- failing only \
+in another task's files is not yours to fix, and not a reason to stop: finish your own \
+work, name the failing file in your report, and report done. The harness sends that \
+failure to the task whose file it is.
 - If something you cannot fix yourself blocks you -- a file outside the run's plan, \
 a missing dependency -- call report with status "blocked" and say exactly what, and \
 what it needs: "work" when another task in the plan must land something first (name \
