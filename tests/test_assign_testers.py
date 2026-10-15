@@ -75,3 +75,22 @@ def test_what_is_left_as_it_is() -> None:
 
     tested = {rid for t in tasks.values() for g in t.acceptance for rid in g.requirements}
     assert not tested & {"R11", "R60", "R61", "R62"}
+
+
+def test_a_tester_does_not_also_deliver_what_another_task_builds() -> None:
+    """Minesweeper run 19: the browser tests were given R22-R29 to deliver as well as
+    to test, and the page delivered them too. A requirement a task both delivers and
+    tests is not one it tests: neither batch L's checks nor batch M's fence applied."""
+    page = ExecutionTask(title="Page", requirements=["R22"], scope=Scope(paths=["src/main.ts"]))
+    e2e = ExecutionTask(title="Browser tests", requirements=["R22", "R30"], depends_on=[page.id],
+                        scope=Scope(paths=["e2e/**"]),
+                        acceptance=[AcceptanceTests(["R22", "R30"], "npm run test:e2e")])
+    ledger = [Requirement(id="R22", quote="Space reveals the focused cell"),
+              Requirement(id="R30", quote="the browser tests drive the page")]
+
+    _, notes = attach_requirements([page, e2e], ledger, {})
+
+    assert e2e.requirements == ["R30"], "R30 no other task builds: it stays its own"
+    assert any(c.statement == "A test is marked [R22]" for c in e2e.dod)
+    assert e2e.scope.unread_paths == ["src/main.ts"]
+    assert any("tests R22, which another task builds" in n for n in notes[e2e.id])
