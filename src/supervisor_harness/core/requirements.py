@@ -452,6 +452,7 @@ def attach_requirements(
     for task in tasks:
         task.requirements = [rid for rid in task.requirements if rid in by_id]
     _deliver_last(tasks, {r.id for r in accounted if r.whole}, notes)
+    _assign_testers(tasks, accounted, deps, notes)
     for task in tasks:
         if task.requirements:
             task.dod.append(builder_criterion(by_id, task.requirements))
@@ -487,6 +488,61 @@ def attach_requirements(
                 "the harness's test bar asks only that the suite passes: the tests of its "
                 f"requirements are written by {', '.join(repr(t) for t in testers)}")
     return accounted, notes
+
+
+def _distance(deps: dict[str, set[str]], task_id: str, other: str) -> int | None:
+    """How many dependencies from ``task_id`` back to ``other``; None if it does not wait on it."""
+    frontier, seen, steps = set(deps.get(task_id, ())), set(), 1
+    while frontier:
+        if other in frontier:
+            return steps
+        seen |= frontier
+        frontier = {d for t in frontier for d in deps.get(t, ())} - seen
+        steps += 1
+    return None
+
+
+def _assign_testers(tasks: list[ExecutionTask], ledger: list[Requirement],
+                    deps: dict[str, set[str]], notes: dict[str, list[str]]) -> None:
+    """Give each requirement the plan left untested to the nearest tester after its builder.
+
+    Minesweeper run 18 verified every task and failed five of the owner's hidden
+    browser tests. The plan, sent back once for it, still gave no task the tests
+    of R11 to R50: the two testing tasks were said to deliver "the unit tests
+    cover section 2; the end-to-end tests drive the page". So none of batch L's
+    checks and none of batch M's fence applied -- no `[Rn]` marks, no review of
+    whether each test checks what its requirement says, the page's code in full
+    view -- and the browser tests asserted that one cell animates where the
+    requirement says every revealed cell does, in order, within a second.
+
+    A tester is a task the plan gave acceptance tests: it has their command. Of
+    those, the one that waits on the builder by the fewest steps -- so never the
+    builder itself -- earliest in the plan on a tie. Its first group of acceptance tests
+    takes the id. A requirement set aside, or not tested for a reason the plan
+    gave, or that no task builds, is left as it is.
+    """
+    tested = {rid for t in tasks for rid in _tested_ids(t)}
+    testers = [t for t in tasks if t.acceptance]
+    for req in ledger:
+        if req.id in tested or req.set_aside or req.not_tested:
+            continue
+        builders = [t for t in tasks if req.id in t.requirements]
+        if not builders:
+            continue
+        reach: list[tuple[int, int, ExecutionTask]] = []
+        for index, candidate in enumerate(testers):
+            # Not a builder: no task waits on itself.
+            steps = [d for b in builders if (d := _distance(deps, candidate.id, b.id)) is not None]
+            if steps:
+                reach.append((min(steps), index, candidate))
+        if not reach:
+            continue
+        tester = min(reach, key=lambda found: (found[0], found[1]))[2]
+        tester.acceptance[0].requirements.append(req.id)
+        tested.add(req.id)
+        notes.setdefault(tester.id, []).append(
+            f"tests {req.id}, which the plan left untested: the nearest testing task after "
+            f"{builders[0].title!r}, which builds it")
 
 
 def _fence(builder: ExecutionTask, tester: ExecutionTask, notes: dict[str, list[str]]) -> None:
