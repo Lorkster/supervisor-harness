@@ -83,6 +83,10 @@ which file you changed and why.
 in another task's files is not yours to fix, and not a reason to stop: finish your own \
 work, name the failing file in your report, and report done. The harness sends that \
 failure to the task whose file it is.
+- Leave nothing behind that the project's checks would read: compile or build into a \
+directory the project already ignores, or delete what you made. A file a failing check \
+names that no task wrote -- your own scratch output -- you may delete, wherever it is: \
+the harness lets you.
 - If something you cannot fix yourself blocks you -- a file outside the run's plan, \
 a missing dependency -- call report with status "blocked" and say exactly what, and \
 what it needs: "work" when another task in the plan must land something first (name \
