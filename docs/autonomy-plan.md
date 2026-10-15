@@ -1322,6 +1322,23 @@ sent back, and escalated in turn for wanting to edit the file itself.
     go when nothing else can start. Once the owner has answered, a held check
     runs again before the run ends (`_await_owner`).
 
+### After run 16: a finding sent to the file's first writer
+
+*Written 2026-10-15.* The blind browser tester found that the page ignored
+`?board=`. It reported needs `work`, waiting for the page by its exact title, and
+named `src/main.ts`. The scaffold had written that file as a shell, and the page
+had written it since. Both were verified, so routing took the first of them. The
+scaffold was reopened, the page stayed verified, and the tester's wait for it
+went to the owner.
+
+13. **A finding goes to the task the agent waits for, then to the latest writer.**
+    Of the tasks that own the files a finding names:
+    - first, the one the agent's report says it is waiting for (`_titled`: by
+      title, or the one title inside the name);
+    - then a task not yet verified;
+    - then the one whose agent wrote those files last (`_latest_writes`), whose
+      version is the one there.
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed

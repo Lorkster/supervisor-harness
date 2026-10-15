@@ -303,3 +303,83 @@ async def test_a_finding_goes_to_the_task_whose_agent_wrote_the_file(
     assert not any(c.goal_id for c in page.dod), "not the page, whose scope only holds it"
     blocked = AgentTurn(agent_id=me.id, needs="work", waiting_for="Build the engine")
     assert waits_for(session.state, tests, blocked) is engine, "so the tester can wait for it"
+
+
+def _shell_and_page(supervisor: Supervisor, run_id: str):  # type: ignore[no-untyped-def]
+    from supervisor_harness.models import (
+        AgentStatus,
+        AgentTurn,
+        Decision,
+        ExecutionTask,
+        RunState,
+        Scope,
+        TaskStatus,
+    )
+
+    (supervisor.workspace / "src" / "main.ts").write_text("start()\n", encoding="utf-8")
+    scaffold = ExecutionTask(title="Scaffold the project", scope=Scope(paths=["src/"]),
+                             status=TaskStatus.VERIFIED, attempts=1, decision=Decision.APPROVE)
+    page = ExecutionTask(title="Build the page", scope=Scope(paths=["src/"]),
+                         status=TaskStatus.VERIFIED, attempts=1, decision=Decision.APPROVE)
+    tests = ExecutionTask(title="Write the browser tests", scope=Scope(paths=["e2e/"]),
+                          status=TaskStatus.IN_PROGRESS, attempts=1, decision=Decision.APPROVE,
+                          depends_on=[page.id])
+    agents = {a.id: a for a in (
+        AgentSpec(id="agt_s", kind=AgentKind.EXECUTION, task_id=scaffold.id,
+                  status=AgentStatus.DONE),
+        AgentSpec(id="agt_p", kind=AgentKind.EXECUTION, task_id=page.id, status=AgentStatus.DONE),
+        AgentSpec(id="agt_me", kind=AgentKind.EXECUTION, task_id=tests.id))}
+    session = supervisor.store.create(RunState(
+        id=run_id, prompt="Build a browser game",
+        tasks={t.id: t for t in (scaffold, page, tests)}, agents=agents,
+        turns=[AgentTurn(agent_id="agt_s", files_touched=["src/main.ts"]),     # the shell
+               AgentTurn(agent_id="agt_p", files_touched=["src/main.ts"])]))   # since
+    return session, agents["agt_me"], scaffold, page, tests
+
+
+async def test_a_finding_goes_to_the_agent_that_wrote_the_file_last(
+    supervisor: Supervisor,
+) -> None:
+    """Minesweeper run 16: the browser tester's finding that the page ignored ?board=
+    named src/main.ts, which the scaffold had written as a shell and the page had
+    written since. It went to the scaffold; the page stayed verified, and the
+    tester's wait for it went to the owner."""
+    from supervisor_harness.core.supervision import waits_for
+    from supervisor_harness.models import AgentTurn, TaskStatus
+
+    session, me, scaffold, page, tests = _shell_and_page(supervisor, "run_Last")
+    await supervisor._route_findings(session, me, _turn(
+        ("supervisor", "finding", "src/main.ts ignores the ?board= parameter")))
+
+    assert page.status is TaskStatus.APPROVED and any(c.goal_id for c in page.dod)
+    assert scaffold.status is TaskStatus.VERIFIED and not any(c.goal_id for c in scaffold.dod)
+    blocked = AgentTurn(agent_id=me.id, needs="work", waiting_for="Build the page")
+    assert waits_for(session.state, tests, blocked) is page, "so the tester waits for it"
+
+
+async def test_the_task_the_agent_waits_for_comes_first(supervisor: Supervisor) -> None:
+    from supervisor_harness.models import AgentTurn, Message, MessageKind, TaskStatus
+
+    session, me, scaffold, page, _ = _shell_and_page(supervisor, "run_Named")
+    turn = AgentTurn(agent_id=me.id, needs="work",
+                     waiting_for="Scaffold the project (the shell in src/main.ts)",
+                     messages=[Message(recipient="supervisor", kind=MessageKind.FINDING,
+                                       content="src/main.ts has no #board element")])
+    await supervisor._route_findings(session, me, turn)
+
+    assert scaffold.status is TaskStatus.APPROVED, "the one it named, though not the last writer"
+    assert page.status is TaskStatus.VERIFIED
+
+
+async def test_a_name_two_owners_fit_prefers_neither(supervisor: Supervisor) -> None:
+    from supervisor_harness.models import AgentTurn, Message, MessageKind, TaskStatus
+
+    session, me, scaffold, page, _ = _shell_and_page(supervisor, "run_Both")
+    turn = AgentTurn(agent_id=me.id, needs="work",
+                     waiting_for="Scaffold the project, or Build the page",
+                     messages=[Message(recipient="supervisor", kind=MessageKind.FINDING,
+                                       content="src/main.ts has no #board element")])
+    await supervisor._route_findings(session, me, turn)
+
+    assert page.status is TaskStatus.APPROVED, "the last writer, as if it named none"
+    assert scaffold.status is TaskStatus.VERIFIED

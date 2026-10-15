@@ -2850,14 +2850,23 @@ class Supervisor:
             owning = {tid for rel in named for tid in _owners_of_file(state, tree, rel)}
             owners = [t for t in state.approved_tasks()
                       if (mine is None or t.id != mine.id) and t.id in owning]
-            # A task not yet verified before one that is: a message names the files
-            # that work as well as the one that does not. Minesweeper run 8: "engine
-            # done, all 46 tests in tests/engine.test.ts pass; the typecheck fails
-            # in e2e/minesweeper.spec.ts" reopened the verified engine tests.
-            owner = next((t for t in owners if t.status is not TaskStatus.VERIFIED),
-                         owners[0] if owners else None)
-            if owner is None:
+            if not owners:
                 continue
+            # Of the owners: the one the agent says it is waiting for, if it is one;
+            # then a task not yet verified -- a message names the files that work
+            # as well as the one that does not (run 8: "all 46 tests in
+            # tests/engine.test.ts pass; the typecheck fails in
+            # e2e/minesweeper.spec.ts" reopened the verified engine tests); then
+            # the one whose agent wrote those files last, whose version is the one
+            # there. Minesweeper run 16: the browser tester's finding that the page
+            # ignored ?board= named src/main.ts, which the scaffold had written as a
+            # shell and the page had written since; it went to the scaffold, the
+            # page stayed verified, and the tester's wait for the page went to the
+            # owner.
+            waited = _titled(owners, turn.waiting_for)
+            latest = _latest_writes(state, tree, named)
+            owner = min(owners, key=lambda t: (t is not waited, t.status is TaskStatus.VERIFIED,
+                                               -latest.get(t.id, -1)))
             said = " -- ".join(p for p in (message.subject, message.content) if p)[:400]
             expectation = GoalExpectation(statement=said, task_id=owner.id,
                                           source=f"agent {agent.id}")
@@ -3601,6 +3610,27 @@ def _in_the_plan(state: RunState, rel: str) -> bool:
     plan = Ceiling("the run's plan", list(current.paths),
                    [*current.forbidden_paths, *(grant.forbidden_paths if grant else [])])
     return bool(widen_within(current, plan, [rel])[1])
+
+
+def _titled(tasks: list[ExecutionTask], name: str) -> ExecutionTask | None:
+    """The task of these that ``name`` names: by its title, or the one title inside it."""
+    wanted = name.strip().casefold()
+    if not wanted:
+        return None
+    exact = [t for t in tasks if t.title.strip().casefold() == wanted]
+    within = exact or [t for t in tasks if t.title.strip() and t.title.strip().casefold() in wanted]
+    return within[0] if len(within) == 1 else None
+
+
+def _latest_writes(state: RunState, tree: Path, rels: set[str]) -> dict[str, int]:
+    """For each task, the last turn in which one of its agents wrote one of ``rels``."""
+    latest: dict[str, int] = {}
+    for index, turn in enumerate(state.turns):
+        agent = state.agents.get(turn.agent_id)
+        if (agent is not None and agent.kind is AgentKind.EXECUTION and agent.task_id
+                and any(safe_relative(raw, tree) in rels for raw in turn.files_touched)):
+            latest[agent.task_id] = index
+    return latest
 
 
 def _owners_of_file(state: RunState, tree: Path, rel: str) -> set[str]:
