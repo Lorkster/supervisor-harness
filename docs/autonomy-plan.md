@@ -1347,6 +1347,39 @@ waited on the engine.
     that task.** It comes after, so the check is judged there, as #112 moves a
     check to the later task that builds the part (`_hand_check`).
 
+### After run 18: everything verified, and little to verify against
+
+*Written 2026-10-15.* Run 18 verified all six tasks with nothing for the owner,
+and both project gates passed. The owner's hidden suite failed one logic test
+and five browser tests. The browser misses come from two page bugs:
+
+- **Clicks that are not a mouse press are ignored.** The click handler returns on
+  `event.detail === 0`, meant to skip the click that Enter and Space also fire.
+  Assistive technology and `element.click()` send exactly that.
+- **A loss shows every hidden safe cell as revealed.**
+
+The run's own tests asserted weaker things than the requirements:
+
+- R46 says every revealed cell animates, in order of distance, within a second.
+  The test checked that one cell has an animation.
+- R48 says the other mines appear one after another. The test checked only the
+  exploded mine.
+
+The root: the plan, sent back once for it, still gave no task the tests of R11 to
+R50. Its two testing tasks "delivered" R52 instead ("the unit tests cover section
+2; the end-to-end tests drive the page"). So no `[Rn]` mark was required, no
+review asked whether each test checks what its requirement says, and the page's
+code was in the tester's view.
+
+16. **A requirement the plan left untested goes to the nearest tester after its
+    builder** (`requirements._assign_testers`). Once the plan is final, each
+    requirement no task tests -- and that is not set aside, not left untested for
+    a reason, and built by some task -- goes to a task with acceptance tests. Of
+    those, the one that waits on its builder by the fewest steps, earliest in the
+    plan on a tie, using that task's own test command. Batch L's marks and review,
+    and batch M's fence, then apply to it as to any other. The same fallback the
+    plan has for a whole-result requirement given too early (#110).
+
 ### After run 16: a finding sent to the file's first writer
 
 *Written 2026-10-15.* The blind browser tester found that the page ignored
