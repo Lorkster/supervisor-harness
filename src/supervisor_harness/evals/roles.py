@@ -9,6 +9,11 @@
 - **verifier** -- the verifier conversation (`Supervisor._converse_verifier`).
   Input: ``task`` with the criteria still to judge, and ``change_summary``;
   the fixture is the tree with the change in it.
+- **coordinator** -- one consultation (`Supervisor._coordinate`, batch O).
+  Input: ``state``, a recorded run's state at the moment reports came back,
+  reduced to what the coordinator reads (`tools/extract_coordinator_cases.py`).
+  Its picks are what is judged; the harness's own, for a matter it left
+  without one, are reported apart.
 
 A `Variant` says how a role is called: the model route, and for a one-shot role
 (the planner, today) thinking and sampling. The conversational roles already
@@ -69,6 +74,9 @@ class RoleOutput:
     ruling: str = ""            # review: "proceed", a veto name, or "" for no ruling
     why: str = ""
     criteria: list[dict[str, Any]] = field(default_factory=list)   # verifier
+    #: coordinator: each pick, with task titles: {do, task, to_task, criterion, message, by}
+    picks: list[dict[str, str]] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
     error: str = ""
     seconds: float = 0.0
 
@@ -81,6 +89,7 @@ class RoleOutput:
                                      "command": c.command} for c in t.dod]}
                       for t in self.tasks],
             "ruling": self.ruling, "why": self.why[:600], "criteria": self.criteria,
+            "picks": self.picks, "refused": self.refused,
             "error": self.error, "seconds": round(self.seconds, 1),
         }
 
@@ -111,6 +120,8 @@ async def run_role(case: Case, workspace: Path, store: Path, variant: Variant,
             out = await _planner(sup, case, variant)
         elif case.role == "review":
             out = await _review(sup, case)
+        elif case.role == "coordinator":
+            out = await _coordinator(sup, case)
         else:
             out = await _verifier(sup, case)
     except Exception as exc:  # noqa: BLE001 - one bad call is a result, not a crash
@@ -176,6 +187,28 @@ async def _verifier(sup: Supervisor, case: Case) -> RoleOutput:
     return RoleOutput(criteria=[
         {"statement": c.statement, "status": str(c.status), "evidence": c.evidence[:600]}
         for c in judged.dod])
+
+
+async def _coordinator(sup: Supervisor, case: Case) -> RoleOutput:
+    state = from_jsonable(case.input["state"], RunState)
+    state.workspace = str(sup.workspace)
+    state.worktree = None
+    state.prompt = case.request or state.prompt
+    session = sup.store.create(state)
+    sup.config.policy.coordinator = True
+    titles = {t.id: t.title for t in state.tasks.values()}
+    statements = {c.id: c.statement for t in state.tasks.values() for c in t.dod}
+    if not await sup._coordinate(session):
+        return RoleOutput(error="nothing was open for the coordinator")
+    record = session.state.coordination[-1]
+    picks = [{"do": a["do"], "task": titles.get(a["task"], a["task"]),
+              "to_task": titles.get(a.get("to_task", ""), ""),
+              "criterion": statements.get(a.get("criterion", ""), ""),
+              "message": a.get("message", ""), "by": a.get("by", "coordinator")}
+             for a in record.actions]
+    return RoleOutput(picks=picks, refused=list(record.refused),
+                      error="" if any(p["by"] != "harness" for p in picks) or not picks
+                      else f"the coordinator made no pick: {record.summary}")
 
 
 def task_json(task: ExecutionTask) -> dict[str, Any]:

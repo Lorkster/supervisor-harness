@@ -7,6 +7,9 @@ gap another way; and it keeps ``blocked`` -- a dependency it may clear itself --
 apart from ``needs_user``. Here a failed task waited for the checkpoint, and was
 sent back to a fresh agent only if the checkpoint failed and the run's one
 remediation budget allowed; every blocked agent went to the owner.
+
+Which task a stop waits for is the coordinator's to decide now (batch O,
+`tests/test_coordinator.py`); without it, a stop goes to the owner.
 """
 
 from __future__ import annotations
@@ -23,7 +26,6 @@ from supervisor_harness.core.conversation import (
     Stint,
     stint_payload,
 )
-from supervisor_harness.core.supervision import waits_for
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import (
     AgentKind,
@@ -86,43 +88,14 @@ async def test_the_turn_carries_what_it_needs(supervisor: Supervisor) -> None:
     assert (turn.needs, turn.waiting_for) == ("work", "Build the page")
 
 
-@pytest.mark.parametrize(("name", "found"), [
-    ("Build the page", "Build the page"), ("build the PAGE", "Build the page"),
-    ("Build the page (the task owning src/page.ts)", "Build the page"),  # its words around it
-    ("Build the page, or Run the gates", None),                          # two titles fit
-    ("Run the gates", None),            # it comes after this task: a loop
-    ("Scaffold", None),                 # already settled
-    ("Write the browser tests", None),  # itself
-    ("No such task", None), ("", None),
-])
-def test_what_a_task_may_wait_for(supervisor: Supervisor, name: str, found: str | None) -> None:
-    session, _, tasks = _plan(supervisor, f"run_W{abs(hash(name)) % 10_000}")
-    waited = waits_for(session.state, tasks["Write the browser tests"], _blocked("work", name))
-    assert (waited.title if waited else None) == found
-
-
-async def test_waiting_on_the_plan_is_not_the_owners(supervisor: Supervisor) -> None:
-    session, me, tasks = _plan(supervisor, "run_Wait")
-    tests, page = tasks["Write the browser tests"], tasks["Build the page"]
-    directive = Directive(agent_id=me.id, kind=DirectiveKind.ESCALATE,
-                          rationale="blocked")
-
-    await supervisor.supervision._park_task(session, me, _blocked("work", page.title), directive)
-
-    assert session.state.open_escalations() == [], "nothing for the owner"
-    assert page.id in tests.depends_on and tests.status is TaskStatus.APPROVED
-    assert tests.attempts == 0 and tests.assigned_agent_id is None, "the wait is not charged"
-    assert any(n.text == f"{tests.title!r} waits for {page.title!r} instead of going to the owner"
-               for n in session.state.notes)
-
-
 @pytest.mark.parametrize(("needs", "waiting_for"), [
-    ("owner", ""), ("owner", "Build the page"), ("work", "No such task"), ("", ""),
+    ("owner", ""), ("owner", "Build the page"), ("work", "Build the page"), ("", ""),
 ])
-async def test_what_only_the_owner_can_give_still_goes_to_the_owner(
+async def test_without_the_coordinator_a_stop_goes_to_the_owner(
     supervisor: Supervisor, needs: str, waiting_for: str,
 ) -> None:
     session, me, tasks = _plan(supervisor, f"run_O{needs}{len(waiting_for)}")
+    supervisor.config.policy.coordinator = False
     directive = Directive(agent_id=me.id, kind=DirectiveKind.ESCALATE,
                           rationale="blocked")
     await supervisor.supervision._park_task(session, me, _blocked(needs, waiting_for), directive)
@@ -167,7 +140,8 @@ async def test_a_failed_check_goes_back_to_the_same_conversation_at_once(
     (task,) = state.tasks.values()
 
     assert task.status is TaskStatus.VERIFIED and task.attempts == 2
-    assert any(n.text.endswith("did not pass; attempt 2 comes next") for n in state.notes)
+    (sent,) = [a for c in state.coordination for a in c.actions]
+    assert (sent["do"], sent["task"], sent["attempt"]) == ("send_back", task.id, "1")
     assert any(n.text == "followed up in the same conversation" for n in state.notes)
     second = next(r for r in fake.implementer
                   if any("Your work on this task was checked" in m.content
@@ -180,6 +154,7 @@ async def test_a_failed_check_goes_back_to_the_same_conversation_at_once(
 
 async def test_off_the_checkpoint_is_the_only_way_back(supervisor: Supervisor) -> None:
     supervisor.config.policy.follow_up = False
+    supervisor.config.policy.coordinator = False
     fake = FailsOnce(_calls(READ), _calls(DONE), _calls(DONE))
     response = await _conversing(supervisor, fake).run(PROMPT, mode=RunMode.EXECUTE,
                                                        auto_approve=True)

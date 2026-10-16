@@ -91,14 +91,22 @@ Nothing here loops without a counter, and each one is a policy setting:
 | An agent's turns | `default_max_turns`, `execution_max_turns` | 6, 10 | The agent is stopped and settles; its work so far is kept |
 | An agent's silence | `max_unreported_dispatches`, `agent_timeout_seconds` | 3 packets, off | The agent is abandoned, on the log, and the phase settles without it |
 | A task's attempts | `max_task_attempts` | 3 | The task is not reopened again; it ends `failed`, with its unmet criteria named |
+| Coordinator consultations | `max_coordinator_decisions` | 24 | A failed task is followed up as itself while its attempts last; a stopped one goes to the owner |
 | Remediation rounds | `max_checkpoint_iterations` | 3 | The run proceeds to `improving` and reports what did not pass |
 | Escalation rounds | the owner | — | Not a counter, and the one exception: each round ends at `awaiting_owner`, so the loop goes round only as often as a person answers `grant` |
 
 **So: what happens when a task fails verification twice?** Its criteria are
 verified mechanically where they can be, and the verdict of a check the harness
 ran itself outranks the verifying agent's account of it. A task whose mandatory
-criteria are not all proven is marked `failed` when the phase settles. The
-checkpoint then judges the round; if it does not pass, `_remediate` reopens
+criteria are not all proven is marked `failed` when the phase settles. Then
+the coordinator (`core/coordinator.py`) is shown what came back -- each failed
+check's output, the files it names and which tasks' agents wrote them, any agent
+that stopped, any finding about another task's work -- and picks from a fixed
+menu: send the task back to its own implementer with a message, move a check to
+the task whose work it fails on, make a task wait for another, judge a stopped
+task as it stands, ask the owner, or leave it failed. The harness refuses a pick
+it cannot carry out, with the reason, once; the coordinator can pass no check,
+drop none, and widen nothing. The checkpoint then judges the round; if it does not pass, `_remediate` reopens
 every failed task whose `attempts` are still under `max_task_attempts`, appends
 the checkpoint's own corrections to the task's action, and the run goes back to
 `executing`. That is the second attempt. The same happens after it fails again —

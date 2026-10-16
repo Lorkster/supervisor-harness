@@ -46,7 +46,6 @@ from ..models import (
     EndCause,
     Escalation,
     EscalationReason,
-    ExecutionTask,
     Finding,
     RunState,
     Scope,
@@ -80,43 +79,6 @@ from .responses import SupervisorResponse
 #: A directive an agent cannot read is not an answer, and an agent asking more
 #: than this per turn has a briefing problem rather than a question.
 MAX_QUESTIONS_PER_TURN = 3
-
-
-#: The tasks a waiting task may wait for: not yet settled.
-_UNSETTLED = (TaskStatus.PROPOSED, TaskStatus.APPROVED, TaskStatus.IN_PROGRESS,
-              TaskStatus.AWAITING_VERIFICATION)
-
-
-def waits_for(state: RunState, task: ExecutionTask, turn: AgentTurn) -> ExecutionTask | None:
-    """The task a blocked turn says it waits for, if waiting on it can work.
-
-    By title, as the plan gives it; a task still to be settled; not the task
-    itself, and not one that comes after it -- waiting on a task that waits on
-    you is the owner's to untangle.
-    """
-    name = turn.waiting_for.strip().casefold()
-    if not name:
-        return None
-    others = [t for t in state.tasks.values() if t.id != task.id and t.title.strip()]
-    waited = next((t for t in others if t.title.strip().casefold() == name), None)
-    if waited is None:
-        # The title with words of the agent's own around it. Minesweeper run 10:
-        # "Write unit tests for the game rules (the task owning
-        # src/game/engine.test.ts)" went to the owner. Only when one title fits.
-        within = [t for t in others if t.title.strip().casefold() in name]
-        waited = within[0] if len(within) == 1 else None
-    if waited is None or waited.status not in _UNSETTLED:
-        return None
-    seen: set[str] = set()
-    stack = list(waited.depends_on)
-    while stack:
-        current = stack.pop()
-        if current == task.id:
-            return None
-        if current not in seen:
-            seen.add(current)
-            stack.extend(state.tasks[current].depends_on if current in state.tasks else [])
-    return waited
 
 
 def new_findings(reported: list[Finding], recorded: list[Finding]) -> list[Finding]:
@@ -160,8 +122,6 @@ class Supervision:
         reporting: Reporting,
         lifecycle: Lifecycle,
         scope_files: Callable[[Scope], list[str]] | None = None,
-        blocked_by_others: Callable[[RunState, ExecutionTask, str],
-                                    list[ExecutionTask]] | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -172,9 +132,6 @@ class Supervision:
         # The files an agent's scope covers, for the coverage check. None turns
         # the check off, which is what a caller with no workspace to list wants.
         self.scope_files = scope_files
-        # The other tasks whose files are all a blocked report names
-        # (`Supervisor._blocked_by_others`); None never spares the owner.
-        self.blocked_by_others = blocked_by_others
 
     async def _record_turn(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
@@ -464,17 +421,13 @@ class Supervision:
         task = session.state.tasks.get(agent.task_id or "")
         if task is None:
             return
-        waited = waits_for(session.state, task, turn) if turn.needs == "work" else None
-        if waited is not None:
-            await self._wait_behind(session, agent, task, waited, turn)
-            return
-        others = (self.blocked_by_others(session.state, task, turn.blocked_on)
-                  if self.blocked_by_others is not None else [])
-        if others:
-            await session.anote(
-                f"{task.title!r} stopped only for other tasks' files; it is checked as it "
-                f"stands, and what fails there goes to {', '.join(repr(t.title) for t in others)}",
-                task_id=task.id, actor=agent.id)
+        if self.config.policy.coordinator:
+            # Stopped, and put to the coordinator at the next settle point
+            # (`Supervisor._coordinate`): it may make the task wait, judge it as
+            # it stands, send it back, or ask the owner.
+            task.status = TaskStatus.BLOCKED
+            task.updated_at = now_iso()
+            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
             return
         escalation = Escalation(
             run_id=session.state.id,
@@ -488,27 +441,6 @@ class Supervision:
         task.status = TaskStatus.BLOCKED
         task.updated_at = now_iso()
         await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
-
-    async def _wait_behind(self, session: RunSession, agent: AgentSpec, task: ExecutionTask,
-                           waited: ExecutionTask, turn: AgentTurn) -> None:
-        """Start the task again once the one it waits for is done, not ask the owner.
-
-        Turnstone's coordinator keeps two stops apart: ``blocked``, a dependency
-        it may clear itself, and ``needs_user``, what only the user can give.
-        Here every stop was the owner's. An agent waiting on another task's work
-        is the first kind: the task now depends on that one, goes back in the
-        queue, and the attempt it could not use is not charged.
-        """
-        task.depends_on = [*task.depends_on, waited.id]
-        task.status = TaskStatus.APPROVED
-        task.assigned_agent_id = None
-        task.attempts = max(0, task.attempts - 1)
-        task.updated_at = now_iso()
-        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
-        await session.anote(
-            f"{task.title!r} waits for {waited.title!r} instead of going to the owner",
-            actor=agent.id, task_id=task.id, waits_for=waited.id,
-            blocked_on=turn.blocked_on[:300])
 
     def _coverage(
         self, session: RunSession, agent: AgentSpec, turn: AgentTurn

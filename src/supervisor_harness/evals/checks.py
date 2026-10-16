@@ -38,6 +38,7 @@ GENERIC: dict[str, tuple[str, ...]] = {
                 "scopes_specific", "scopes_grounded", "inspections_grounded"),
     "review": ("answered", "ruled", "veto_cites_file"),
     "verifier": ("answered", "all_ruled", "evidence_cites_file"),
+    "coordinator": ("answered", "picked_for_each"),
 }
 
 #: A file named in prose: `ci.yml`, `src/app/x.tsx:31`.
@@ -195,10 +196,52 @@ def task_count(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Resu
     return lo <= len(out.tasks) <= hi, f"{len(out.tasks)} tasks; wanted {lo}-{hi}"
 
 
+def picked_for_each(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result:
+    """The coordinator left no matter for the harness to pick for."""
+    left = [f"{a['do']} {a['task']}" for a in out.picks if a["by"] == "harness"]
+    return not left, f"left to the harness: {left}" if left else ""
+
+
+def _pick_matches(pick: dict[str, str], want: dict[str, Any]) -> bool:
+    dos = want.get("do", [])
+    if dos and pick["do"] not in ([dos] if isinstance(dos, str) else dos):
+        return False
+    for key in ("task", "to_task"):
+        prefix = str(want.get(key, "")).casefold()
+        if prefix and not pick[key].casefold().startswith(prefix):
+            return False
+    part = str(want.get("criterion_has", "")).casefold()
+    if part and part not in pick["criterion"].casefold():
+        return False
+    words = [str(w).casefold() for w in want.get("message_has", [])]
+    return all(w in pick["message"].casefold() for w in words)
+
+
+def picks(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result:
+    """Labelled: the coordinator's picks include one set of ``expect`` and nothing in ``forbid``.
+
+    ``expect`` is a list of alternatives, each a list of picks that must all be
+    there; a pick names ``do`` (one or a list), and title prefixes for ``task``
+    and ``to_task``, and may want words in the moved check's statement
+    (``criterion_has``) or in its message (``message_has``).
+    """
+    mine = [a for a in out.picks if a["by"] != "harness"]
+    alternatives = p.get("expect") or [[]]
+    met = any(all(any(_pick_matches(a, want) for a in mine) for want in option)
+              for option in alternatives)
+    banned = [f"{a['do']} {a['task']}" for a in mine
+              if any(_pick_matches(a, want) for want in p.get("forbid", []))]
+    said = "; ".join(f"{a['do']} {a['task']}" + (f" -> {a['to_task']}" if a["to_task"] else "")
+                     for a in mine) or "no picks"
+    if banned:
+        return False, f"forbidden: {banned} (picked: {said})"
+    return met, "" if met else f"picked: {said}"
+
+
 CHECKS: dict[str, Check] = {f.__name__: f for f in (
     answered, criteria_enforceable, mechanical_criterion, scopes_specific, scopes_grounded,
     inspections_grounded, ruled, veto_cites_file, verdict_in, all_ruled, evidence_cites_file,
-    statuses, no_task_matches, some_scope_covers, task_count)}
+    statuses, no_task_matches, some_scope_covers, task_count, picked_for_each, picks)}
 
 
 def judge(case: Case, out: RoleOutput, workspace: Path) -> dict[str, dict[str, Any]]:

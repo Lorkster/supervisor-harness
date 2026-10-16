@@ -508,7 +508,11 @@ def build_follow_up(task: ExecutionTask) -> str:
               if "recorded fail" in c.evidence or "recorded blocked" in c.evidence]
     lines = [f"- {c.statement}\n  What the check found: "
              f"{c.evidence.split(': ', 1)[-1][:700]}" for c in failed]
-    return ("Your work on this task was checked, and these did not pass:\n"
+    told = f"The coordinator says: {task.follow_up_note}\n\n" if task.follow_up_note else ""
+    if told and not failed:
+        return (f"{told}Do that -- only that, and what it needs -- run the checks again, "
+                "and report. Everything else you did stands.")
+    return (told + "Your work on this task was checked, and these did not pass:\n"
             + ("\n".join(lines) or "- (the check recorded no detail)")
             + "\n\nFix what they found -- only that, and what it needs -- run the checks "
             "again, and report. Everything else you did stands.")
@@ -650,8 +654,9 @@ def _later_block(run: RunState, task: ExecutionTask) -> str:
         return ""
     return ("These tasks come after this one. A review criterion that fails only "
             "because one of them builds that part -- not because this task left its own "
-            "part undone -- set belongs_to to that task's title; the supervisor moves the "
-            "check there. Its own part undone is a fail, with no belongs_to.\n"
+            "part undone -- set belongs_to to that task's title; the coordinator decides "
+            "whether the check moves there. Its own part undone is a fail, with no "
+            "belongs_to.\n"
             + "\n".join(f"- {t.title}: {(t.action or t.title)[:200]}" for t in later))
 
 

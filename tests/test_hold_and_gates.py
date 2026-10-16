@@ -1,8 +1,8 @@
-"""Two from Minesweeper run 12.
+"""From Minesweeper run 12: each task is held to the project's own checks.
 
-A tester's test that fails where its writer reported the product wrong waits for
-the product, rather than failing the tester three times for keeping it. And each
-task's files are held to the project's own static checks once it has them:
+(The other half of #121 -- a tester's test that fails where it reported the
+product waited for the product -- is the coordinator's call now, batch O.)
+Each task's files are held to the project's own static checks once it has them:
 Playwright runs a spec without type-checking it, and in runs 8 and 12 a spec's
 type errors broke `npm run check` and the build with every task's checks green.
 """
@@ -18,87 +18,15 @@ import pytest
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import (
     BASELINE_FACT,
-    AcceptanceTests,
-    AgentKind,
-    AgentSpec,
-    AgentStatus,
-    CriterionStatus,
     DoDCriterion,
     ExecutionTask,
-    GoalExpectation,
     RunState,
-    Scope,
     TaskStatus,
     VerifyMethod,
 )
 from supervisor_harness.store.runstore import RunSession
 
-from .test_charge_the_owner import project  # noqa: F401 - the fixture
 from .test_fails_before import git, repository, write
-
-# -- a test that fails where its writer reported the product wrong -------------------------
-
-E2E = "python check.py e2e"
-REPORTED = "e2e/spec.ts(3,1): expected cell (1,1) revealed after Space, found hidden\n"
-
-
-def _reported(supervisor: Supervisor, run_id: str, *, finding: bool = True,
-              attempt: int = 1) -> tuple[RunSession, ExecutionTask, ExecutionTask]:
-    page = ExecutionTask(title="Build the page", scope=Scope(paths=["src/engine.ts"]),
-                         status=TaskStatus.APPROVED, attempts=1)
-    tests = ExecutionTask(title="Write the browser tests", scope=Scope(paths=["e2e/**"]),
-                          status=TaskStatus.AWAITING_VERIFICATION, attempts=1,
-                          acceptance=[AcceptanceTests(["R1"], E2E)],
-                          dod=[DoDCriterion(statement="the browser tests pass",
-                                            method=VerifyMethod.COMMAND, command=E2E)])
-    tester = AgentSpec(id="agt_t", kind=AgentKind.EXECUTION, task_id=tests.id,
-                       attempt=attempt, status=AgentStatus.DONE)
-    goal = [GoalExpectation(statement="Space acts on another cell", task_id=page.id,
-                            source="agent agt_t")] if finding else []
-    state = RunState(id=run_id, prompt="p", tasks={t.id: t for t in (page, tests)},
-                     agents={tester.id: tester}, goal=goal)
-    return supervisor.store.create(state), page, tests
-
-
-def _break(root: Path, output: str = REPORTED) -> None:
-    (root / "broken.txt").write_text(output, encoding="utf-8")
-
-
-def test_a_test_failing_where_its_writer_reported_the_product_waits_for_it(
-    supervisor: Supervisor, project: Path,  # noqa: F811
-) -> None:
-    session, page, tests = _reported(supervisor, "run_Rep")
-    _break(project)
-
-    supervisor._verify_mechanically(session)
-
-    (crit,) = tests.dod
-    assert crit.status is CriterionStatus.UNVERIFIED and crit.held_for == [page.id]
-    assert crit.evidence.startswith("held for 'Build the page': its tests fail where this "
-                                    "task reported their work wrong")
-    assert page.dod == [], "the finding is on it already; its tests are not"
-    supervisor._settle_tasks(session)
-    assert tests.status is TaskStatus.AWAITING_VERIFICATION, "not failed for keeping it"
-
-
-@pytest.mark.parametrize("case", ["no finding", "an earlier attempt's finding",
-                                  "not its tests", "the product cannot change"])
-def test_otherwise_the_failure_is_the_testers(
-    supervisor: Supervisor, project: Path, case: str,  # noqa: F811
-) -> None:
-    session, page, tests = _reported(supervisor, f"run_T{len(case)}",
-                                     finding=case != "no finding",
-                                     attempt=2 if case == "an earlier attempt's finding" else 1)
-    if case == "not its tests":
-        tests.acceptance = [AcceptanceTests(["R1"], "python check.py other")]
-    if case == "the product cannot change":
-        page.status, page.attempts = TaskStatus.FAILED, supervisor.config.policy.max_task_attempts
-    _break(project)
-
-    supervisor._verify_mechanically(session)
-
-    assert tests.dod[0].status is CriterionStatus.FAIL, case
-
 
 # -- the project's own static checks ------------------------------------------------------
 

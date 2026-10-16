@@ -164,30 +164,22 @@ def test_later_tasks_are_those_that_depend_on_it_through_any_chain(
     assert "## Later in the plan" not in build_verifier_brief(session.state, gates)
 
 
-async def test_a_check_a_later_task_builds_moves_there(supervisor: Supervisor) -> None:
-    session, verifier, (scaffold, engine, gates, _) = _line(supervisor)
+async def test_a_later_task_the_verifier_names_is_told_to_the_coordinator(
+    supervisor: Supervisor,
+) -> None:
+    """The verifier may say a later task builds the part; whether the check moves is
+    the coordinator's to decide (batch O), so the failure stands, saying so."""
+    session, verifier, (scaffold, engine, _gates, _) = _line(supervisor)
     _, playwright, playable, lint = scaffold.dod
-    playwright.status, playwright.evidence = CriterionStatus.FAIL, "failed on attempt 1"
 
     await supervisor._report_verification(session, verifier, _verdict(
         (playwright, "fail", ENGINE), (playable, "fail", GATES), (lint, "pass", "")))
 
-    assert [c.statement for c in scaffold.dod] == ["npm run build exits 0", "The lint passes"]
-    assert scaffold.status is TaskStatus.VERIFIED, "no attempt spent on another task's part"
-    (moved,) = [c for c in engine.dod if c.statement == playwright.statement]
-    assert moved.status is CriterionStatus.UNVERIFIED and moved.id != playwright.id
-    assert moved.evidence == "", "judged afresh where it lands, not carrying this verdict"
-    (goal_check,) = [c for c in gates.dod if c.goal_id]
-    assert goal_check.goal_id == playable.goal_id
-    assert session.state.goal[0].task_id == gates.id, "the expectation moved with its check"
-    notes = [n.text for n in session.state.notes if n.text.startswith("a check moved")]
-    assert notes == [f"a check moved from {SCAFFOLD!r} to {ENGINE!r}, which builds the part "
-                     "it failed on",
-                     f"a check moved from {SCAFFOLD!r} to {GATES!r}, which builds the part "
-                     "it failed on"]
-    (supervisor.store.runs_dir / "run_L" / "state.json").unlink()
-    replayed = supervisor.store.load_state("run_L")
-    assert len(replayed.tasks[gates.id].dod) == 1 and replayed.goal[0].task_id == gates.id
+    assert playwright.status is CriterionStatus.FAIL and playable.status is CriterionStatus.FAIL
+    assert playwright.evidence.endswith(f"The verifier says the task {ENGINE!r} builds this part.")
+    assert playable.evidence.endswith(f"The verifier says the task {GATES!r} builds this part.")
+    assert scaffold.status is TaskStatus.FAILED
+    assert not any(c.statement == playwright.statement for c in engine.dod)
 
 
 @pytest.mark.parametrize("owner", ["Docs", "Nowhere", SCAFFOLD, ""])
