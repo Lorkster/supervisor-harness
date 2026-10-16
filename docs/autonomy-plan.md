@@ -1460,6 +1460,145 @@ went to the owner.
     - then the one whose agent wrote those files last (`_latest_writes`), whose
       version is the one there.
 
+### After run 21: the same mistake, nineteen times
+
+*Written 2026-10-16, at the owner's request: look for the pattern in the last
+series of fixes, and at turnstone again.*
+
+The nineteen PRs from #112 to #132 added 3,855 lines and removed 200. Nearly
+every one added a rule for a case a single run had just hit:
+
+- **Whose failure is it** (#112, #113, #115, #116, #120, #121, #125, #126,
+  #127). A check fails, or a tester reports a bug: which task fixes it? Routing
+  was rewritten three times -- the unverified task first (#116), then the
+  file's writer (#120), then the latest writer or the task the agent waits for
+  (#126) -- and the holds deadlocked twice (#125, #127). Each rule was right
+  for its run; the next run found a case it did not cover.
+- **Reading the model's prose as a format** (#105, #106, #117, #118, #122,
+  #132, and the drift half of #131): expected text, compound expectations, a
+  title inside a blocked report, whether a pass quotes the file, whether a
+  report repeats its objectives' words.
+- **Patching the plan after it was made** (#110, #112, #124, #128, #129).
+
+Each misjudgement was charged to a task. Three of them fail it, and what waits
+on it stalls: runs 7, 9, 13, 19 and 21 were lost that way, to the harness, not
+the work. Meanwhile the product did not improve. Run 3, on the harness of #105,
+scored 46/46 and 27/27 on the owner's hidden suite in 57 minutes; no run since
+has beaten it, and runs now take 100 to 280 minutes. The harness's own verdict
+does not predict the hidden suite: run 10 verified 3 of 6 tasks and scored
+perfectly, run 18 verified 6 of 6 and scored 22/27.
+
+What did improve the product stays: the requirements ledger (L), the blind
+tester (M), and the clean checkout (#131). The blind testers found real bugs in
+runs 12, 14, 15 and 20.
+
+**What turnstone does that the harness does not.** Turnstone's deterministic
+shell holds three things: who may do what, a faithful record of what happened,
+and a budget that makes a run stop. The judgement calls are the coordinator's,
+a model: when a child reports back, it "decide[s] whether the goal is met, then
+close[s] it out, push[es] a follow-up, or spawn[s] another child to cover the
+gap." Its primer allows exactly that: a model that "merely *picks* among
+actions the plain rules already allow is fine." It also says why the parsers
+keep breaking: "Syntactic soundness is free; semantic adequacy is not." The
+harness wrote its judgement calls as rules, so every run found a case the rules
+did not cover.
+
+### Batch O -- The coordinator holds the plan
+
+A model decides what happens after a report; the shell decides what it may do
+and records what happened. Run before the owner's batch N, which adds
+capabilities on top of this.
+
+1. **A coordinator, consulted when a report comes back.** Whenever the run
+   reaches the point where it settles tasks -- nothing running, verdicts in --
+   and something is open, the coordinator is consulted once for all of it:
+   - a task that failed its checks, with each failed check's command, the tail
+     of its output, and the files it names;
+   - an implementer that stopped, with its own account, whether it needs work
+     or the owner, and what it says it waits for;
+   - a finding an agent sent about other tasks' work;
+   - a gap a verifier says a later task builds.
+
+   It is a conversation with the read-only tools, like the verifier's, and
+   finishes with one `decide` call. It is a fresh conversation each time: what
+   it holds is the run's state, which it is given whole -- the plan, each
+   task's state, attempts and dependencies, which task's agents wrote each file
+   named and in what order, and what it decided before and what came of it.
+   Fresh, a consultation is a case that can be replayed (item 6).
+2. **It picks from a fixed menu, and the shell checks each pick.**
+   - `send_back(task, message)`: the task's implementer gets the message as a
+     follow-up in its own conversation (#113). An attempt is charged.
+   - `move_check(criterion, to_task, message)`: a check goes to the task whose
+     work it fails on, before or after this one; that task is sent back with
+     the message if it had settled. The check is never dropped: it only moves,
+     and on it the task it left is judged as it stands.
+   - `wait(task, for_task)`: the task waits behind another, uncharged. Refused
+     if the other waits on it.
+   - `as_it_stands(task)`: a stopped task is judged on what it did.
+   - `ask_owner(task, question)`: an escalation, as today.
+   - `leave_failed(task, reason)`: nothing more is tried; it is reported.
+
+   A pick naming a task, check or file that does not exist, or a send-back past
+   a task's attempts, is refused with the reason, and the coordinator picks
+   again, once. What it cannot do at all: pass a check, drop a mandatory one,
+   overrule a mechanical result, widen anything past the owner's grant, or
+   answer for the owner. Judges only tighten.
+3. **A task is charged only for its own work.** An attempt counts when the
+   coordinator sends a task back for its own failure. A check moved away, a
+   wait, or a stop for others' files costs it nothing. The bound that makes a
+   run stop is a budget on coordinator decisions for the run
+   (`policy.max_coordinator_decisions`), beside each task's attempts. Past it,
+   what is open is left failed or goes to the owner, as each needs.
+4. **The rules it replaces are removed.** The holds and charges (`_hold_for_owner`,
+   `_owners_of_failure`, `_charge`, `_still_held`, `_held`, `_release_holds`,
+   `held_for`, `holds`), the hand-off (`_hand_check`), the stop for others'
+   files (`_blocked_by_others`), the tester's own-test hold (`_reported_to`),
+   the finding routing order (`_titled`, `_latest_writes`, `MAX_FINDING_REOPENS`),
+   the title matching of a blocked report (`waits_for`), and the verifier's
+   `belongs_to`. The facts they read -- the files a check's output names, who
+   wrote each -- stay, and go to the coordinator. With `policy.coordinator` off,
+   a failed task is followed up as itself and a stopped one goes to the owner:
+   the behaviour before #112, not the rules.
+5. **No new rule reads prose.** The parsers already there stay until the plan's
+   checks carry typed fields -- an exit code, a floor of passing tests, a file
+   and its literal text -- which is the next batch, not this one. A case a
+   parser gets wrong goes to the coordinator as what it is: the check, the
+   output, the verdict.
+6. **Measured on replays before any run.** Runs 7 to 19 hold a dozen decision
+   points with a known right answer -- each took one to three hours of a run to
+   find. They become cases for a `coordinator` role in `supervisor eval`
+   (batch F), each the run's state at that moment, folded from its events:
+   - run 7: the scaffold failed a goal of a playable game that the page builds
+     (move the check to the page);
+   - run 8: the engine failed the type check and unit run only on the browser
+     tests' spec (move the check to the browser tests);
+   - run 8: the engine's message called the engine tests passing and the spec
+     broken (the browser tests, not the engine tests);
+   - run 10: the page waited for "the unit tests (the task owning
+     src/game/engine.test.ts)" (wait for the unit tests);
+   - run 12: the engine tester's finding about `src/game/engine.ts` (the
+     engine, not the page whose scope holds `src/`);
+   - run 12: the browser tester kept a test the page fails (send the finding
+     to the page; the tester waits);
+   - run 15: a finding on the engine, verified on its last attempt (send the
+     engine back); the page's type check failing on the unit tester's file
+     (move the check to the unit tests);
+   - run 16: the page ignores `?board=`, in `src/main.ts`, which the scaffold
+     wrote first and the page since (the page);
+   - run 17: the page and the engine stopped for a lint line in the unit tests'
+     file (both as they stand; the check to the unit tests);
+   - run 19: the engine failed lint three times on its own `.tmp-verify/`
+     output (send it back: it may delete what it made).
+
+   The bar: the coordinator gets at least ten of the twelve right with
+   `qwen3.8-code`, the model the runs use, before the rules are removed and
+   before a Minesweeper run. Short of it, the batch stops there and the owner
+   decides.
+7. **One more number on every run.** Beside the hidden suite, whether the
+   harness's verdict on the run -- every task verified, or not -- agrees with
+   it (`run_minesweeper.py`, outside the harness). The batch is judged by
+   whether that agreement rises without the hidden suite falling.
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed
