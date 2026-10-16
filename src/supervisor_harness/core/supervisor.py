@@ -2915,6 +2915,22 @@ class Supervisor:
         if stint.failed:
             return
         verdict = verdict or {}
+        unquoted = self._unquoted_passes(state, task, verdict)
+        if unquoted:
+            # Once more, in the same conversation, before the pass is thrown out.
+            messages.append(ChatMessage("user", _ask_to_quote(unquoted)))
+            again = await self._read_then_finish(session, agent, messages, tools, stint,
+                                                 finish="verdict", now=VERDICT_NOW)
+            if stint.failed:
+                return
+            asked = {c.id for c in unquoted}
+            redone = {str(r.get("criterion_id", "")): r for r in (again or {}).get("results") or []
+                      if isinstance(r, dict) and str(r.get("criterion_id", "")) in asked}
+            verdict["results"] = [redone.get(str(r.get("criterion_id", "")), r)
+                                  for r in verdict.get("results") or [] if isinstance(r, dict)]
+            await session.anote(f"the verifier was asked once more to quote the file for "
+                                f"{len(unquoted)} inspection(s)", actor=agent.id,
+                                task_id=task.id, answered=len(redone))
         payload = {
             "output": str(verdict.get("summary", "")) or "; ".join(stint.actions[-20:]),
             "results": [r for r in (verdict.get("results") or []) if isinstance(r, dict)],
@@ -2926,6 +2942,33 @@ class Supervisor:
         await self._flush_assists(session, agent)
         await self.supervision._assess_drift(session, agent, turn)
         await self._report_verification(session, agent, payload)
+
+    def _unquoted_passes(self, state: RunState, task: ExecutionTask,
+                         verdict: dict[str, Any]) -> list[DoDCriterion]:
+        """The handed-over inspections a verdict passes without quoting their file.
+
+        Minesweeper run 21: the scaffold's "no 'dependencies' key at all" was
+        planned as an inspection whose expected text was a sentence, so it went to
+        the verifier. The verifier passed it three times, rightly -- "top-level
+        keys are exactly name, private, version, type, scripts, devDependencies
+        (line 14)" -- quoting nothing that is in the file as written. Each pass was
+        thrown out (`_report_verification`), the verifier never told why, and the
+        task failed three times. A statement that something is absent is shown by
+        what is there instead, and a verifier sums that up rather than copying it.
+        """
+        by_id = {c.id: c for c in task.dod}
+        tree = self._tree(state)
+        out = []
+        for result in verdict.get("results") or []:
+            if not isinstance(result, dict) or str(result.get("status", "")).lower() != "pass":
+                continue
+            crit = by_id.get(str(result.get("criterion_id", "")))
+            if crit is None or crit.method is not VerifyMethod.INSPECTION:
+                continue
+            if (verify_inspection(crit, tree).wording_only
+                    and not quotes_the_file(crit, str(result.get("evidence", "")), tree)):
+                out.append(crit)
+        return out
 
     async def _route_findings(self, session: RunSession, agent: AgentSpec,
                               turn: AgentTurn) -> None:
@@ -3749,6 +3792,17 @@ def _owners_of_file(state: RunState, tree: Path, rel: str) -> set[str]:
                and agent.kind is AgentKind.EXECUTION and agent.task_id
                and any(safe_relative(raw, tree) == rel for raw in turn.files_touched)}
     return written or {t.id for t in state.tasks.values() if matches_any(rel, t.scope.paths)}
+
+
+def _ask_to_quote(criteria: list[DoDCriterion]) -> str:
+    """What a verifier is asked when its pass on an inspection quotes nothing from its file."""
+    listed = "\n".join(f"- `{c.id}` {c.statement!r} -- in "
+                        f"{c.expect.partition(':')[0].strip() or 'its file'}" for c in criteria)
+    return ("Your pass on these quotes nothing that is in the file each one names, so it "
+            f"cannot be accepted:\n{listed}\n\nRead the file, copy the lines that show "
+            "it -- exactly, in backticks -- and call verdict again for them, or fail them. "
+            "For a statement that something is absent, copy the lines that show what is "
+            "there instead.")
 
 
 def _reopenings(task: ExecutionTask) -> list[dict[str, Any]]:

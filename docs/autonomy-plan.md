@@ -1416,6 +1416,25 @@ run 10. Two structural things went wrong:
     implementer's "done". Now it is off throughout an implementer's work. Its
     definition of done is what is checked; the other drift signals stand.
 
+### After run 21: a right pass, thrown out three times
+
+*Written 2026-10-16.* The scaffold's "no 'dependencies' key at all" was planned
+as an inspection whose expected text was a sentence, so it went to the verifier.
+The verifier passed it three times, rightly: "top-level keys are exactly name,
+private, version, type, scripts, devDependencies (line 14)". It quoted nothing
+that is in the file as written. Each pass was thrown out, the verifier was never
+told why, and the task failed three times. A statement that something is absent
+is shown by what is there instead, and a verifier sums that up rather than
+copying it.
+
+20. **A verifier whose pass quotes nothing from the file is asked once more.**
+    In the same conversation, it is told which passes quote nothing from which
+    file. It is asked to copy the lines that show each, exactly, in backticks
+    -- for an absence, the lines that show what is there instead -- or to fail
+    them. Its new verdict replaces those results (`_unquoted_passes`,
+    `_ask_to_quote`). Once: a pass still quoting nothing is thrown out, as
+    before. The verifier's brief says the same up front.
+
 **After run 19, the engine:** its implementer compiled its file into
 `.tmp-verify/engine.js` to try it, outside its scope. The project's lint failed
 on that file, and the engine was sent back three times for it. Each attempt said

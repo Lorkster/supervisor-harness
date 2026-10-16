@@ -598,8 +598,9 @@ def _held_tasks(run: RunState, task: ExecutionTask) -> str:
 INSPECTION_HANDED_OVER = (
     "An inspection criterion still open here is one whose expected text the harness "
     "looked for and did not find: that wording was the planner's guess. Judge whether "
-    "the statement itself holds, and quote the lines of that file that show it. A pass "
-    "that quotes nothing from that file is not accepted."
+    "the statement itself holds, and copy the lines of that file that show it, exactly, "
+    "in backticks. For a statement that something is absent, copy the lines that show "
+    "what is there instead. A pass that quotes nothing from that file is not accepted."
 )
 
 #: How much of a recorded run's output a verifier is shown: enough for a test
