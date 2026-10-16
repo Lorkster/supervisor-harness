@@ -105,6 +105,7 @@ from ..store.runstore import RunSession, RunStore
 from . import autonomy, observe, phases, requirements, worktree
 from .attribution import baseline_verdict
 from .baseline import commit_from_fact, git_baseline
+from .clean import check_clean
 from .consolidate import consolidate
 from .conversation import (
     CHECKPOINT_CALLS,
@@ -284,6 +285,9 @@ class Supervisor:
         # follow-up to the agent that did the work, not a fresh start. In memory:
         # a resumed run starts afresh, with the follow-up in the brief instead.
         self._conversations: dict[str, list[ChatMessage]] = {}
+        # The final gates' checks already run on a clean checkout, by task,
+        # criterion and attempt (`_check_clean`).
+        self._clean_checked: set[tuple[str, str, int]] = set()
         self.supervision = Supervision(
             self.config, self.store, self.router,
             self.packets, self.reporting, self.lifecycle,
@@ -1185,6 +1189,8 @@ class Supervisor:
                 await self._follow_up(session)
                 if self._release_holds(session):
                     return None  # a held check runs again, before anything else starts
+                if not phases.runnable_tasks(state) and await self._check_clean(session):
+                    await self._follow_up(session)
                 # A task that waited on one just verified starts now; the
                 # checkpoint judges the run once nothing more can start.
                 # Measured: with the planner naming its dependencies, four runs
@@ -1285,6 +1291,53 @@ class Supervisor:
         session.note(f"the project had no test suite when task {task.title!r} was planned; "
                      f"its test bar runs `{command}`, found on the tree the task left",
                      task_id=task.id)
+
+    async def _check_clean(self, session: RunSession) -> int:
+        """The final gates' checks, once more on a clean checkout; how many failed there.
+
+        See `core/clean.py`. The final gates are the verified tasks no other task
+        depends on; their mandatory command checks that passed are run, each once
+        per attempt of its task. One that fails on the clean checkout fails its
+        task, which a follow-up then sends back. When no clean checkout can be
+        made -- no git, no dependencies -- nothing is failed, and that is noted.
+        """
+        state = session.state
+        if not self.config.policy.clean_check:
+            return 0
+        waited_on = {d for t in state.tasks.values() for d in t.depends_on}
+        due = [(task, crit) for task in state.tasks.values()
+               if task.status is TaskStatus.VERIFIED and task.id not in waited_on
+               for crit in task.mandatory_criteria
+               if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST)
+               and crit.status is CriterionStatus.PASS and crit.command.strip()
+               and (task.id, crit.id, task.attempts) not in self._clean_checked]
+        if not due:
+            return 0
+        self._clean_checked.update((t.id, c.id, t.attempts) for t, c in due)
+        unique = {c.command.strip(): c for _, c in due}
+        outcome = await asyncio.to_thread(check_clean, self._tree(state), unique.values(),
+                                          float(self.config.policy.check_timeout_seconds))
+        if isinstance(outcome, str):
+            await session.anote(f"the final gates were not checked on a clean checkout: {outcome}")
+            return 0
+        failed = 0
+        for task, crit in due:
+            found = outcome.get(unique[crit.command.strip()].id)
+            if found is None or found.status is not CriterionStatus.FAIL:
+                continue
+            await session.aemit(EventType.CRITERION_VERIFIED, {
+                "task_id": task.id, "criterion_id": crit.id, "status": str(CriterionStatus.FAIL),
+                "evidence": ("passes in the run's tree, but fails on a clean checkout of what "
+                             "the run would commit -- the tree as `git add -A` sees it, its "
+                             "dependencies installed afresh, without what the project ignores, "
+                             f"such as build output:\n{found.evidence}")}, actor="harness")
+            task.status = TaskStatus.FAILED
+            task.updated_at = now_iso()
+            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+            failed += 1
+        await session.anote(f"the final gates checked on a clean checkout: {failed} of "
+                            f"{len(due)} check(s) failed there")
+        return failed
 
     def _find_the_gates(self, session: RunSession, task: ExecutionTask, tree: Path) -> None:
         """Hold a task's files to the project's own static checks, once it has them.
