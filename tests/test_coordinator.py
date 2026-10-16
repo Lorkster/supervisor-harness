@@ -304,3 +304,32 @@ async def test_verification_consults_it_before_moving_on(supervisor: Supervisor)
     assert len(fake.asked) == 1
     assert session.state.tasks[engine.id].status is TaskStatus.APPROVED
     assert session.state.phase is Phase.EXECUTING
+
+
+async def test_the_files_a_whole_output_names_are_kept_in_the_evidence(
+    supervisor: Supervisor,
+) -> None:
+    """A type checker names its files first; the evidence keeps the output's tail."""
+    import sys
+    from pathlib import Path
+
+    root = supervisor.workspace
+    (root / "e2e").mkdir()
+    (root / "e2e" / "spec.ts").write_text("x\n", encoding="utf-8")
+    (root / "check.py").write_text(
+        "import sys\nprint('e2e/spec.ts(3,1): error TS2345')\n"
+        "for n in range(4000):\n    print('noise', n)\nsys.exit(1)\n", encoding="utf-8")
+    supervisor.config.policy.allow_command_execution = True
+    task = ExecutionTask(title="Engine", status=TaskStatus.AWAITING_VERIFICATION, attempts=1,
+                         dod=[DoDCriterion(statement="it type-checks",
+                                           method=VerifyMethod.COMMAND,
+                                           command=f"{Path(sys.executable).name} check.py")])
+    session = supervisor.store.create(RunState(id="run_Names", prompt="p",
+                                               tasks={task.id: task}))
+
+    supervisor._verify_mechanically(session)
+
+    (crit,) = session.state.tasks[task.id].dod
+    assert crit.status is CriterionStatus.FAIL
+    assert "e2e/spec.ts(3,1)" not in crit.evidence.split("Files the whole output")[0][-3000:]
+    assert "Files the whole output names: e2e/spec.ts" in crit.evidence

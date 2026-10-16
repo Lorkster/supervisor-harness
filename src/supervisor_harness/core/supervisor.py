@@ -1250,7 +1250,7 @@ class Supervisor:
                     if (outcome is not None and outcome.status is CriterionStatus.FAIL
                             and crit.method in (VerifyMethod.TEST, VerifyMethod.COMMAND)
                             and task.status is TaskStatus.AWAITING_VERIFICATION):
-                        outcome = self._attributed(state, crit, outcome)
+                        outcome = self._attributed(state, crit, self._naming(state, outcome))
                 if outcome is None:
                     continue
                 session.emit(
@@ -1372,6 +1372,20 @@ class Supervisor:
         session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
         session.note(f"task {task.title!r} is held to the project's own checks: "
                      + ", ".join(f"`{c}`" for c in added), task_id=task.id)
+
+    def _naming(self, state: RunState, outcome: VerificationOutcome) -> VerificationOutcome:
+        """A failed check's evidence, with every workspace file its whole output names.
+
+        The evidence keeps the output's tail; the coordinator reads the files a
+        failure names from the evidence, and a type checker lists its errors
+        first. Minesweeper run 8: the files that showed whose the failure was
+        came before the tail.
+        """
+        named = _files_named(_ANSI_ESCAPE.sub("", outcome.output), self._toolbox_for(state))
+        if not named:
+            return outcome
+        return replace(outcome, evidence=(f"{outcome.evidence}\n\nFiles the whole output "
+                                          f"names: {', '.join(sorted(named))}"))
 
     def _attributed(
         self, state: RunState, crit: DoDCriterion, outcome: VerificationOutcome

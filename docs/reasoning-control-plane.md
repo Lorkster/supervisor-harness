@@ -97,8 +97,8 @@ alone, and relaxes it to the workspace rather than to the machine.
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:406](../src/supervisor_harness/config.py:406)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:456](../src/supervisor_harness/config.py:456))
+([config.py:417](../src/supervisor_harness/config.py:417)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:467](../src/supervisor_harness/config.py:467))
 are the list of what it may not set: command execution, provider `base_url`, API
 keys, the AWS `region` and `profile` a Bedrock route would use, the store
 location. The principle is the same one in a different costume —
@@ -155,7 +155,7 @@ authority is handed on — when synthesis creates a task (`attenuate` at
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:3888](../src/supervisor_harness/core/supervisor.py:3888)). It
+[supervisor.py:3696](../src/supervisor_harness/core/supervisor.py:3696)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
