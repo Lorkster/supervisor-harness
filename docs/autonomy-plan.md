@@ -1599,6 +1599,39 @@ capabilities on top of this.
    it (`run_minesweeper.py`, outside the harness). The batch is judged by
    whether that agreement rises without the hidden suite falling.
 
+**As built (2026-10-16).** Where it differs from the plan above:
+
+- *Eleven cases, not twelve.* The two run-12 moments are one consultation, and
+  run 15's two are one. The bar scaled with them: nine of eleven.
+- *A case's tree is the run's starting commit.* A run commits once, at its end,
+  and the end is later than the moment: run 16's final commit already had the
+  `?board=` fix, so the coordinator, reading `src/main.ts`, rightly found
+  nothing wrong with the page (`tools/extract_coordinator_cases.py`).
+- *Attempts.* A task whose only failed checks were moved away is verified as it
+  stands; a stopped task that waits gets its attempt back. A send-back of a
+  verified task -- a finding about work already done -- is allowed past its
+  attempts; the run's budget of consultations bounds it.
+- *A finding's check.* `send_back` may carry `check`, one more thing the task's
+  verifier must find true, as a routed finding's goal criterion did.
+- *The files a failure names* go into its evidence from the whole output, since
+  the evidence keeps only the tail (`Supervisor._naming`); a file this run's
+  agents wrote counts as named even if it is gone.
+- *`follow_up`* is read only with the coordinator off.
+
+**Measured** with `qwen3.8-code`, three runs a case:
+
+- first pass: nine of eleven cases, 27 of 33 runs. One miss was the fixture
+  above, the other a refusal that told a coordinator to name a failed check for
+  a task that had stopped and had none; it now says what to do instead;
+- second pass, on the final code: ten of eleven cases, 31 of 33 runs. The one
+  miss is run 19: twice it told the engine to delete its scratch file and also
+  moved the lint check to the scaffold, to have the folder ignored -- covering
+  the symptom as a fallback.
+
+Every time the old harness said a run was done -- runs 4, 11 and 18 -- the
+owner's hidden suite failed; twice, runs 3 and 10, it said not done of a run
+that passed the hidden suite whole.
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed
