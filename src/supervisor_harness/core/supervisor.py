@@ -73,6 +73,7 @@ from ..models import (
     AgentTurn,
     Backend,
     Checkpoint,
+    Coordination,
     CriterionStatus,
     Decision,
     DirectiveKind,
@@ -102,7 +103,7 @@ from ..providers.router import ModelRouter
 from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
-from . import autonomy, observe, phases, requirements, worktree
+from . import autonomy, coordinator, observe, phases, requirements, worktree
 from .attribution import baseline_verdict
 from .baseline import commit_from_fact, git_baseline
 from .clean import check_clean
@@ -1186,11 +1187,19 @@ class Supervisor:
                 active = fresh
             else:
                 self._settle_tasks(session)
-                await self._follow_up(session)
-                if self._release_holds(session):
-                    return None  # a held check runs again, before anything else starts
-                if not phases.runnable_tasks(state) and await self._check_clean(session):
+                if self.config.policy.coordinator:
+                    await self._coordinate(session)
+                    if not phases.runnable_tasks(state) and await self._check_clean(session):
+                        await self._coordinate(session)
+                    if any(t.status is TaskStatus.AWAITING_VERIFICATION
+                           for t in state.tasks.values()):
+                        return None  # judged as it stands: its verifier comes next
+                else:
                     await self._follow_up(session)
+                    if self._release_holds(session):
+                        return None  # a held check runs again, before anything else starts
+                    if not phases.runnable_tasks(state) and await self._check_clean(session):
+                        await self._follow_up(session)
                 # A task that waited on one just verified starts now; the
                 # checkpoint judges the run once nothing more can start.
                 # Measured: with the planner naming its dependencies, four runs
@@ -1252,7 +1261,8 @@ class Supervisor:
                     if (outcome is not None and outcome.status is CriterionStatus.FAIL
                             and crit.method in (VerifyMethod.TEST, VerifyMethod.COMMAND)
                             and task.status is TaskStatus.AWAITING_VERIFICATION):
-                        if self._hold_for_owner(session, task, crit, outcome):
+                        if (not self.config.policy.coordinator
+                                and self._hold_for_owner(session, task, crit, outcome)):
                             continue
                         outcome = self._attributed(state, crit, outcome)
                 if outcome is None:
@@ -1847,10 +1857,12 @@ class Supervisor:
         count = 0
         corrections = checkpoint.remediation or checkpoint.gaps
         tasks = list(state.tasks.values())
+        left = coordinator.left_failed(state)
         for task in tasks:
             if (
                 task.status is not TaskStatus.FAILED
                 or task.attempts >= self.config.policy.max_task_attempts
+                or task.id in left
             ):
                 continue
             task.status = TaskStatus.APPROVED
@@ -1913,6 +1925,207 @@ class Supervisor:
                                 task_id=task.id)
             count += 1
         return count
+
+    async def _coordinate(self, session: RunSession) -> bool:
+        """Put what came back to the coordinator and apply its picks; whether anything was open.
+
+        Batch O (`core/coordinator.py`). Once per settle point, for everything
+        open at once. Past the run's budget of consultations, or with no model
+        that takes tools natively, the harness's own picks stand in
+        (`coordinator.fallback`): the behaviour before #112.
+        """
+        state = session.state
+        matters = coordinator.open_matters(state)
+        if not matters:
+            return False
+        policy = self.config.policy
+        handles = coordinator.handles_for(state, matters)
+        reader = AgentSpec(id=f"coordinator_{len(state.coordination) + 1}",
+                           kind=AgentKind.ANALYSIS, role="coordinator",
+                           title="The coordinator", scope=Scope(),
+                           binding=self.config.binding_for("coordination"))
+        actions: list[coordinator.Action] = []
+        refused: list[str] = []
+        summary = ""
+        if len(state.coordination) >= policy.max_coordinator_decisions:
+            summary = (f"not consulted: the run's {policy.max_coordinator_decisions} "
+                       "consultations are spent")
+        elif not self.router.native_tools(reader.binding):
+            summary = "not consulted: the coordination model takes no tools natively"
+        else:
+            actions, refused, summary = await self._ask_coordinator(session, reader, matters,
+                                                                    handles)
+        fallback = coordinator.fallback(
+            state, coordinator.undecided(state, matters, actions), policy.max_task_attempts)
+        records = ([a.record(state) for a in actions]
+                   + [{**a.record(state), "by": "harness"} for a in fallback])
+        order = {"move_check": 0, "send_back": 1}
+        for action in sorted([*actions, *fallback], key=lambda a: order.get(a.do, 2)):
+            await self._apply_pick(session, action)
+        await session.aemit(EventType.COORDINATED, {"coordination": to_jsonable(Coordination(
+            matters=[m.key for m in matters], actions=records, refused=refused,
+            summary=summary, fallback=bool(fallback)))}, actor="harness")
+        await session.anote(
+            f"the coordinator decided on {len(matters)} matter(s): "
+            + ("; ".join(f"{r['do']} {state.tasks[r['task']].title!r}" for r in records)
+               or "nothing to do") + (f" ({len(fallback)} by the harness)" if fallback else ""),
+            refused=len(refused))
+        return True
+
+    async def _ask_coordinator(
+        self, session: RunSession, reader: AgentSpec, matters: list[coordinator.Matter],
+        handles: coordinator.Handles,
+    ) -> tuple[list[coordinator.Action], list[str], str]:
+        """One consultation: the picks it made that can be carried out, those refused, its summary.
+
+        Refused picks, and open matters it left without one, go back to it once
+        in the same conversation, with the reasons.
+        """
+        state = session.state
+        policy = self.config.policy
+        tree = self._tree(state)
+        toolbox = self._toolbox_for(state)
+
+        def files_in(text: str) -> set[str]:
+            return _files_named(_ANSI_ESCAPE.sub("", text), toolbox)
+
+        messages = [ChatMessage("user", coordinator.brief(
+            state, matters, handles, tree, files_in, policy.max_task_attempts))]
+        tools = [t for t in native_tool_specs(reader, policy)
+                 if t["name"] not in ("report", "message")] + [coordinator.decide_tool(handles)]
+        stint = Stint()
+        args = await self._read_then_finish(session, reader, messages, tools, stint,
+                                            finish="decide", now=coordinator.NOW,
+                                            role=coordinator.ROLE, stage="coordination")
+        actions, refused = coordinator.read_decision(args, handles, state, matters,
+                                                     policy.max_task_attempts)
+        summary = str((args or {}).get("summary", ""))[:1000]
+        left = coordinator.undecided(state, matters, actions)
+        if args is not None and not stint.failed and (refused or left):
+            messages.append(ChatMessage("user", _ask_again(refused, left, handles)))
+            again = await self._read_then_finish(session, reader, messages, tools, stint,
+                                                 finish="decide", now=coordinator.NOW,
+                                                 role=coordinator.ROLE, stage="coordination")
+            more, refused_again = coordinator.read_decision(again, handles, state, left,
+                                                            policy.max_task_attempts)
+            settled = {a.task_id for a in actions if a.do != "move_check"}
+            moved = {a.criterion_id for a in actions if a.do == "move_check"}
+            actions += [a for a in more
+                        if (a.task_id not in settled if a.do != "move_check"
+                            else a.criterion_id not in moved)]
+            refused += refused_again
+        await session.anote("the coordinator was consulted", read=stint.read,
+                            tool_calls=stint.tool_calls, picks=len(actions), refused=len(refused))
+        return actions, refused, summary
+
+    async def _apply_pick(self, session: RunSession, action: coordinator.Action) -> None:
+        """Carry out one of the coordinator's picks, checked by `coordinator.read_decision`."""
+        state = session.state
+        task = state.tasks[action.task_id]
+        if action.do == "move_check":
+            await self._coordinated_move(session, task, action)
+            return
+        if action.do == "send_back":
+            await self._coordinated_send_back(session, task, action.message, action.check)
+            return
+        if action.do == "wait":
+            waited = state.tasks[action.to_task_id]
+            task.depends_on = [*task.depends_on, waited.id]
+            if task.status is TaskStatus.BLOCKED:
+                # Its stop was not its own failure: the attempt is given back,
+                # as #113 did for a stop that named what it waited for.
+                task.attempts = max(0, task.attempts - 1)
+            else:
+                await self._reopen_criteria(session, task)
+            task.status = TaskStatus.APPROVED
+            task.assigned_agent_id = None
+            task.follow_up_note = (f"{action.message} " if action.message else "") + (
+                f"You waited for {waited.title!r}, which is now done; carry on.")
+        elif action.do == "as_it_stands":
+            task.status = TaskStatus.AWAITING_VERIFICATION
+        elif action.do == "ask_owner":
+            turn = coordinator.stop_turn(state, task)
+            account = (turn.blocked_on if turn is not None else "") or "its checks failed"
+            detail = account + (f"\n\nThe coordinator asks: {action.message}"
+                                if action.message else "")
+            await session.aemit(EventType.ESCALATION_RAISED, {"escalation": to_jsonable(Escalation(
+                run_id=state.id, reason=EscalationReason.AGENT_BLOCKED, task_id=task.id,
+                agent_id=task.assigned_agent_id or "", detail=detail))}, actor="harness")
+            task.status = TaskStatus.BLOCKED
+        elif action.do == "leave_failed":
+            task.status = TaskStatus.FAILED
+        task.updated_at = now_iso()
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        await session.anote(f"coordinator: {action.do} {task.title!r}", task_id=task.id,
+                            message=action.message[:300])
+
+    async def _coordinated_send_back(self, session: RunSession, task: ExecutionTask,
+                                     message: str, check: str = "") -> None:
+        """The task's implementer goes again with the coordinator's message; or it is told."""
+        state = session.state
+        if check:
+            expectation = GoalExpectation(statement=check, task_id=task.id, source="coordinator")
+            await session.aemit(EventType.GOAL_SET,
+                                {"goal": to_jsonable([*state.goal, expectation])})
+            task.dod.append(phases.goal_criterion(expectation, state.prompt))
+        if task.status in (TaskStatus.PROPOSED, TaskStatus.APPROVED):
+            if message:
+                task.action = f"{task.action}\n\nFrom the coordinator: {message}"
+        else:
+            failed = [c.statement for c in task.unmet_criteria()
+                      if c.status is CriterionStatus.FAIL]
+            if (task.status is TaskStatus.VERIFIED
+                    and task.attempts >= self.config.policy.max_task_attempts):
+                task.finding_reopens += 1
+            task.status = TaskStatus.APPROVED
+            task.assigned_agent_id = None
+            await self._reopen_criteria(session, task)
+            task.follow_up_note = message
+            task.action = (f"{task.action}\n\nFollow-up from attempt {task.attempts}"
+                           + (f": {message}" if message else "")
+                           + ("" if not failed else "\nDid not pass:\n"
+                              + "\n".join(f"- {c}" for c in failed[:6])))
+        task.updated_at = now_iso()
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+
+    async def _coordinated_move(self, session: RunSession, task: ExecutionTask,
+                                action: coordinator.Action) -> None:
+        """A failed check moved to the task whose work it fails on; the task it left, settled."""
+        state = session.state
+        crit = next((c for c in task.dod if c.id == action.criterion_id), None)
+        target = state.tasks[action.to_task_id]
+        if crit is None:
+            return
+        task.dod = [c for c in task.dod if c.id != crit.id]
+        command = crit.command.strip()
+        if not (command and any(c.method is crit.method and c.command.strip() == command
+                                for c in target.dod)):
+            target.dod.append(replace(crit, id=new_id("dod"), status=CriterionStatus.UNVERIFIED,
+                                      evidence="", verified_at="", verified_by="",
+                                      held_for=[], holds=0))
+        if crit.goal_id:
+            for expectation in state.goal:
+                if expectation.id == crit.goal_id:
+                    expectation.task_id = target.id
+            await session.aemit(EventType.GOAL_SET, {"goal": to_jsonable(state.goal)})
+        found = (f"Moved here from {task.title!r}: {crit.statement}"
+                 + (f" (`{command}`)" if command else "")
+                 + f"\nWhat it found there: {crit.evidence[-600:]}")
+        told = f"{action.message}\n\n{found}" if action.message else found
+        if (target.status in (TaskStatus.PROPOSED, TaskStatus.APPROVED)
+                or _awaits_owner(state, target)):
+            target.action = f"{target.action}\n\n{told}"
+            target.updated_at = now_iso()
+            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(target)})
+        else:
+            await self._coordinated_send_back(session, target, told)
+        if (task.status is TaskStatus.FAILED and task.dod_satisfied()
+                and not any(c.status is CriterionStatus.FAIL for c in task.dod)):
+            task.status = TaskStatus.VERIFIED  # judged on the rest of its checks
+        task.updated_at = now_iso()
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        await session.anote(f"coordinator: a check moved from {task.title!r} to {target.title!r}",
+                            task_id=task.id, to_task=target.id, criterion=crit.statement[:200])
 
     async def _reopen_criteria(self, session: RunSession, task: ExecutionTask) -> None:
         """Return a reopened task's verdicts to unverified, for the attempt to come.
@@ -2302,7 +2515,11 @@ class Supervisor:
             later = (self._later_owner(state, task, result.get("belongs_to"))
                      if status is CriterionStatus.FAIL and crit.method is VerifyMethod.REVIEW
                      else None)
-            if later is not None:
+            if later is not None and self.config.policy.coordinator:
+                # Said to the coordinator, who decides whether it moves.
+                evidence = (f"{evidence}\n\nThe verifier says the task {later.title!r} "
+                            "builds this part.")
+            elif later is not None:
                 moves.append((crit, later, evidence))
                 continue
 
@@ -2984,6 +3201,8 @@ class Supervisor:
         task that did the work fixes it; the owner hears nothing. Judges only
         tighten: a finding adds a check, never removes one.
         """
+        if self.config.policy.coordinator:
+            return  # a finding is put to the coordinator (`_coordinate`)
         state = session.state
         mine = state.tasks.get(agent.task_id or "")
         toolbox = self._toolbox_for(state)
@@ -3792,6 +4011,15 @@ def _owners_of_file(state: RunState, tree: Path, rel: str) -> set[str]:
                and agent.kind is AgentKind.EXECUTION and agent.task_id
                and any(safe_relative(raw, tree) == rel for raw in turn.files_touched)}
     return written or {t.id for t in state.tasks.values() if matches_any(rel, t.scope.paths)}
+
+
+def _ask_again(refused: list[str], left: list[coordinator.Matter],
+               handles: coordinator.Handles) -> str:
+    """What the coordinator is told when a pick was refused or a matter has none."""
+    lines = [f"- {r}" for r in refused] + [
+        f"- {handles.of(m.task_id)} ({m.kind}) has no pick yet" for m in left]
+    return ("Some of that cannot be carried out, or is missing:\n" + "\n".join(lines)
+            + "\n\nCall decide again with picks for these only.")
 
 
 def _ask_to_quote(criteria: list[DoDCriterion]) -> str:

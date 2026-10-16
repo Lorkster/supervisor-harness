@@ -183,6 +183,16 @@ class Policy:
     # checkpoint as the only way back. Not protected: either way every check
     # still has to pass.
     follow_up: bool = True
+    # Batch O: when reports come back -- a failed check, an implementer that
+    # stopped, a finding about another task's work -- a coordinator model picks
+    # what happens next from a fixed menu, and the harness checks each pick
+    # (`core/coordinator.py`). Off, a failed task is followed up as itself.
+    # Not protected: it cannot pass a check, drop one, or widen anything.
+    coordinator: bool = False
+    # How many times a run may consult it: the bound that makes a run stop,
+    # beside each task's attempts. Past it, what is open is followed up within
+    # its attempts, left failed, or put to the owner, as each needs.
+    max_coordinator_decisions: int = 24
     # Once nothing more can run, the final gates' checks run again on a clean
     # checkout of what the run would commit (`core/clean.py`): a check that
     # passes only on what the run's tree has by accident -- build output, caches

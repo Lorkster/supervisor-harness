@@ -464,6 +464,14 @@ class Supervision:
         task = session.state.tasks.get(agent.task_id or "")
         if task is None:
             return
+        if self.config.policy.coordinator:
+            # Stopped, and put to the coordinator at the next settle point
+            # (`Supervisor._coordinate`): it may make the task wait, judge it as
+            # it stands, send it back, or ask the owner.
+            task.status = TaskStatus.BLOCKED
+            task.updated_at = now_iso()
+            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+            return
         waited = waits_for(session.state, task, turn) if turn.needs == "work" else None
         if waited is not None:
             await self._wait_behind(session, agent, task, waited, turn)

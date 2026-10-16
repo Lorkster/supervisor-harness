@@ -718,6 +718,26 @@ class DoDCriterion:
 
 
 @dataclass
+class Coordination:
+    """One consultation of the coordinator, and what came of it (`core/coordinator.py`).
+
+    ``matters`` are the keys of what it was shown -- ``failed:<task>:<attempt>``,
+    ``stopped:<task>:<attempt>``, ``finding:<message>`` -- so each is put to it
+    once. ``actions`` are the picks the harness applied, ``refused`` the ones it
+    did not and why, and ``fallback`` says the picks were the harness's own,
+    because the coordinator could not be asked or did not answer.
+    """
+
+    id: str = field(default_factory=lambda: new_id("crd"))
+    matters: list[str] = field(default_factory=list)
+    actions: list[dict[str, str]] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
+    summary: str = ""
+    fallback: bool = False
+    ts: str = field(default_factory=now_iso)
+
+
+@dataclass
 class GoalExpectation:
     """One thing someone who asked for the run's goal would check when they try the result.
 
@@ -800,6 +820,9 @@ class ExecutionTask:
     acceptance: list[AcceptanceTests] = field(default_factory=list)
     # Reopened by a finding after its own attempts were spent (`Supervisor._route_findings`).
     finding_reopens: int = 0
+    # What the coordinator told the task for its coming attempt, said in its
+    # follow-up (`core/coordinator.py`); replaced at each send-back.
+    follow_up_note: str = ""
     status: TaskStatus = TaskStatus.PROPOSED
     decision: Decision | None = None
     decision_note: str = ""
@@ -1012,6 +1035,8 @@ class RunState:
     messages: list[Message] = field(default_factory=list)
     directives: list[Directive] = field(default_factory=list)
     escalations: dict[str, Escalation] = field(default_factory=dict)
+    # What the coordinator was consulted on and decided: see `Coordination`.
+    coordination: list[Coordination] = field(default_factory=list)
     worktree: RunWorktree | None = None
     # What the result must be, for whoever asked: see `GoalExpectation`.
     goal: list[GoalExpectation] = field(default_factory=list)
