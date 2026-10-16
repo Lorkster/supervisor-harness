@@ -26,6 +26,7 @@ what it decided before.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,9 @@ from .paths import matches_any
 #: What an agent sends the supervisor that may concern another task's work.
 FINDING_KINDS = frozenset({MessageKind.WARNING, MessageKind.FINDING,
                            MessageKind.CONTRADICTION})
+
+#: A terminal's colour codes, which a check's output carries and a reader does not need.
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 #: How much of a failed check's evidence, and of each task's action, it is shown.
 EVIDENCE_CHARS = 1500
@@ -335,7 +339,7 @@ def _earlier(state: RunState, h: Callable[[str], str]) -> str:
 
 
 def _tail(text: str) -> str:
-    text = text.strip()
+    text = _ANSI.sub("", text).strip()
     return text if len(text) <= EVIDENCE_CHARS else "... " + text[-EVIDENCE_CHARS:]
 
 

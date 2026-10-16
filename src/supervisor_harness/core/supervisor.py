@@ -1986,8 +1986,16 @@ class Supervisor:
         tree = self._tree(state)
         toolbox = self._toolbox_for(state)
 
+        # A file this run's agents wrote counts as named even if it is gone now:
+        # who wrote it is what the coordinator needs.
+        written = {rel for turn in state.turns for raw in turn.files_touched
+                   if (rel := safe_relative(raw, tree)) is not None}
+
         def files_in(text: str) -> set[str]:
-            return _files_named(_ANSI_ESCAPE.sub("", text), toolbox)
+            clean = _ANSI_ESCAPE.sub("", text)
+            mentioned = {raw.replace("\\", "/").removeprefix("./")
+                         for raw in _PATH_IN_OUTPUT.findall(clean)}
+            return _files_named(clean, toolbox) | (mentioned & written)
 
         messages = [ChatMessage("user", coordinator.brief(
             state, matters, handles, tree, files_in, policy.max_task_attempts))]
