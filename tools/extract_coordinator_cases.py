@@ -24,6 +24,11 @@ coordinated run would have had at that moment:
 It is then reduced to what the coordinator reads: tasks, the agents and turns
 that say who wrote which file and why an agent stopped, the findings sent to the
 supervisor, the goal and the requirements.
+
+The tree a run had at that moment is gone: runs commit once, at the end. A
+case's fixture is the run's starting commit, which has the brief's documents.
+The run's final commit would mislead -- in run 16 it already had the fix the
+moment was about, and the coordinator, reading it, rightly found nothing wrong.
 """
 
 from __future__ import annotations
@@ -66,6 +71,12 @@ def at_the_moment(events: list[Any], since: int, seq: int,
     """
     upto = [e for e in events if e.seq <= seq]
     state = fold(upto)
+    # A check the old rules held for another task (``held_for``, a field this
+    # build no longer has): read off the log, where the task carried it.
+    last = {str((e.payload.get("task") or {}).get("id", "")): e.payload["task"]
+            for e in upto if e.type == "task_updated"}
+    held_ids = {str(c.get("id", "")) for task in last.values()
+                for c in task.get("dod") or [] if c.get("held_for")}
     # A finding the old rules routed in the window is the coordinator's to decide:
     # the expectation it became, and its check, are taken back out.
     routed = {str(raw.get("id", "")) for e in upto
@@ -87,9 +98,9 @@ def at_the_moment(events: list[Any], since: int, seq: int,
                 and escalation.reason is EscalationReason.AGENT_BLOCKED):
             del state.escalations[esc_id]
     for task in state.tasks.values():
-        held = [c for c in task.dod if c.held_for]
+        held = [c for c in task.dod if c.id in held_ids]
         for crit in held:
-            crit.status, crit.held_for, crit.holds = CriterionStatus.FAIL, [], 0
+            crit.status = CriterionStatus.FAIL
         if held and task.status is TaskStatus.AWAITING_VERIFICATION:
             task.status = TaskStatus.FAILED
     # What came back before the window was decided then.

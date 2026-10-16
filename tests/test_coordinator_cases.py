@@ -80,7 +80,6 @@ async def test_a_moment_is_put_back_as_a_coordinated_run_had_it(supervisor: Supe
     scaffold, engine, e2e = _engine_and_tests()
     page = ExecutionTask(title="Page", status=TaskStatus.IN_PROGRESS, attempts=1)
     engine.status = TaskStatus.AWAITING_VERIFICATION
-    engine.dod[-1].held_for = [e2e.id]          # held by the old rules, for e2e's file
     session = supervisor.store.create(RunState(id="run_Moment", prompt="p",
                                                tasks={t.id: t for t in (scaffold, engine, e2e,
                                                                         page)}))
@@ -92,7 +91,9 @@ async def test_a_moment_is_put_back_as_a_coordinated_run_had_it(supervisor: Supe
     since = session.state.last_seq
     # In the window: a check the old rules held, a stop they sent to the owner, and a
     # finding they routed.
-    await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(engine)})
+    held = to_jsonable(engine)
+    held["dod"][-1].update(status="unverified", held_for=[e2e.id])  # as the old rules logged it
+    await session.aemit(EventType.TASK_UPDATED, {"task": held})
     page.status = TaskStatus.BLOCKED
     await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(page)})
     stop = Escalation(run_id=session.state.id, task_id=page.id, detail="needs the unit tests")
@@ -112,7 +113,7 @@ async def test_a_moment_is_put_back_as_a_coordinated_run_had_it(supervisor: Supe
     assert set(state.escalations) == {early.id}, "the stop is not yet a question"
     engine = state.tasks[engine.id]
     assert engine.status is TaskStatus.FAILED
-    assert engine.dod[-1].status is CriterionStatus.FAIL and not engine.dod[-1].held_for
+    assert engine.dod[-1].status is CriterionStatus.FAIL
     assert state.goal == [] and all(not c.goal_id for c in state.tasks[scaffold.id].dod)
     assert state.tasks[scaffold.id].status is TaskStatus.VERIFIED
     assert {m.kind for m in coordinator.open_matters(state)} == {"stopped", "failed"}

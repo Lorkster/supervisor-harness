@@ -66,7 +66,6 @@ from ..ids import new_id, now_iso
 from ..models import (
     ACTIVE_AGENT_STATUSES,
     BASELINE_FACT,
-    SUPERVISOR,
     AgentKind,
     AgentSpec,
     AgentStatus,
@@ -84,7 +83,6 @@ from ..models import (
     EscalationReason,
     ExecutionTask,
     GoalExpectation,
-    MessageKind,
     Phase,
     Requirement,
     Resolution,
@@ -293,7 +291,6 @@ class Supervisor:
             self.config, self.store, self.router,
             self.packets, self.reporting, self.lifecycle,
             scope_files=self.toolbox.scope_files,
-            blocked_by_others=self._blocked_by_others,
         )
 
     # ------------------------------------------------------------------
@@ -1187,19 +1184,12 @@ class Supervisor:
                 active = fresh
             else:
                 self._settle_tasks(session)
-                if self.config.policy.coordinator:
-                    await self._coordinate(session)
-                    if not phases.runnable_tasks(state) and await self._check_clean(session):
-                        await self._coordinate(session)
-                    if any(t.status is TaskStatus.AWAITING_VERIFICATION
-                           for t in state.tasks.values()):
-                        return None  # judged as it stands: its verifier comes next
-                else:
-                    await self._follow_up(session)
-                    if self._release_holds(session):
-                        return None  # a held check runs again, before anything else starts
-                    if not phases.runnable_tasks(state) and await self._check_clean(session):
-                        await self._follow_up(session)
+                await self._after_reports(session)
+                if not phases.runnable_tasks(state) and await self._check_clean(session):
+                    await self._after_reports(session)
+                if any(t.status is TaskStatus.AWAITING_VERIFICATION
+                       for t in state.tasks.values()):
+                    return None  # judged as it stands: its verifier comes next
                 # A task that waited on one just verified starts now; the
                 # checkpoint judges the run once nothing more can start.
                 # Measured: with the planner naming its dependencies, four runs
@@ -1236,9 +1226,8 @@ class Supervisor:
                 self._find_the_suite(session, task, tree)
                 self._find_the_gates(session, task, tree)
             for crit in list(task.dod):
-                if crit.status is not CriterionStatus.UNVERIFIED or self._still_held(state, crit):
+                if crit.status is not CriterionStatus.UNVERIFIED:
                     continue
-                crit.held_for = []  # what it waited for has settled: it runs again now
                 if (task.status is TaskStatus.IN_PROGRESS and crit.suite
                         and not crit.command.strip()):
                     # Not blocked yet: the project may not have its runner until the
@@ -1261,9 +1250,6 @@ class Supervisor:
                     if (outcome is not None and outcome.status is CriterionStatus.FAIL
                             and crit.method in (VerifyMethod.TEST, VerifyMethod.COMMAND)
                             and task.status is TaskStatus.AWAITING_VERIFICATION):
-                        if (not self.config.policy.coordinator
-                                and self._hold_for_owner(session, task, crit, outcome)):
-                            continue
                         outcome = self._attributed(state, crit, outcome)
                 if outcome is None:
                     continue
@@ -1360,8 +1346,8 @@ class Supervisor:
         harness's test bar is held, when it is done, to the project's `typecheck`
         and `lint` scripts as the tree has them: mandatory where this run made
         the script, reported where the project had it before -- a check already
-        failing there would fail every task. A failure in another task's files is
-        that task's (`_hold_for_owner`).
+        failing there would fail every task. A failure in another task's files
+        goes to the coordinator, which says whose it is (`_coordinate`).
         """
         if not any(c.suite for c in task.dod):
             return
@@ -1406,257 +1392,6 @@ class Supervisor:
             return outcome
         return VerificationOutcome(outcome.status, f"{outcome.evidence}\n\n{verdict}")
 
-    def _hold_for_owner(self, session: RunSession, task: ExecutionTask, crit: DoDCriterion,
-                        outcome: VerificationOutcome) -> bool:
-        """A project-wide check this task failed only on another task's files, sent there.
-
-        Minesweeper run 8: the engine task's `npm run typecheck` and `npm test`
-        failed on nothing but `e2e/minesweeper.spec.ts`, written at the same time
-        by the task writing the browser tests. The engine was sent back for it,
-        on its last attempt, and could not fix a file outside its scope. Now the
-        check is the owner's: it goes on the task whose files the failure names,
-        which is reopened if it had settled, and this task's check waits for that
-        task to settle and is run again then. Only when every file named is
-        another task's -- a failure that names any of this task's files is its
-        own -- and a bounded number of times, so a check that keeps failing is
-        charged here in the end.
-        """
-        state = session.state
-        if (not crit.mandatory
-                or crit.holds >= self.config.policy.max_task_attempts):
-            return False
-        files, owners = self._owners_of_failure(state, task, outcome)
-        reported = False
-        if not owners and self._tests_it(task, crit):
-            owners = self._reported_to(state, task)
-            reported = bool(owners)
-        if not owners:
-            return False
-        # An owner that waits on this task cannot settle before it: held for it,
-        # the check would never run again. It comes after this task, so the check
-        # moves to it, as a check a later task builds the part for does (#112).
-        # Minesweeper run 17: the engine's lint failed on the unit tests' file,
-        # whose task was waiting for the engine.
-        later = [o for o in owners if _waits_on(state, o, task)]
-        owners = [o for o in owners if o not in later]
-        if not owners:
-            if reported:
-                return False
-            self._hand_check(session, task, crit, later[0], outcome.evidence, files)
-            return True
-        # A failure the task reported is on its owner already, as the finding.
-        for owner in [] if reported else [*owners, *later]:
-            self._charge(session, owner, task, crit, outcome, files)
-        crit.held_for = [o.id for o in owners]
-        crit.holds += 1
-        why = ("its tests fail where this task reported their work wrong" if reported else
-               f"it failed only on their files ({', '.join(sorted(files))})")
-        crit.evidence = (f"held for {', '.join(repr(o.title) for o in owners)}: {why}; run "
-                         f"again when they settle\n\n{outcome.evidence}")
-        task.updated_at = now_iso()
-        session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
-        session.note(f"a check of {task.title!r} failed only on another task's files; it "
-                     f"waits for {', '.join(repr(o.title) for o in owners)}",
-                     task_id=task.id, criterion=crit.statement[:200], files=sorted(files))
-        return True
-
-    def _hand_check(self, session: RunSession, task: ExecutionTask, crit: DoDCriterion,
-                    later: ExecutionTask, evidence: str, files: set[str]) -> None:
-        """A check this task failed only on a later task's files, moved to that task."""
-        task.dod = [c for c in task.dod if c.id != crit.id]
-        command = crit.command.strip()
-        if not any(c.method is crit.method and c.command.strip() == command for c in later.dod):
-            later.dod.append(replace(crit, id=new_id("dod"), status=CriterionStatus.UNVERIFIED,
-                                     evidence="", verified_at="", verified_by="", goal_id="",
-                                     held_for=[], holds=0))
-        later.action = (f"{later.action}\n\nFound by the harness while checking "
-                        f"{task.title!r}: `{command}` fails on {', '.join(sorted(files))}, "
-                        f"which are this task's work. Make it pass.\n{evidence[-600:]}")
-        for each in (task, later):
-            each.updated_at = now_iso()
-            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(each)})
-        session.note(f"a check moved from {task.title!r} to {later.title!r}, which waits on "
-                     "it and whose files it failed on", task_id=task.id, to_task=later.id,
-                     criterion=crit.statement[:200], files=sorted(files))
-
-    def _blocked_by_others(self, state: RunState, task: ExecutionTask,
-                           text: str) -> list[ExecutionTask]:
-        """The other tasks whose files are all a blocked report names, if they can change.
-
-        Minesweeper run 17: the page and the engine both stopped because the
-        project's lint failed on a line in the unit tests' file, which neither
-        could change, and both went to the owner. The harness holds such a check
-        for the file's task (#115), so an agent stopped for it is checked as it
-        stands instead: its own criteria judged, the failure sent to the owner.
-        """
-        tree = self._tree(state)
-        named = _files_named(text, self._toolbox_for(state))
-        if not named or any(matches_any(rel, task.scope.paths) for rel in named):
-            return []
-        owning: dict[str, ExecutionTask] = {}
-        for rel in named:
-            owners = [state.tasks[t] for t in _owners_of_file(state, tree, rel)
-                      if t in state.tasks and t != task.id]
-            if not owners or not all(self._can_change(state, o) for o in owners):
-                return []
-            owning.update((o.id, o) for o in owners)
-        return list(owning.values())
-
-    def _owners_of_failure(
-        self, state: RunState, task: ExecutionTask, outcome: VerificationOutcome
-    ) -> tuple[set[str], list[ExecutionTask]]:
-        """The files a failed check names, and the other tasks they belong to.
-
-        A file belongs to the tasks whose agents touched it, or, if none did, to
-        the tasks whose scope holds it. None, if a file named is this task's:
-        the failure may be its own. Of the owners, those not yet verified, if
-        there are any -- a verified task's files passed its own checks, and a
-        check names the files it passed as well as those it failed. None, too,
-        if one of those cannot change any more or waits on this task: the
-        check is then this task's, as it always was.
-        """
-        tree = self._tree(state)
-        named = _files_named(_ANSI_ESCAPE.sub("", outcome.output or outcome.evidence),
-                             self._toolbox_for(state))
-        if not named:
-            return set(), []
-        def owners_of(rel: str) -> set[str]:
-            return _owners_of_file(state, tree, rel)
-
-        if any(task.id in owners_of(rel) for rel in named) or any(
-                matches_any(rel, task.scope.paths) for rel in named):
-            return named, []
-        candidates = [t for t in state.tasks.values()
-                      if t.id != task.id and any(t.id in owners_of(rel) for rel in named)]
-        owners = [t for t in candidates if t.status is not TaskStatus.VERIFIED] or candidates
-        if not all(self._can_change(state, t) for t in owners):
-            return named, []
-        return named, owners
-
-    @staticmethod
-    def _tests_it(task: ExecutionTask, crit: DoDCriterion) -> bool:
-        """Whether a check runs this task's tests: the suite, or an acceptance command."""
-        command = crit.command.strip()
-        return crit.suite or (bool(command) and command in {
-            g.command.strip() for g in task.acceptance})
-
-    def _reported_to(self, state: RunState, task: ExecutionTask) -> list[ExecutionTask]:
-        """The tasks this attempt's agent sent a finding about their work, which can change.
-
-        Minesweeper run 12: the agent writing the browser tests found, without
-        reading the page's code, that Space acted on a cell other than the one
-        focused. It said so to the supervisor, kept its test, and was failed
-        three times for it. A test that fails where its writer reported the
-        product wrong waits for the product, as a check failed on another task's
-        files does; run again once the reported task has settled, a test that
-        still fails is its writer's.
-        """
-        sources = {f"agent {a.id}" for a in state.agents.values()
-                   if a.task_id == task.id and a.kind is AgentKind.EXECUTION
-                   and a.attempt == task.attempts}
-        ids = {e.task_id for e in state.goal if e.source in sources}
-        return [t for t in state.tasks.values() if t.id in ids and t.id != task.id
-                and self._can_change(state, t) and not _waits_on(state, t, task)]
-
-    def _can_change(self, state: RunState, task: ExecutionTask) -> bool:
-        """Whether a task is still to run, or can be sent back to.
-
-        One held for the owner can: their answer sends it on. Minesweeper run 15:
-        the page's type check failed on the unit tests' file, whose task was
-        waiting for the owner, and the page was charged for it, sent back, and
-        escalated in turn for wanting to edit the file itself.
-        """
-        if task.status in (TaskStatus.APPROVED, TaskStatus.IN_PROGRESS,
-                           TaskStatus.AWAITING_VERIFICATION):
-            return True
-        if _awaits_owner(state, task):
-            return True
-        return (task.status in (TaskStatus.VERIFIED, TaskStatus.FAILED)
-                and task.attempts < self.config.policy.max_task_attempts)
-
-    def _charge(self, session: RunSession, owner: ExecutionTask, task: ExecutionTask,
-                crit: DoDCriterion, outcome: VerificationOutcome, files: set[str]) -> None:
-        """Put a check another task failed on ``owner``'s files on ``owner``."""
-        command = crit.command.strip()
-        mine = next((c for c in owner.dod
-                     if c.method is crit.method and c.command.strip() == command), None)
-        if mine is None:
-            mine = replace(crit, id=new_id("dod"), status=CriterionStatus.UNVERIFIED,
-                           evidence="", verified_at="", verified_by="", goal_id="",
-                           held_for=[], holds=0)
-            owner.dod.append(mine)
-        ours = sorted(f for f in files if matches_any(f, owner.scope.paths)) or sorted(files)
-        owner.action = (f"{owner.action}\n\nFound by the harness while checking "
-                        f"{task.title!r}: `{command}` fails on {', '.join(ours)}, which are "
-                        f"this task's work. Make it pass.\n{outcome.evidence[-600:]}")
-        reopened = owner.status in (TaskStatus.VERIFIED, TaskStatus.FAILED)
-        if reopened:
-            owner.status = TaskStatus.APPROVED
-            owner.assigned_agent_id = None
-            for event in _reopenings(owner):
-                session.emit(EventType.CRITERION_VERIFIED, event, actor="harness")
-        owner.updated_at = now_iso()
-        session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(owner)})
-        if (owner.status is TaskStatus.AWAITING_VERIFICATION
-                and mine.status is CriterionStatus.UNVERIFIED):
-            # The same command on the same tree: its result is this one.
-            session.emit(EventType.CRITERION_VERIFIED,
-                         {"task_id": owner.id, "criterion_id": mine.id,
-                          "status": str(CriterionStatus.FAIL), "evidence": outcome.evidence},
-                         actor="harness")
-        session.note(f"a check failed on {owner.title!r}'s files was put on it"
-                     + (", which was reopened" if reopened else ""),
-                     task_id=owner.id, from_task=task.id, criterion=crit.statement[:200])
-
-    def _still_held(self, state: RunState, crit: DoDCriterion) -> bool:
-        """Whether a held check still waits: a task it was held for is yet to settle.
-
-        A task that failed counts while it is about to be followed up.
-        """
-        for task_id in crit.held_for:
-            holder = state.tasks.get(task_id)
-            if holder is None:
-                continue
-            if holder.status in (TaskStatus.APPROVED, TaskStatus.IN_PROGRESS,
-                                 TaskStatus.AWAITING_VERIFICATION):
-                return True
-            if (holder.status is TaskStatus.FAILED and self.config.policy.follow_up
-                    and holder.attempts < self.config.policy.max_task_attempts
-                    and any(c.status is CriterionStatus.FAIL for c in holder.dod)):
-                return True
-            if _awaits_owner(state, holder):
-                return True
-        return False
-
-    @staticmethod
-    def _held(state: RunState, task: ExecutionTask) -> bool:
-        """Whether one of a task's mandatory checks was held and has not run again."""
-        return any(c.mandatory and c.held_for for c in task.dod)
-
-    def _release_holds(self, session: RunSession) -> bool:
-        """Whether a held check is to run again before anything else starts.
-
-        One whose tasks have settled, and every one once nothing can start: a
-        check does not wait for work that is not coming. Except for a task held
-        for the owner, which comes when they answer (`_await_owner`).
-        """
-        state = session.state
-        waiting = [(task, crit) for task in state.tasks.values()
-                   if task.status is TaskStatus.AWAITING_VERIFICATION
-                   for crit in task.dod if crit.held_for]
-        if not waiting:
-            return False
-        if phases.runnable_tasks(state):
-            return any(not self._still_held(state, crit) for _, crit in waiting)
-        let_go = [(task, crit) for task, crit in waiting
-                  if not any(_awaits_owner(state, state.tasks[t]) for t in crit.held_for
-                             if t in state.tasks)]
-        for task, crit in let_go:
-            crit.held_for = []
-            task.updated_at = now_iso()
-            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
-        return bool(let_go)
-
     def _verify_fails_before(
         self, state: RunState, task: ExecutionTask, crit: DoDCriterion
     ) -> VerificationOutcome:
@@ -1696,8 +1431,7 @@ class Supervisor:
     def _settle_tasks(self, session: RunSession) -> None:
         state = session.state
         for task in state.tasks.values():
-            if (task.status not in (TaskStatus.AWAITING_VERIFICATION, TaskStatus.IN_PROGRESS)
-                    or self._held(state, task)):
+            if task.status not in (TaskStatus.AWAITING_VERIFICATION, TaskStatus.IN_PROGRESS):
                 continue
             task.status = TaskStatus.VERIFIED if task.dod_satisfied() else TaskStatus.FAILED
             task.updated_at = now_iso()
@@ -1926,6 +1660,19 @@ class Supervisor:
             count += 1
         return count
 
+    async def _after_reports(self, session: RunSession) -> None:
+        """What happens once reports are in: the coordinator decides, or each failed task goes back.
+
+        With `policy.coordinator` off, a task that failed is followed up as
+        itself while its attempts last (`_follow_up`, unless `policy.follow_up`
+        is off too, which leaves the checkpoint); a stopped one went to the
+        owner when it stopped (`Supervision._park_task`).
+        """
+        if self.config.policy.coordinator:
+            await self._coordinate(session)
+        elif self.config.policy.follow_up:
+            await self._follow_up(session)
+
     async def _coordinate(self, session: RunSession) -> bool:
         """Put what came back to the coordinator and apply its picks; whether anything was open.
 
@@ -2109,8 +1856,7 @@ class Supervisor:
         if not (command and any(c.method is crit.method and c.command.strip() == command
                                 for c in target.dod)):
             target.dod.append(replace(crit, id=new_id("dod"), status=CriterionStatus.UNVERIFIED,
-                                      evidence="", verified_at="", verified_by="",
-                                      held_for=[], holds=0))
+                                      evidence="", verified_at="", verified_by=""))
         if crit.goal_id:
             for expectation in state.goal:
                 if expectation.id == crit.goal_id:
@@ -2495,12 +2241,11 @@ class Supervisor:
 
         by_id = {c.id: c for c in task.dod}
         applied = 0
-        moves: list[tuple[DoDCriterion, ExecutionTask, str]] = []
         for result in payload.get("results") or []:
             if not isinstance(result, dict):
                 continue
             crit = by_id.get(str(result.get("criterion_id", "")))
-            if crit is None or crit.held_for:
+            if crit is None:
                 continue
             raw = str(result.get("status", "")).lower()
             status = {
@@ -2517,19 +2262,16 @@ class Supervisor:
                 status = CriterionStatus.FAIL
                 evidence = "marked passed without evidence; rejected by the supervisor"
 
-            # A gap that is a later task's goes to that task, not against this one:
-            # the plan is held, not frozen. Only a judged criterion -- a mechanical
-            # result is a fact about the tree as it is.
+            # A gap the verifier says a later task builds is said to the
+            # coordinator, which decides whether the check moves there: the plan
+            # is held, not frozen. Only a judged criterion -- a mechanical result
+            # is a fact about the tree as it is.
             later = (self._later_owner(state, task, result.get("belongs_to"))
                      if status is CriterionStatus.FAIL and crit.method is VerifyMethod.REVIEW
                      else None)
-            if later is not None and self.config.policy.coordinator:
-                # Said to the coordinator, who decides whether it moves.
+            if later is not None:
                 evidence = (f"{evidence}\n\nThe verifier says the task {later.title!r} "
                             "builds this part.")
-            elif later is not None:
-                moves.append((crit, later, evidence))
-                continue
 
             # An inspection handed over because its guessed wording was missing:
             # the verifier may judge the statement, but a pass must quote the
@@ -2581,8 +2323,6 @@ class Supervisor:
             )
             applied += 1
 
-        for crit, later, evidence in moves:
-            await self._move_check(session, task, crit, later, evidence, agent)
         await self.lifecycle._set_status(session, agent, AgentStatus.DONE,
                                          cause=EndCause.REPORTED, reason="verification reported")
         # This used to re-fetch the task from state, because emitting replaced
@@ -2590,10 +2330,7 @@ class Supervisor:
         # the replacement. The fold updates in place now, so `task` is that
         # object; the re-fetch was the only place that compensated, and the fix
         # is in the fold rather than repeated at each call site.
-        # A check held for another task's work leaves it to be settled once that
-        # work is in (`_hold_for_owner`).
-        if not self._held(state, task):
-            task.status = TaskStatus.VERIFIED if task.dod_satisfied() else TaskStatus.FAILED
+        task.status = TaskStatus.VERIFIED if task.dod_satisfied() else TaskStatus.FAILED
         task.updated_at = now_iso()
         await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
         session.sync_index()
@@ -2626,35 +2363,6 @@ class Supervisor:
                      if t.title.strip().casefold() == name
                      and t.status in (TaskStatus.PROPOSED, TaskStatus.APPROVED,
                                       TaskStatus.IN_PROGRESS)), None)
-
-    async def _move_check(self, session: RunSession, task: ExecutionTask, crit: DoDCriterion,
-                          later: ExecutionTask, evidence: str, agent: AgentSpec) -> None:
-        """A check this task failed only because a later task builds that part, moved there.
-
-        Turnstone's coordinator, when a child reports: "decide whether the goal is
-        met, then close it out, push a follow-up, or spawn another child to cover
-        the gap." Minesweeper runs 6 and 7 failed their scaffolds on browser tests
-        and a playable game, which later tasks in the same plan were there to build,
-        and three attempts could not change that. The check is not dropped: it
-        moves forward in the plan, so it is judged later, on more of the result,
-        and can only ever move forward again.
-        """
-        state = session.state
-        task.dod = [c for c in task.dod if c.id != crit.id]
-        moved = replace(crit, id=new_id("dod"), status=CriterionStatus.UNVERIFIED,
-                        evidence="", verified_at="", verified_by="")
-        later.dod.append(moved)
-        later.updated_at = now_iso()
-        if crit.goal_id:
-            for expectation in state.goal:
-                if expectation.id == crit.goal_id:
-                    expectation.task_id = later.id
-            await session.aemit(EventType.GOAL_SET, {"goal": to_jsonable(state.goal)})
-        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(later)})
-        await session.anote(
-            f"a check moved from {task.title!r} to {later.title!r}, which builds the part "
-            "it failed on", actor=agent.id, task_id=task.id, to_task=later.id,
-            criterion=crit.statement[:200], evidence=evidence[:400])
 
     async def _report_stage(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
@@ -3021,7 +2729,6 @@ class Supervisor:
                 return
 
             turn = await self.supervision._record_turn(session, agent, payload)
-            await self._route_findings(session, agent, turn)
             await self._flush_assists(session, agent)
             directive = await self.supervision._supervise(session, agent, turn)
 
@@ -3103,7 +2810,6 @@ class Supervisor:
             payload = stint_payload(stint, report)
             payload["usage"] = {**to_jsonable(stint.usage), "tool_calls": stint.tool_calls}
             turn = await self.supervision._record_turn(session, agent, payload)
-            await self._route_findings(session, agent, turn)
             await self._flush_assists(session, agent)
             directive = await self.supervision._supervise(session, agent, turn)
             if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP,
@@ -3163,7 +2869,6 @@ class Supervisor:
             "usage": {**to_jsonable(stint.usage), "tool_calls": stint.tool_calls},
         }
         turn = await self.supervision._record_turn(session, agent, payload)
-        await self._route_findings(session, agent, turn)
         await self._flush_assists(session, agent)
         await self.supervision._assess_drift(session, agent, turn)
         await self._report_verification(session, agent, payload)
@@ -3194,85 +2899,6 @@ class Supervisor:
                     and not quotes_the_file(crit, str(result.get("evidence", "")), tree)):
                 out.append(crit)
         return out
-
-    async def _route_findings(self, session: RunSession, agent: AgentSpec,
-                              turn: AgentTurn) -> None:
-        """A finding about another task's work refines the goal, on that task.
-
-        Batch K. The agent writing Minesweeper's browser tests found the bug that
-        failed five of them in the page task's file, already verified, and had no
-        way to say so but to stop. Now a warning, finding or contradiction sent to
-        the supervisor that names files in another approved task's scope becomes
-        an expectation of the goal (`goal_set`, its source the agent), a
-        mandatory criterion of that task, and -- if the task was already verified
-        and has attempts left -- reopens it, with the finding in its action. The
-        task that did the work fixes it; the owner hears nothing. Judges only
-        tighten: a finding adds a check, never removes one.
-        """
-        if self.config.policy.coordinator:
-            return  # a finding is put to the coordinator (`_coordinate`)
-        state = session.state
-        mine = state.tasks.get(agent.task_id or "")
-        toolbox = self._toolbox_for(state)
-        for message in turn.messages:
-            if (message.recipient != SUPERVISOR or message.kind not in _FINDING_KINDS
-                    or sum(1 for e in state.goal if e.source.startswith("agent "))
-                    >= MAX_ROUTED_FINDINGS):
-                continue
-            named = _files_named(f"{message.subject}\n{message.content}", toolbox)
-            # Whose a file is, as for a failed check (`_owners_of_failure`): the
-            # task whose agent wrote it, before every task whose scope holds it.
-            # Minesweeper run 12: the engine tests' finding about
-            # src/game/engine.ts went to the page task, whose scope was `src/`.
-            tree = self._tree(state)
-            owning = {tid for rel in named for tid in _owners_of_file(state, tree, rel)}
-            owners = [t for t in state.approved_tasks()
-                      if (mine is None or t.id != mine.id) and t.id in owning]
-            if not owners:
-                continue
-            # Of the owners: the one the agent says it is waiting for, if it is one;
-            # then a task not yet verified -- a message names the files that work
-            # as well as the one that does not (run 8: "all 46 tests in
-            # tests/engine.test.ts pass; the typecheck fails in
-            # e2e/minesweeper.spec.ts" reopened the verified engine tests); then
-            # the one whose agent wrote those files last, whose version is the one
-            # there. Minesweeper run 16: the browser tester's finding that the page
-            # ignored ?board= named src/main.ts, which the scaffold had written as a
-            # shell and the page had written since; it went to the scaffold, the
-            # page stayed verified, and the tester's wait for the page went to the
-            # owner.
-            waited = _titled(owners, turn.waiting_for)
-            latest = _latest_writes(state, tree, named)
-            owner = min(owners, key=lambda t: (t is not waited, t.status is TaskStatus.VERIFIED,
-                                               -latest.get(t.id, -1)))
-            said = " -- ".join(p for p in (message.subject, message.content) if p)[:400]
-            expectation = GoalExpectation(statement=said, task_id=owner.id,
-                                          source=f"agent {agent.id}")
-            await session.aemit(EventType.GOAL_SET,
-                                {"goal": to_jsonable([*state.goal, expectation])})
-            owner.dod.append(phases.goal_criterion(expectation, state.prompt))
-            found_by = f"{agent.id}, working on {mine.title!r}" if mine else agent.id
-            owner.action = f"{owner.action}\n\nFound by {found_by}: {said}"
-            # A finding is the most useful thing a run can hand back, and the task
-            # it concerns may have spent its attempts getting verified. Minesweeper
-            # run 15: the blind tester found the engine's distance, flood and chord
-            # bugs -- the four the owner's hidden suite failed -- and the engine,
-            # verified on its third attempt, could not be reopened. Once more, then.
-            spent = owner.attempts >= self.config.policy.max_task_attempts
-            reopened = (owner.status is TaskStatus.VERIFIED
-                        and (not spent or owner.finding_reopens < MAX_FINDING_REOPENS))
-            if reopened:
-                if spent:
-                    owner.finding_reopens += 1
-                owner.status = TaskStatus.APPROVED
-                owner.assigned_agent_id = None
-                await self._reopen_criteria(session, owner)
-            owner.updated_at = now_iso()
-            await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(owner)})
-            await session.anote(
-                "a finding was routed to the task whose work it concerns"
-                + (", which was reopened" if reopened else ""),
-                actor=agent.id, task_id=owner.id, message_id=message.id)
 
     async def _look_at_the_goal(self, session: RunSession,
                                 task: ExecutionTask) -> tuple[str, list[str]]:
@@ -3939,15 +3565,6 @@ def _is_a_check(state: RunState, command: str) -> bool:
     return bool(wanted) and wanted in _run_checks(state)
 
 
-#: What an agent sends the supervisor that may concern another task's work.
-_FINDING_KINDS = frozenset({MessageKind.WARNING, MessageKind.FINDING,
-                            MessageKind.CONTRADICTION})
-#: Findings routed to other tasks in one run: each can reopen a task, and a
-#: model that warns about everything must not keep a run reopening for ever.
-MAX_ROUTED_FINDINGS = 5
-#: How often a finding may reopen a task past its own attempts, per task.
-MAX_FINDING_REOPENS = 1
-
 #: How the log says a blocked report was handed back (`_blocked_within_reach`).
 SENT_BACK_BLOCKED = "a blocked report was sent back"
 #: The note that says the run's requirements were read, once (`_read_requirements`).
@@ -3988,37 +3605,6 @@ def _in_the_plan(state: RunState, rel: str) -> bool:
     plan = Ceiling("the run's plan", list(current.paths),
                    [*current.forbidden_paths, *(grant.forbidden_paths if grant else [])])
     return bool(widen_within(current, plan, [rel])[1])
-
-
-def _titled(tasks: list[ExecutionTask], name: str) -> ExecutionTask | None:
-    """The task of these that ``name`` names: by its title, or the one title inside it."""
-    wanted = name.strip().casefold()
-    if not wanted:
-        return None
-    exact = [t for t in tasks if t.title.strip().casefold() == wanted]
-    within = exact or [t for t in tasks if t.title.strip() and t.title.strip().casefold() in wanted]
-    return within[0] if len(within) == 1 else None
-
-
-def _latest_writes(state: RunState, tree: Path, rels: set[str]) -> dict[str, int]:
-    """For each task, the last turn in which one of its agents wrote one of ``rels``."""
-    latest: dict[str, int] = {}
-    for index, turn in enumerate(state.turns):
-        agent = state.agents.get(turn.agent_id)
-        if (agent is not None and agent.kind is AgentKind.EXECUTION and agent.task_id
-                and any(safe_relative(raw, tree) in rels for raw in turn.files_touched)):
-            latest[agent.task_id] = index
-    return latest
-
-
-def _owners_of_file(state: RunState, tree: Path, rel: str) -> set[str]:
-    """The tasks a workspace file is the work of: those whose agents wrote it, or,
-    if none did, those whose scope holds it."""
-    written = {agent.task_id for turn in state.turns
-               if (agent := state.agents.get(turn.agent_id)) is not None
-               and agent.kind is AgentKind.EXECUTION and agent.task_id
-               and any(safe_relative(raw, tree) == rel for raw in turn.files_touched)}
-    return written or {t.id for t in state.tasks.values() if matches_any(rel, t.scope.paths)}
 
 
 def _ask_again(refused: list[str], left: list[coordinator.Matter],
@@ -4062,20 +3648,6 @@ def _awaits_owner(state: RunState, task: ExecutionTask) -> bool:
     """Whether a task is held for the owner: blocked, with an escalation still open."""
     return task.status is TaskStatus.BLOCKED and any(
         e.task_id == task.id for e in state.open_escalations())
-
-
-def _waits_on(state: RunState, task: ExecutionTask, other: ExecutionTask) -> bool:
-    """Whether ``task`` depends on ``other``, directly or through other tasks."""
-    seen: set[str] = set()
-    stack = list(task.depends_on)
-    while stack:
-        current = stack.pop()
-        if current == other.id:
-            return True
-        if current not in seen:
-            seen.add(current)
-            stack.extend(state.tasks[current].depends_on if current in state.tasks else [])
-    return False
 
 
 def _strings(value: Any) -> list[str]:

@@ -268,7 +268,8 @@ def brief(state: RunState, matters: list[Matter], handles: Handles, tree: Path,
                      f"(attempt {task.attempts} of {max_attempts})",
                      f"It says it needs: {needs or 'not said'}"
                      + (f"; waiting for: {waiting!r}" if waiting else ""),
-                     "Its account:\n" + _indent(_tail(account))]
+                     "Its account:\n" + _indent(_tail(account)),
+                     "(A task that stopped has no failed check of its own to move.)"]
             lines += _files(state, tree, files_in(account), h)
             sections.append("\n".join(lines))
         elif matter.kind == "finding":
@@ -433,6 +434,9 @@ def _problem(do: str, pick: dict[str, Any], task: ExecutionTask, handles: Handle
     if do == "send_back":
         return _cannot_send_back(task, kind, max_attempts)
     if do == "move_check":
+        if kind == "stopped":
+            return ("it stopped, so it has no failed check to move. Judge it as_it_stands, and "
+                    "send_back the task whose work needs the fix, saying what")
         return _cannot_move(pick, task, handles, state, max_attempts)
     if kind is None:
         return "it is not one of the open matters"

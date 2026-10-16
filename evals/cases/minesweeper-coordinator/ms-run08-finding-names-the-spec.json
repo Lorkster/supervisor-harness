@@ -4,7 +4,7 @@
  "fixture": {
   "kind": "git",
   "repo": "${MINESWEEPER}",
-  "commit": "9958d45e6de6"
+  "commit": "ffd47cae605d"
  },
  "request": "Build the browser Minesweeper described in docs/SPEC.md, from scratch: the repository holds only the brief. Read the whole spec before planning. Its interfaces -- the exports of src/game/engine.ts, the page's element ids and attributes, the URL parameters and the npm scripts -- are a contract other code relies on, so follow them exactly; everything else is yours to design. Sound is synthesised with the Web Audio API and animations respect reduced motion, as the spec says. Write unit tests for the game rules and Playwright tests that drive the page. The work is done when npm run check passes, and npm run test:e2e passes against the production build, as separate gates.",
  "input": {
@@ -16,8 +16,8 @@
    "backend": "autonomous",
    "phase": "verifying",
    "host": "unknown",
-   "created_at": "2026-10-16T19:18:51.973Z",
-   "updated_at": "2026-10-16T19:18:51.973Z",
+   "created_at": "2026-10-16T19:49:54.451Z",
+   "updated_at": "2026-10-16T19:49:54.451Z",
    "host_agents": [],
    "envelope": null,
    "agents": {
@@ -56,7 +56,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -97,7 +97,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -138,7 +138,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "stopped",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -179,7 +179,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -220,7 +220,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -261,7 +261,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -302,7 +302,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -343,7 +343,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -384,7 +384,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -425,7 +425,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -466,7 +466,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -507,7 +507,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -548,7 +548,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -589,7 +589,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -630,7 +630,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -671,7 +671,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -712,7 +712,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "stopped",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -753,7 +753,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -794,7 +794,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -835,7 +835,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -876,7 +876,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -917,7 +917,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -958,7 +958,7 @@
      "parent_agent_id": "",
      "depends_on": [],
      "status": "done",
-     "created_at": "2026-10-16T19:18:51.973Z",
+     "created_at": "2026-10-16T19:49:54.452Z",
      "unreported_dispatches": 0,
      "unreported_since": "",
      "ended_cause": "",
@@ -1002,7 +1002,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V7DZC11K20",
@@ -1034,7 +1034,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V7F6V4M936",
@@ -1066,7 +1066,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V7G9J97R5F",
@@ -1097,7 +1097,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V7HTW0RKNP",
@@ -1128,7 +1128,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V7JVETSGSZ",
@@ -1156,7 +1156,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V7KJ6MHG0G",
@@ -1188,7 +1188,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V89BEV82B2",
@@ -1224,7 +1224,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V8A7C0EN6K",
@@ -1252,7 +1252,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V8RN238KFV",
@@ -1283,7 +1283,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4V8S6SYDEEA",
@@ -1313,7 +1313,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VA9EKF8BP4",
@@ -1347,7 +1347,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VA9ST1ACNY",
@@ -1378,7 +1378,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VAST67Y1YS",
@@ -1409,7 +1409,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VAW43CXPZJ",
@@ -1440,7 +1440,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VBCTFSA80F",
@@ -1470,7 +1470,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VN5M6XW74E",
@@ -1500,7 +1500,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VN9ZY82S7C",
@@ -1530,7 +1530,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VNJXVSQE6R",
@@ -1560,7 +1560,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VNZA7CPG57",
@@ -1591,7 +1591,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VP86H2V33K",
@@ -1621,7 +1621,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VPEHZ68WEH",
@@ -1651,7 +1651,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VPRY4V18A4",
@@ -1681,7 +1681,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VQ2FP2AXME",
@@ -1711,7 +1711,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VQJCY4A13Z",
@@ -1741,7 +1741,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VRNGH6W6RD",
@@ -1771,7 +1771,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VRNGJ2WTCB",
@@ -1799,7 +1799,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VS13GY5B7T",
@@ -1829,7 +1829,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VS7F5V424K",
@@ -1859,7 +1859,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     },
     {
      "id": "trn_01M4VSP1VMTWFP",
@@ -1890,7 +1890,7 @@
       "cache_read_tokens": 0,
       "cache_write_tokens": 0
      },
-     "ts": "2026-10-16T19:18:51.973Z"
+     "ts": "2026-10-16T19:49:54.452Z"
     }
    ],
    "notes": [],
@@ -1922,9 +1922,7 @@
        "verified_at": "2026-10-13T19:14:08.849Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NJV96",
@@ -1939,9 +1937,7 @@
        "verified_at": "2026-10-13T19:14:08.872Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NSVY9",
@@ -1956,9 +1952,7 @@
        "verified_at": "2026-10-13T19:14:08.894Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275N9D6F",
@@ -1973,9 +1967,7 @@
        "verified_at": "2026-10-13T19:15:53.070Z",
        "verified_by": "agt_01M4VAZFWWG50G",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8276YH548",
@@ -1990,9 +1982,7 @@
        "verified_at": "2026-10-13T19:14:09.902Z",
        "verified_by": "harness",
        "suite": true,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8276YRS63",
@@ -2007,9 +1997,7 @@
        "verified_at": "2026-10-13T19:15:53.097Z",
        "verified_by": "agt_01M4VAZFWWG50G",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8276YYA1Q",
@@ -2024,9 +2012,7 @@
        "verified_at": "2026-10-13T19:15:53.123Z",
        "verified_by": "agt_01M4VAZFWWG50G",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789SV7S",
@@ -2041,9 +2027,7 @@
        "verified_at": "2026-10-13T19:15:53.154Z",
        "verified_by": "agt_01M4VAZFWWG50G",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       }
      ],
      "scope": {
@@ -2122,9 +2106,7 @@
        "verified_at": "2026-10-13T23:31:11.331Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NBDJS",
@@ -2139,9 +2121,7 @@
        "verified_at": "2026-10-13T23:31:11.358Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275N87FM",
@@ -2156,9 +2136,7 @@
        "verified_at": "2026-10-13T23:37:01.081Z",
        "verified_by": "agt_01M4VSQ8C9T4F5",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8276ZESJS",
@@ -2173,9 +2151,7 @@
        "verified_at": "2026-10-13T23:31:12.663Z",
        "verified_by": "harness",
        "suite": true,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827701C29",
@@ -2190,9 +2166,7 @@
        "verified_at": "2026-10-13T23:37:01.111Z",
        "verified_by": "agt_01M4VSQ8C9T4F5",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82770HNRR",
@@ -2207,9 +2181,7 @@
        "verified_at": "2026-10-13T23:37:01.138Z",
        "verified_by": "agt_01M4VSQ8C9T4F5",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789EX0V",
@@ -2224,9 +2196,7 @@
        "verified_at": "2026-10-13T23:37:01.169Z",
        "verified_by": "agt_01M4VSQ8C9T4F5",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       }
      ],
      "scope": {
@@ -2311,9 +2281,7 @@
        "verified_at": "2026-10-13T19:13:19.370Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275N6GC8",
@@ -2328,9 +2296,7 @@
        "verified_at": "2026-10-13T19:13:19.393Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NPYRR",
@@ -2345,9 +2311,7 @@
        "verified_at": "2026-10-13T19:16:19.395Z",
        "verified_by": "agt_01M4VAZFWWKVCN",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275N4A3K",
@@ -2362,9 +2326,7 @@
        "verified_at": "2026-10-13T19:13:19.415Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82770MHDY",
@@ -2379,9 +2341,7 @@
        "verified_at": "2026-10-13T19:13:20.423Z",
        "verified_by": "harness",
        "suite": true,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82771GY0H",
@@ -2396,9 +2356,7 @@
        "verified_at": "2026-10-13T19:16:19.418Z",
        "verified_by": "agt_01M4VAZFWWKVCN",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82771X3H0",
@@ -2413,9 +2371,7 @@
        "verified_at": "2026-10-13T19:16:19.441Z",
        "verified_by": "agt_01M4VAZFWWKVCN",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827755DCK",
@@ -2430,9 +2386,7 @@
        "verified_at": "2026-10-13T19:16:19.464Z",
        "verified_by": "agt_01M4VAZFWWKVCN",
        "suite": false,
-       "goal_id": "exp_01M4V8277533R7",
-       "held_for": [],
-       "holds": 0
+       "goal_id": "exp_01M4V8277533R7"
       },
       {
        "id": "dod_01M4V827892QT2",
@@ -2447,9 +2401,7 @@
        "verified_at": "2026-10-13T19:16:19.488Z",
        "verified_by": "agt_01M4VAZFWWKVCN",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       }
      ],
      "scope": {
@@ -2548,9 +2500,7 @@
        "verified_at": "2026-10-13T23:13:23.150Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NJHBV",
@@ -2565,9 +2515,7 @@
        "verified_at": "2026-10-13T23:13:23.203Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NJD1X",
@@ -2582,9 +2530,7 @@
        "verified_at": "2026-10-13T23:13:23.230Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275N3MJR",
@@ -2599,9 +2545,7 @@
        "verified_at": "2026-10-13T23:13:23.261Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827727M6T",
@@ -2616,9 +2560,7 @@
        "verified_at": "2026-10-13T23:13:23.286Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82772RR93",
@@ -2633,9 +2575,7 @@
        "verified_at": "2026-10-13T23:13:23.310Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82775E2EJ",
@@ -2650,9 +2590,7 @@
        "verified_at": "2026-10-13T23:13:23.337Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "exp_01M4V82775HQGG",
-       "held_for": [],
-       "holds": 0
+       "goal_id": "exp_01M4V82775HQGG"
       },
       {
        "id": "dod_01M4V82789BS1B",
@@ -2667,9 +2605,7 @@
        "verified_at": "2026-10-13T23:13:23.365Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789BX9Q",
@@ -2684,9 +2620,7 @@
        "verified_at": "2026-10-13T23:13:23.391Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789H5YB",
@@ -2701,9 +2635,7 @@
        "verified_at": "2026-10-13T23:13:23.417Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789EMC2",
@@ -2718,9 +2650,7 @@
        "verified_at": "2026-10-13T23:13:23.444Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789X5XT",
@@ -2735,9 +2665,7 @@
        "verified_at": "2026-10-13T23:13:23.469Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789ED21",
@@ -2752,9 +2680,7 @@
        "verified_at": "2026-10-13T23:13:23.493Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789BSTT",
@@ -2769,9 +2695,7 @@
        "verified_at": "2026-10-13T23:13:23.520Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789A0WH",
@@ -2786,9 +2710,7 @@
        "verified_at": "2026-10-13T23:13:23.547Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789CMTT",
@@ -2803,9 +2725,7 @@
        "verified_at": "2026-10-13T23:13:23.575Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827898G3E",
@@ -2820,9 +2740,7 @@
        "verified_at": "2026-10-13T23:13:23.603Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789AJMJ",
@@ -2837,9 +2755,7 @@
        "verified_at": "2026-10-13T23:13:23.629Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789S71F",
@@ -2854,9 +2770,7 @@
        "verified_at": "2026-10-13T23:13:23.656Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8278951TF",
@@ -2871,9 +2785,7 @@
        "verified_at": "2026-10-13T23:13:23.682Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789AG58",
@@ -2888,9 +2800,7 @@
        "verified_at": "2026-10-13T23:13:23.710Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789PZB7",
@@ -2905,9 +2815,7 @@
        "verified_at": "2026-10-13T23:13:23.740Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       }
      ],
      "scope": {
@@ -2993,9 +2901,7 @@
        "verified_at": "2026-10-13T23:31:30.432Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275N70ND",
@@ -3010,9 +2916,7 @@
        "verified_at": "2026-10-13T23:31:30.460Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NQV1T",
@@ -3027,9 +2931,7 @@
        "verified_at": "2026-10-13T23:31:30.486Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275N96EF",
@@ -3044,9 +2946,7 @@
        "verified_at": "2026-10-13T23:31:48.067Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82773AFJG",
@@ -3061,9 +2961,7 @@
        "verified_at": "2026-10-13T23:36:01.379Z",
        "verified_by": "agt_01M4VSQ8C94BZW",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82774QAD8",
@@ -3078,9 +2976,7 @@
        "verified_at": "2026-10-13T23:36:01.407Z",
        "verified_by": "agt_01M4VSQ8C94BZW",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82775MM9G",
@@ -3095,9 +2991,7 @@
        "verified_at": "2026-10-13T23:36:01.464Z",
        "verified_by": "agt_01M4VSQ8C94BZW",
        "suite": false,
-       "goal_id": "exp_01M4V82775WKVY",
-       "held_for": [],
-       "holds": 0
+       "goal_id": "exp_01M4V82775WKVY"
       },
       {
        "id": "dod_01M4V82789PJS1",
@@ -3112,9 +3006,7 @@
        "verified_at": "2026-10-13T23:31:48.096Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789EPTP",
@@ -3129,9 +3021,7 @@
        "verified_at": "2026-10-13T23:31:48.125Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789YEV9",
@@ -3146,9 +3036,7 @@
        "verified_at": "2026-10-13T23:31:48.149Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789NWFF",
@@ -3163,9 +3051,7 @@
        "verified_at": "2026-10-13T23:31:48.176Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789X4H4",
@@ -3180,9 +3066,7 @@
        "verified_at": "2026-10-13T23:31:48.201Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789BT05",
@@ -3197,9 +3081,7 @@
        "verified_at": "2026-10-13T23:31:48.226Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789PDZK",
@@ -3214,9 +3096,7 @@
        "verified_at": "2026-10-13T23:31:48.249Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827897P1G",
@@ -3231,9 +3111,7 @@
        "verified_at": "2026-10-13T23:31:48.273Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789TSSP",
@@ -3248,9 +3126,7 @@
        "verified_at": "2026-10-13T23:31:48.298Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789PYY2",
@@ -3265,9 +3141,7 @@
        "verified_at": "2026-10-13T23:31:48.324Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789QREE",
@@ -3282,9 +3156,7 @@
        "verified_at": "2026-10-13T23:31:48.347Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827895M0R",
@@ -3299,9 +3171,7 @@
        "verified_at": "2026-10-13T23:31:48.371Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789Y2AF",
@@ -3316,9 +3186,7 @@
        "verified_at": "2026-10-13T23:31:48.397Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8278987C6",
@@ -3333,9 +3201,7 @@
        "verified_at": "2026-10-13T23:31:48.421Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789KEEV",
@@ -3350,9 +3216,7 @@
        "verified_at": "2026-10-13T23:31:48.447Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827894AH7",
@@ -3367,9 +3231,7 @@
        "verified_at": "2026-10-13T23:31:48.472Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789AK4T",
@@ -3384,9 +3246,7 @@
        "verified_at": "2026-10-13T23:31:48.496Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827894VZ1",
@@ -3401,9 +3261,7 @@
        "verified_at": "2026-10-13T23:31:48.521Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827890BYF",
@@ -3418,9 +3276,7 @@
        "verified_at": "2026-10-13T23:31:48.544Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789VAR3",
@@ -3435,9 +3291,7 @@
        "verified_at": "2026-10-13T23:31:48.569Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789EXNN",
@@ -3452,9 +3306,7 @@
        "verified_at": "2026-10-13T23:31:48.593Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789EXH1",
@@ -3469,9 +3321,7 @@
        "verified_at": "2026-10-13T23:31:48.617Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827891XMR",
@@ -3486,9 +3336,7 @@
        "verified_at": "2026-10-13T23:31:48.642Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827898K60",
@@ -3503,9 +3351,7 @@
        "verified_at": "2026-10-13T23:31:48.668Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789QWAC",
@@ -3520,9 +3366,7 @@
        "verified_at": "2026-10-13T23:31:48.693Z",
        "verified_by": "harness",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789ZJQG",
@@ -3537,9 +3381,7 @@
        "verified_at": "2026-10-13T23:36:01.510Z",
        "verified_by": "agt_01M4VSQ8C94BZW",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8CBJRRR7M",
@@ -3554,9 +3396,7 @@
        "verified_at": "2026-10-13T23:36:01.544Z",
        "verified_by": "agt_01M4VSQ8C94BZW",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8CBNCK2AM",
@@ -3571,9 +3411,7 @@
        "verified_at": "2026-10-13T23:36:01.583Z",
        "verified_by": "agt_01M4VSQ8C94BZW",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       }
      ],
      "scope": {
@@ -3668,9 +3506,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NY9SE",
@@ -3685,9 +3521,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275NY3XN",
@@ -3702,9 +3536,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8275N3RP1",
@@ -3719,9 +3551,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827746WRB",
@@ -3736,9 +3566,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": true,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827741DZX",
@@ -3753,9 +3581,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827745PBJ",
@@ -3770,9 +3596,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82775DQ5N",
@@ -3787,9 +3611,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "exp_01M4V82775SGZ6",
-       "held_for": [],
-       "holds": 0
+       "goal_id": "exp_01M4V82775SGZ6"
       },
       {
        "id": "dod_01M4V82789DH19",
@@ -3804,9 +3626,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827893KRK",
@@ -3821,9 +3641,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V8278975YJ",
@@ -3838,9 +3656,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789B47J",
@@ -3855,9 +3671,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789MDZB",
@@ -3872,9 +3686,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789D6EB",
@@ -3889,9 +3701,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827891ZFY",
@@ -3906,9 +3716,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789NMW3",
@@ -3923,9 +3731,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789GWCA",
@@ -3940,9 +3746,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789F717",
@@ -3957,9 +3761,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V827895A65",
@@ -3974,9 +3776,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       },
       {
        "id": "dod_01M4V82789HSRW",
@@ -3991,9 +3791,7 @@
        "verified_at": "",
        "verified_by": "",
        "suite": false,
-       "goal_id": "",
-       "held_for": [],
-       "holds": 0
+       "goal_id": ""
       }
      ],
      "scope": {
@@ -4101,7 +3899,7 @@
    "escalations": {},
    "coordination": [
     {
-     "id": "crd_01M532E8A42AZV",
+     "id": "crd_01M534734KZKWQ",
      "matters": [
       "finding:msg_01M4VAK851YAT4",
       "finding:msg_01M4VAXWBPB6ZQ"
@@ -4110,7 +3908,7 @@
      "refused": [],
      "summary": "decided before this case",
      "fallback": false,
-     "ts": "2026-10-16T19:18:51.972Z"
+     "ts": "2026-10-16T19:49:54.451Z"
     }
    ],
    "worktree": null,

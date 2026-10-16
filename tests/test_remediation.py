@@ -35,6 +35,7 @@ def _the_checkpoint_path(supervisor: Supervisor) -> None:
     """The checkpoint's way back, measured on its own. With follow-ups on, a task
     whose check fails goes back before the checkpoint runs (`test_follow_up.py`)."""
     supervisor.config.policy.follow_up = False
+    supervisor.config.policy.coordinator = False  # the checkpoint alone sends it back
 
 
 async def _run_with_one_failed_attempt(supervisor: Supervisor, fake) -> Any:

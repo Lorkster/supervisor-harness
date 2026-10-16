@@ -654,8 +654,9 @@ def _later_block(run: RunState, task: ExecutionTask) -> str:
         return ""
     return ("These tasks come after this one. A review criterion that fails only "
             "because one of them builds that part -- not because this task left its own "
-            "part undone -- set belongs_to to that task's title; the supervisor moves the "
-            "check there. Its own part undone is a fail, with no belongs_to.\n"
+            "part undone -- set belongs_to to that task's title; the coordinator decides "
+            "whether the check moves there. Its own part undone is a fail, with no "
+            "belongs_to.\n"
             + "\n".join(f"- {t.title}: {(t.action or t.title)[:200]}" for t in later))
 
 

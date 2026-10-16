@@ -705,12 +705,6 @@ class DoDCriterion:
     # The goal expectation this criterion checks (`GoalExpectation.id`), when it
     # is one: set by the harness from the plan's goal, never from a criterion.
     goal_id: str = ""
-    # The tasks whose files this check last failed on, when they were not this
-    # task's (`Supervisor._hold_for_owner`): it is checked again once they settle.
-    # ``holds`` counts how often, so a check is held a bounded number of times.
-    held_for: list[str] = field(default_factory=list)
-    holds: int = 0
-
     @property
     def machine_checkable(self) -> bool:
         return self.method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.INSPECTION,

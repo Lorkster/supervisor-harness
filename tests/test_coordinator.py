@@ -20,6 +20,7 @@ from supervisor_harness.models import (
     AgentStatus,
     AgentTurn,
     Backend,
+    Checkpoint,
     CriterionStatus,
     Directive,
     DirectiveKind,
@@ -260,6 +261,22 @@ async def test_left_failed_is_not_sent_back_by_the_checkpoint(supervisor: Superv
 
     assert session.state.tasks[engine.id].status is TaskStatus.FAILED
     assert coordinator.left_failed(session.state) == {engine.id}
+    failing = Checkpoint(run_id=session.state.id, passed=False, remediation=["fix the engine"])
+    assert await supervisor._remediate(session, failing) == 0, "the checkpoint leaves it"
+    assert session.state.tasks[engine.id].status is TaskStatus.FAILED
+
+
+async def test_a_task_out_of_attempts_is_not_sent_back(supervisor: Supervisor) -> None:
+    scaffold, engine, e2e = _engine_and_tests()
+    engine.attempts = supervisor.config.policy.max_task_attempts
+    fake = Coordinator({"actions": [{"do": "send_back", "task": "T2", "message": "again"}]},
+                       {"actions": [{"do": "leave_failed", "task": "T2"}]})
+    session = _run(supervisor, "run_Spent", [scaffold, engine, e2e], [], provider=fake)
+
+    await supervisor._coordinate(session)
+
+    assert "has had all 3 attempts at its own work" in fake.asked[1].messages[-1].content
+    assert session.state.tasks[engine.id].status is TaskStatus.FAILED
 
 
 async def test_a_stop_is_put_to_the_coordinator_not_the_owner(supervisor: Supervisor) -> None:
