@@ -1386,6 +1386,36 @@ code was in the tester's view.
     from the other side. Where another task builds it, the tester keeps only the
     testing.
 
+### After run 20: passes in the tree, fails on a clean checkout; stopped for not restating
+
+*Written 2026-10-16.* Run 20 found an engine bug and a page bug with blind
+testers, and fixed both. The hidden browser suite passed 26 of 27, the best since
+run 10. Two structural things went wrong:
+
+- **The final gate passed `npm run check` only in the run's own tree.** A test
+  asserted that `dist/index.html` exists, and `check` runs the tests before the
+  build. In the run's tree an earlier build had left `dist/`. On the owner's
+  clean checkout the gate failed.
+- **The drift judge stopped the browser tester's second attempt.** That attempt
+  was a follow-up for five failed checks. The tester wrote "R30 expects 8, the
+  board has 2 mines" and the like, which scored 0/37 against its task and every
+  `[Rn]` mark by word overlap. It was told to answer its objectives "one
+  paragraph each", and was stopped at 90% of its turns while it found its own
+  invalid boards.
+
+18. **The final gates' checks run again on a clean checkout** (`core/clean.py`,
+    `policy.clean_check`). Once nothing more can run, the mandatory command checks
+    of the verified tasks nothing depends on run again in a scratch worktree of
+    what the run would commit. That is the tree as `git add -A` sees it,
+    committed with a scratch index so the run's branch does not move, with its
+    dependencies installed as CI would. A check that fails there fails its task,
+    which is followed up. Once per attempt. No git or no dependencies means
+    nothing is judged, and that is noted.
+19. **Objective coverage does not judge implementers.** The drift signal that
+    counts how many objectives' words a turn repeats was already off for an
+    implementer's "done". Now it is off throughout an implementer's work. Its
+    definition of done is what is checked; the other drift signals stand.
+
 **After run 19, the engine:** its implementer compiled its file into
 `.tmp-verify/engine.js` to try it, outside its scope. The project's lint failed
 on that file, and the engine was sent back three times for it. Each attempt said

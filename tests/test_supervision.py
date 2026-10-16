@@ -1361,9 +1361,11 @@ def test_an_implementers_done_goes_to_its_definition_of_done_not_to_word_overlap
     assert not _assess(implementer, turn, index=2).signals, (
         "the same thin overlap is no signal against an implementer's done")
     working = AgentTurn(output=report, claimed_status=AgentStatus.RUNNING)
-    assert "objective_coverage" in [s.kind for s in _assess(implementer, working,
-                                                             index=2).signals], (
-        "mid-task, it is still the budget nudge it was")
+    assert "objective_coverage" not in [s.kind for s in _assess(implementer, working,
+                                                                 index=2).signals], (
+        "nor mid-task (Minesweeper run 20: a tester fixing five failed checks scored 0/37 "
+        "for nine turns and was stopped while it found its own invalid boards)")
+    assert "objective_coverage" in [s.kind for s in _assess(lens, working, index=2).signals]
 
     accepted = decide_directive(_assess(implementer, turn, index=2), implementer, turn,
                                 Policy(), 3)

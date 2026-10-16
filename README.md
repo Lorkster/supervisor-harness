@@ -979,6 +979,7 @@ Tuning lives in `supervisor.config.json` under `policy`:
 | `implementer_loop` | "turns" | `"conversation"`: implementers and verifiers are each one conversation with native tool calls (`core/conversation.py`), where the provider takes tools natively |
 | `planner_loop` | "conversation" | The synthesis that writes tasks reads the workspace with read-only tools before it plans, and answers through `propose_plan` (`core/planner.py`); `"one_shot"` asks for one JSON answer instead. A provider without native tools is always asked one-shot |
 | `veto_review` | true | **Protected.** Under envelope approval, a reviewer that can only veto reads each task the gate passed (`core/review.py`) |
+| `clean_check` | true | Once nothing more can run, the final gates' checks run again on a clean checkout of what the run would commit, its dependencies installed as CI would; a check that passes only on what the run's tree has by accident, such as build output, fails there and sends its task back |
 | `follow_up` | true | A task whose check fails goes back at once, while attempts remain, and its next attempt continues its implementer's conversation with what the check found; off, only a failing checkpoint sends it back, to a fresh agent |
 | `requirements_ledger` | true | **Protected.** Before the plan, a reader lists what the request and the documents it points to require, as quotes the harness finds where they are said to be; the plan must deliver each or set it aside, and have each tested by a task other than its builder or say why not (`core/requirements.py`) |
 | `execution_worktree` | true | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
@@ -1090,6 +1091,7 @@ src/supervisor_harness/
     placement.py   a model's paths placed in the tree, when they name no file
     baseline.py    the commit a run measures its whole-repository checks against
     worktree.py    an execute-mode run's own branch: where it works, and what it leaves
+    clean.py       the final gates' checks, again on a clean checkout of what a run commits
     processes.py   a command the harness runs leaves nothing running, nor does a run
     autonomy.py    approving within the envelope: what must hold first, and the task gate
     audit.py       what a finished run's agents actually did, from the record

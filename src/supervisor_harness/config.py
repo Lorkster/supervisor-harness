@@ -183,6 +183,11 @@ class Policy:
     # checkpoint as the only way back. Not protected: either way every check
     # still has to pass.
     follow_up: bool = True
+    # Once nothing more can run, the final gates' checks run again on a clean
+    # checkout of what the run would commit (`core/clean.py`): a check that
+    # passes only on what the run's tree has by accident -- build output, caches
+    # -- fails there, and its task is sent back. Off skips it.
+    clean_check: bool = True
 
     # Batch L: before the plan, a reader lists what the request and the
     # documents it points to require, quoted (`core/requirements.py`); the plan
