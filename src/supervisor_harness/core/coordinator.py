@@ -98,12 +98,14 @@ version that is there.
 - A test that fails because the product does not do what its requirement says is \
 the product's: move the check to the task that builds it. A test that is itself \
 wrong is its writer's.
-- What a test saw the running product do outweighs what you read in the product's \
-code. Code that reads right can still not behave so -- a style rule, a later render, \
-an event that never fires. When a test that drives the running product fails, or a \
-tester reports what the product did, the product's task gets it, unless the test \
-contradicts the requirement as quoted. Never tell a tester its test is wrong because \
-the code looks right, and never ask it to make a test check less.
+- What a test saw the running product do outweighs any reading of the product's \
+code -- yours or another agent's. Code that reads right can still not behave so: \
+a style rule, a later render, an event that never fires. A claim that the code is \
+correct is not evidence against a test. When a test that drives the product fails, \
+or a tester reports what the product did, the product's task gets it. A test is its \
+writer's only where the requirement as quoted, read on its own, says otherwise; when \
+some of a tester's tests are wrong and some are not, each goes to its own task. \
+Never ask a tester to make a test check less.
 - An agent that stopped because it needs another task's work waits for that task. \
 One that stopped only for other tasks' files is judged as it stands, and what fails \
 there goes to their tasks.

@@ -361,6 +361,7 @@ async def test_asked_again_a_task_it_already_settled_is_not_picked_twice(
 
 def test_it_is_told_what_running_showed_outweighs_the_code() -> None:
     flat = " ".join(coordinator.SYSTEM.split())
-    assert ("What a test saw the running product do outweighs what you read in the "
-            "product's code") in flat
-    assert "never ask it to make a test check less" in flat
+    assert ("What a test saw the running product do outweighs any reading of the "
+            "product's code -- yours or another agent's") in flat
+    assert "A claim that the code is correct is not evidence against a test" in flat
+    assert "Never ask a tester to make a test check less" in flat

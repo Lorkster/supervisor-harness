@@ -1656,6 +1656,16 @@ did not behave so. The hidden suite fails on exactly that ripple.
     requirement as quoted, and no tester is told to make a test check less.
     The moment is a replay case (`ms-run22-ripple-seen-running`), on the run's
     final commit, since the page did not change after it.
+
+    Measured, three runs a case on `qwen3.8-code`: the first wording -- "unless
+    the test contradicts the requirement as quoted" -- made eleven of twelve
+    cases, but lost run 12 three times out of three: the coordinator took a
+    page agent's claim that the engine matched the spec as reason to send the
+    blind tester's engine findings back to the tester. The wording now says a
+    claim that the code is correct, its own or another agent's, is no evidence
+    against a test, a test is its writer's only where the quote alone says
+    otherwise, and a tester partly wrong gets back only its wrong tests:
+    twelve of twelve cases, 35 of 36 runs, the run-22 case three of three.
 22. **Asked again, a pick is not taken twice.** The second ask in a
     consultation knows the first's picks (`read_decision`, `earlier`): run 22's
     was told a stop it had already sent back was "waiting for the owner's
