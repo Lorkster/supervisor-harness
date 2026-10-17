@@ -1775,13 +1775,9 @@ class Supervisor:
             again = await self._read_then_finish(session, reader, messages, tools, stint,
                                                  finish="decide", now=coordinator.NOW,
                                                  role=coordinator.ROLE, stage="coordination")
-            more, refused_again = coordinator.read_decision(again, handles, state, left,
-                                                            policy.max_task_attempts)
-            settled = {a.task_id for a in actions if a.do != "move_check"}
-            moved = {a.criterion_id for a in actions if a.do == "move_check"}
-            actions += [a for a in more
-                        if (a.task_id not in settled if a.do != "move_check"
-                            else a.criterion_id not in moved)]
+            more, refused_again = coordinator.read_decision(
+                again, handles, state, left, policy.max_task_attempts, earlier=actions)
+            actions += more
             refused += refused_again
         await session.anote("the coordinator was consulted", read=stint.read,
                             tool_calls=stint.tool_calls, picks=len(actions), refused=len(refused))

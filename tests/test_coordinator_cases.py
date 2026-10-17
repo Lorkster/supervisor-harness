@@ -19,6 +19,7 @@ from supervisor_harness.evals.cases import parse_case
 from supervisor_harness.evals.checks import judge
 from supervisor_harness.evals.roles import Variant, run_role
 from supervisor_harness.models import (
+    Coordination,
     CriterionStatus,
     DoDCriterion,
     Escalation,
@@ -88,6 +89,8 @@ async def test_a_moment_is_put_back_as_a_coordinated_run_had_it(supervisor: Supe
     # Before the window: a question to the owner that stays one.
     early = Escalation(run_id=session.state.id, task_id=scaffold.id, detail="a credential")
     await session.aemit(EventType.ESCALATION_RAISED, {"escalation": to_jsonable(early)})
+    earlier = Coordination(matters=["finding:msg_old"], summary="what it decided then")
+    await session.aemit(EventType.COORDINATED, {"coordination": to_jsonable(earlier)})
     since = session.state.last_seq
     # In the window: a check the old rules held, a stop they sent to the owner, and a
     # finding they routed.
@@ -117,6 +120,7 @@ async def test_a_moment_is_put_back_as_a_coordinated_run_had_it(supervisor: Supe
     assert state.goal == [] and all(not c.goal_id for c in state.tasks[scaffold.id].dod)
     assert state.tasks[scaffold.id].status is TaskStatus.VERIFIED
     assert {m.kind for m in coordinator.open_matters(state)} == {"stopped", "failed"}
+    assert state.coordination[0].summary == "what it decided then", "a coordinated run's own"
 
     reduced = extract.reduced(state)
     assert set(reduced) >= {"tasks", "agents", "turns", "messages", "coordination"}

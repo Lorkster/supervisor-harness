@@ -333,3 +333,34 @@ async def test_the_files_a_whole_output_names_are_kept_in_the_evidence(
     assert crit.status is CriterionStatus.FAIL
     assert "e2e/spec.ts(3,1)" not in crit.evidence.split("Files the whole output")[0][-3000:]
     assert "Files the whole output names: e2e/spec.ts" in crit.evidence
+
+
+async def test_asked_again_a_task_it_already_settled_is_not_picked_twice(
+    supervisor: Supervisor,
+) -> None:
+    """Run 22: the second ask was told a stop it had sent back was waiting for the owner."""
+    scaffold, engine, e2e = _engine_and_tests()
+    tests = ExecutionTask(title="Browser tests 2", status=TaskStatus.BLOCKED, attempts=3)
+    agent, turn = _writer(tests, 3)
+    turn.blocked_on = "the page never staggers its ripple"
+    fake = Coordinator({"actions": [{"do": "send_back", "task": "T4", "message": "fix the case"},
+                                    {"do": "as_it_stands", "task": "T2"}]},
+                       {"actions": [{"do": "send_back", "task": "T4"},
+                                    {"do": "send_back", "task": "T2", "message": "fix it"}]})
+    session = _run(supervisor, "run_Twice", [scaffold, engine, e2e, tests], [(agent, turn)],
+                   provider=fake)
+
+    await supervisor._coordinate(session)
+
+    refused = session.state.coordination[0].refused
+    assert "send_back T4: T4 already has a pick in this decision" in refused
+    assert not any("waiting for the owner" in r for r in refused)
+    assert session.state.tasks[tests.id].follow_up_note == "fix the case"
+    assert session.state.tasks[engine.id].status is TaskStatus.APPROVED
+
+
+def test_it_is_told_what_running_showed_outweighs_the_code() -> None:
+    flat = " ".join(coordinator.SYSTEM.split())
+    assert ("What a test saw the running product do outweighs what you read in the "
+            "product's code") in flat
+    assert "never ask it to make a test check less" in flat

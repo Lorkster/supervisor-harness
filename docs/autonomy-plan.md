@@ -1632,6 +1632,35 @@ Every time the old harness said a run was done -- runs 4, 11 and 18 -- the
 owner's hidden suite failed; twice, runs 3 and 10, it said not done of a run
 that passed the hidden suite whole.
 
+### After run 22: the coordinator read the code and overruled what ran
+
+*Written 2026-10-17.* The first run under the coordinator scored 46/46 on the
+owner's hidden logic suite and 25/27 on the browser suite, both project gates
+passing. It consulted the coordinator eleven times. Ten decisions were right:
+it found that games built from `?board=` placed extra mines on the first
+click and sent that to the engine, sent two page bugs the blind tester found
+to the page and made the tester wait, and moved the page's failing type check
+and lint to the browser tests' own files.
+
+The eleventh was the shortcut batch M closed for testers. The blind tester
+reported that every revealed cell started animating at the same moment. The
+coordinator read `src/page/animation.ts`, saw delays of distance x 20 ms, and
+told the tester its test was wrong; the tester withdrew its finding. A CSS
+transition on every cell started at once, so the code read right and the page
+did not behave so. The hidden suite fails on exactly that ripple.
+
+21. **What ran outweighs what reads right.** The coordinator is told that what
+    a test saw the running product do outweighs its reading of the product's
+    code: when a test that drives the product fails, or a tester reports what
+    the product did, the product's task gets it unless the test contradicts the
+    requirement as quoted, and no tester is told to make a test check less.
+    The moment is a replay case (`ms-run22-ripple-seen-running`), on the run's
+    final commit, since the page did not change after it.
+22. **Asked again, a pick is not taken twice.** The second ask in a
+    consultation knows the first's picks (`read_decision`, `earlier`): run 22's
+    was told a stop it had already sent back was "waiting for the owner's
+    answer".
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed
