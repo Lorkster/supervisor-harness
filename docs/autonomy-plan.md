@@ -1671,6 +1671,37 @@ did not behave so. The hidden suite fails on exactly that ripple.
     was told a stop it had already sent back was "waiting for the owner's
     answer".
 
+### After run 23: a requirement the harness threw away
+
+*Written 2026-10-17.* Run 23 verified all seven tasks in 90 minutes with nothing
+for the owner, and passed the hidden browser suite whole. Its hidden logic suite
+failed rule 4's "places exactly the mines asked for, and numbers every cell":
+the engine left `adjacent` at 0 on mine cells. The spec defines the field for
+every cell -- `adjacent: number; // mines among the up-to-8 neighbours`, a
+comment in the `Cell` interface -- and the same assertion failed in runs 4, 8,
+12 and 13. Runs 18 and 22 happened to number mines too.
+
+No requirement ever held it. The reader of runs 18 and 22 quoted the `Cell`
+interface without its comments; the reader of run 23 rewrote the page
+contract's table rows as "`#timer`: ...", sixteen quotes in all. None was in
+the document word for word, so each was refused, and a refusal was only a
+note. What run 23 kept of the interface was its lead-in, "These exports, with
+these names and shapes:". With no requirement there was no `[Rn]` test, no
+review of one, and nothing for the blind tester to find.
+
+Checked against turnstone: refusing a paraphrase is right -- the shell validates
+at every boundary -- but a refusal goes back to the model with its reason, as the
+coordinator's refused picks do. Loosening the match to accept rewritten rows
+would be a repair rule, "an authorization decision in disguise". And turnstone
+copies no requirements at all: a child reads the source.
+
+23. **A requirement may be cited by its lines.** The reader may give `lines`,
+    as read_file numbers them, in place of a quote; the harness reads them from
+    the file as they are, comments and table marks included
+    (`requirements.cited`). At most 40 lines; a document's, never the request's.
+24. **A refused quote is read again, once.** After the two readings, what was
+    not kept goes back to the reader with why, to cite or copy word for word.
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed

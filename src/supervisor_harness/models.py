@@ -766,6 +766,9 @@ class Requirement:
     id: str = ""
     quote: str = ""
     source: str = "request"
+    # The lines of the source it was cited by, when it was (`requirements.cited`):
+    # its quote is then those lines as the file has them.
+    lines: str = ""
     # ``reader``, or ``audit``: the second reading, asked what the first left out.
     found_by: str = "reader"
     # It holds only once the whole result is built -- a final gate, a "done

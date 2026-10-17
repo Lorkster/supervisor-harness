@@ -359,7 +359,7 @@ def test_the_reader_says_which_hold_only_for_the_whole(tmp_path: Path) -> None:
                             {"quote": "A thing someone could check", "source": "request"}]}
     assert [q["whole"] for q in parse_quoted(raw)] == [False, True, True, False]
     assert REQUIREMENTS_SCHEMA["properties"]["requirements"]["items"]["required"] == [
-        "quote", "source", "whole"]
+        "source", "whole"], "a quote, or the lines that hold it"
     ledger, _ = build_ledger([], raw, request=" ".join([ELEVENTH, DONE, PER_ACCOUNT]),
                              workspace=tmp_path, found_by="reader")
     assert [r.whole for r in ledger] == [False, True, True]
@@ -628,3 +628,82 @@ def test_the_tests_of_its_work_are_beyond_a_builders_reach(supervisor: Superviso
                       me, whole_files=True)
     assert not result.ok and "forbidden" in result.output
     assert test.read_text(encoding="utf-8") == "def test_r1(): ...\n"
+
+
+
+# -- a requirement cited by its lines, and a refused one read again ------------------------
+
+CONTRACT = """\
+# Game
+
+```ts
+export interface Cell {
+  mine: boolean;
+  adjacent: number;          // mines among the up-to-8 neighbours
+}
+```
+
+| element | contract |
+|---|---|
+| `#timer` | whole seconds since the first reveal; `0` before |
+"""
+
+
+def test_cited_lines_are_read_from_the_file_as_they_are(tmp_path: Path) -> None:
+    """Minesweeper runs 18 and 22 quoted `Cell` without its comment, and run 23 rewrote
+    the contract's table rows; each was refused, and five runs' engines got `adjacent`
+    wrong for want of it."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "SPEC.md").write_text(CONTRACT, encoding="utf-8")
+    raw = {"requirements": [
+        {"lines": "4-7", "source": "docs/SPEC.md"},
+        {"quote": "#timer: whole seconds since the first reveal", "source": "docs/SPEC.md"},
+        {"lines": "12", "source": "docs/SPEC.md"},
+        {"lines": "40-45", "source": "docs/SPEC.md"},
+        {"lines": "1-3", "source": "request"},
+        {"lines": "the cell block", "source": "docs/SPEC.md"},
+    ]}
+
+    ledger, refused = build_ledger([], raw, request="Build it, see docs/SPEC.md",
+                                   workspace=tmp_path, found_by="reader")
+
+    assert [r.quote for r in ledger] == [
+        "export interface Cell {\n  mine: boolean;\n  adjacent: number;          "
+        "// mines among the up-to-8 neighbours\n}",
+        "| `#timer` | whole seconds since the first reveal; `0` before |"]
+    assert [r.lines for r in ledger] == ["4-7", "12"]
+    assert refused == [
+        "requirement not kept: '#timer: whole seconds since the first reveal' is not in "
+        "docs/SPEC.md word for word",
+        "requirement not kept: lines '40-45' of docs/SPEC.md: docs/SPEC.md has lines 1-12, "
+        "not 40-45",
+        "requirement not kept: lines '1-3' of request: lines cite a document's lines; quote "
+        "the request instead",
+        "requirement not kept: lines 'the cell block' of docs/SPEC.md: 'the cell block' is "
+        "not a line or a range of lines, such as '39-58'"]
+    assert "give `lines`" in requirements.READER_SYSTEM
+
+
+async def test_what_a_reading_could_not_keep_goes_back_once(
+    supervisor: Supervisor, fake: FakeProvider, workspace: Path,
+) -> None:
+    _spec(workspace)
+    asked: list[str] = []
+
+    def again(request: CompletionRequest) -> dict[str, Any]:
+        asked.append(request.messages[-1].content)
+        return {"requirements": [{"lines": "5-6", "source": "docs/SPEC.md"}]}
+
+    fake.script("requirements", _quoted((ELEVENTH, "docs/SPEC.md")),
+                _quoted(("the limit is per account, not per address", "docs/SPEC.md")), again)
+    fake.script("synthesis", _plan(fake, deliver=["R1", "R2"], test=["R1", "R2"]))
+    response = await supervisor.run(PROMPT, mode=RunMode.EXECUTE)
+    state = supervisor.store.load_state(response.run_id)
+
+    assert "# Not kept" in asked[0]
+    assert "'the limit is per account, not per address' is not in docs/SPEC.md" in asked[0]
+    assert [(r.id, r.lines) for r in state.requirements] == [("R1", ""), ("R2", "5-6")]
+    assert state.requirements[1].quote.startswith("2. The limit is kept per account")
+    (note,) = [n for n in state.notes if n.text == "refused requirements read again"]
+    assert (note.context["asked"], note.context["kept"]) == ("1", "1")
+    assert len([c for c in fake.calls if c["stage"] == "requirements"]) == 3

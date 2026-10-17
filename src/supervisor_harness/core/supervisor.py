@@ -730,6 +730,19 @@ class Supervisor:
                 ledger, raw, request=state.prompt, workspace=self.workspace,
                 found_by=found_by)
             refused += notes
+        # What was refused goes back once, with why: a refusal noted and nothing
+        # more lost the spec's `Cell` interface in two runs and its page contract
+        # in a third (`requirements.cited`).
+        again = [n for n in refused if n.startswith("requirement not kept: ")]
+        if again:
+            raw = await self._a_reading(session, requirements.RETRY_SYSTEM,
+                                        requirements.retry_prompt(state.prompt, again))
+            before = len(ledger)
+            ledger, notes = requirements.build_ledger(
+                ledger, raw, request=state.prompt, workspace=self.workspace,
+                found_by="reader")
+            await session.anote("refused requirements read again", asked=len(again),
+                                kept=len(ledger) - before, refused=notes)
         await session.anote(LEDGER_READ, requirements=len(ledger),
                             audit=sum(r.found_by == "audit" for r in ledger), refused=refused)
         if ledger:
