@@ -40,6 +40,11 @@ from .paths import globs_may_overlap, globs_within
 #: More than this and the plan becomes bookkeeping. The Minesweeper brief, about
 #: 1,500 words, states about fifty things someone could check.
 MAX_REQUIREMENTS = 60
+#: The most lines one requirement may cite: more is a section, not a thing to check.
+MAX_CITED_LINES = 40
+#: How a reader writes the lines it cites: '39-58', or '127'.
+_LINES = re.compile(r"\s*L?(\d{1,6})\s*(?:(?:-|\u2013|to)\s*L?(\d{1,6}))?\s*", re.IGNORECASE)
+
 #: A quote shorter than this, flattened, could be found almost anywhere.
 MIN_QUOTE_CHARS = 12
 #: How much of a source document a quote is looked for in.
@@ -91,6 +96,36 @@ def _source_text(source: str, request: str, workspace: Path) -> str | None:
         return None
 
 
+def cited(lines: str, source: str, text: str | None) -> tuple[str, str]:
+    """The text a reader's ``lines`` name in ``source``, or why there is none.
+
+    Minesweeper runs 18 and 22: the reader quoted the spec's `Cell` interface
+    without its comments -- one of them is what `adjacent` means -- and run 23
+    rewrote the page contract's table rows as "`#timer`: ...". Neither was in
+    the document as written, so each was refused, and with them what five runs'
+    engines then got wrong. A citation is not copied: the harness reads it.
+    """
+    if source.strip().casefold() in ("", "request", "the request", "prompt"):
+        return "", "lines cite a document's lines; quote the request instead"
+    if text is None:
+        return "", f"{source} is not a document in the workspace"
+    match = _LINES.fullmatch(lines)
+    if match is None:
+        return "", f"{lines!r} is not a line or a range of lines, such as '39-58'"
+    first = int(match.group(1))
+    last = int(match.group(2) or first)
+    all_lines = text.splitlines()
+    if not 1 <= first <= last <= len(all_lines):
+        return "", f"{source} has lines 1-{len(all_lines)}, not {first}-{last}"
+    if last - first + 1 > MAX_CITED_LINES:
+        return "", (f"{first}-{last} is {last - first + 1} lines; cite at most "
+                    f"{MAX_CITED_LINES}, one thing to check each")
+    body = "\n".join(all_lines[first - 1:last]).strip()
+    if len(_flat(body)) < MIN_QUOTE_CHARS:
+        return "", f"{source}:{first}-{last} holds too little to check"
+    return body, ""
+
+
 def build_ledger(
     held: list[Requirement], raw: dict[str, Any], *, request: str, workspace: Path,
     found_by: str,
@@ -106,13 +141,19 @@ def build_ledger(
     notes: list[str] = []
     seen = [(_flat(r.quote), r.source) for r in ledger]
     for item in parse_quoted(raw):
-        quote, source = item["quote"], item["source"]
+        quote, source, lines = item["quote"], item["source"], item.get("lines", "")
         text = _source_text(source, request, workspace)
-        if text is None or not grounded(quote, text):
+        if lines:
+            quote, why = cited(lines, source, text)
+            if why:
+                notes.append(f"requirement not kept: lines {lines!r} of {source}: {why}")
+                continue
+        elif text is None or not grounded(quote, text):
             if source != "request" and grounded(quote, request):
                 source = "request"
             else:
-                notes.append(f"requirement not kept: {quote[:120]!r} is not in {source}")
+                notes.append(f"requirement not kept: {quote[:120]!r} is not in {source} "
+                             "word for word")
                 continue
         flat = _flat(quote)
         if any(src == source and (flat in other or other in flat) for other, src in seen):
@@ -123,7 +164,7 @@ def build_ledger(
             break
         seen.append((flat, source))
         ledger.append(Requirement(id=f"R{len(ledger) + 1}", quote=quote, source=source,
-                                  found_by=found_by, whole=bool(item["whole"]),
+                                  lines=lines, found_by=found_by, whole=bool(item["whole"]),
                                   checked_by=item["checked_by"]))
     return ledger, notes
 
@@ -155,6 +196,9 @@ is checked last, not on the first task that touches it.
 the result -- what it does when run, opened, clicked or called; reading where by \
 reading files -- a script, a dependency list, a configuration, where a file is.
 - At most 60. If there are more, merge the smallest into their neighbours.
+- For code, a table, or a long passage, give `lines` -- the line numbers read_file \
+shows -- instead of copying: the harness reads them from the file as they are. A \
+copied quote must be word for word.
 
 Then call list_requirements with them."""
 
@@ -184,6 +228,19 @@ READER_NOW = "Your reading time is up. Call list_requirements now with what you 
 def reader_prompt(request: str) -> str:
     """The first reading: the request itself."""
     return f"# The request\n\n{request}\n"
+
+
+#: The third reading, only when a quote was refused: the same reader, told why.
+RETRY_SYSTEM = READER_SYSTEM + """
+
+Some of what you listed could not be kept, for the reasons given. List those \
+again: cite their lines, or copy them word for word. List nothing else."""
+
+
+def retry_prompt(request: str, refused: list[str]) -> str:
+    """The quotes a reading gave that were not kept, and why, for one more try."""
+    listed = "\n".join(f"- {line.removeprefix('requirement not kept: ')}" for line in refused)
+    return f"# The request\n\n{request}\n\n# Not kept\n\n{listed}\n"
 
 
 def audit_prompt(request: str, ledger: list[Requirement]) -> str:

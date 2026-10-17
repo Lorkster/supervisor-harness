@@ -335,6 +335,15 @@ REQUIREMENTS_SCHEMA: dict[str, Any] = {
                         "description": ("Where the quote is: 'request', or the workspace "
                                         "path of the document, such as docs/SPEC.md"),
                     },
+                    "lines": {
+                        "type": "string",
+                        "description": (
+                            "Instead of copying, the lines of the source document that "
+                            "state it, as read_file numbers them: '39-58', or '127'. The "
+                            "harness takes the text from the file as it is. Use it for "
+                            "code, a table, or any long passage"
+                        ),
+                    },
                     "whole": {
                         "type": "boolean",
                         "description": (
@@ -354,7 +363,7 @@ REQUIREMENTS_SCHEMA: dict[str, Any] = {
                         ),
                     },
                 },
-                "required": ["quote", "source", "whole"],
+                "required": ["source", "whole"],
             },
         },
     },
@@ -795,13 +804,15 @@ def parse_goal(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def parse_quoted(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """A reader's requirements, each a quote, its source and whether it is the whole
-    result's; the rest dropped."""
+    """A reader's requirements, each a quote or the lines that hold it, its source and
+    whether it is the whole result's; the rest dropped."""
     out: list[dict[str, Any]] = []
     for raw in data.get("requirements") or []:
-        if not isinstance(raw, dict) or not str(raw.get("quote", "")).strip():
+        if not isinstance(raw, dict) or not (str(raw.get("quote", "")).strip()
+                                             or str(raw.get("lines", "")).strip()):
             continue
-        out.append({"quote": str(raw["quote"]).strip(),
+        out.append({"quote": str(raw.get("quote", "")).strip(),
+                    "lines": str(raw.get("lines", "")).strip(),
                     "source": str(raw.get("source", "")).strip() or "request",
                     "whole": raw.get("whole") is True
                     or str(raw.get("whole", "")).strip().lower() == "true",
