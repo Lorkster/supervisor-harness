@@ -98,6 +98,14 @@ version that is there.
 - A test that fails because the product does not do what its requirement says is \
 the product's: move the check to the task that builds it. A test that is itself \
 wrong is its writer's.
+- What a test saw the running product do outweighs any reading of the product's \
+code -- yours or another agent's. Code that reads right can still not behave so: \
+a style rule, a later render, an event that never fires. A claim that the code is \
+correct is not evidence against a test. When a test that drives the product fails, \
+or a tester reports what the product did, the product's task gets it. A test is its \
+writer's only where the requirement as quoted, read on its own, says otherwise; when \
+some of a tester's tests are wrong and some are not, each goes to its own task. \
+Never ask a tester to make a test check less.
 - An agent that stopped because it needs another task's work waits for that task. \
 One that stopped only for other tasks' files is judged as it stands, and what fails \
 there goes to their tasks.
@@ -333,7 +341,7 @@ def _earlier(state: RunState, h: Callable[[str], str]) -> str:
             target = state.tasks.get(act.get("to_task", ""))
             to = f" to {h(target.id)}" if target is not None else ""
             lines.append(f"- {act['do']} {h(task.id)}{to} (attempt {act.get('attempt')}): "
-                         f"{act.get('message', '')[:200]} -> {h(task.id)} is now "
+                         f"{' '.join(act.get('message', '').split())[:200]} -> {h(task.id)} is now "
                          f"{task.status.value}" + (f", {h(target.id)} {target.status.value}"
                                                    if target is not None else ""))
     return "\n".join(lines)
@@ -382,18 +390,29 @@ def decide_tool(handles: Handles) -> dict[str, Any]:
 
 
 def read_decision(arguments: dict[str, Any] | None, handles: Handles, state: RunState,
-                  matters: list[Matter], max_attempts: int) -> tuple[list[Action], list[str]]:
-    """The picks the harness can carry out, and why each other one was refused."""
+                  matters: list[Matter], max_attempts: int,
+                  earlier: Iterable[Action] = ()) -> tuple[list[Action], list[str]]:
+    """The picks the harness can carry out, and why each other one was refused.
+
+    ``earlier`` are the picks already taken in this consultation, when it is
+    asked again: a task one of them settled, or a check one of them moved, is
+    not picked for twice. Run 22's second ask was told a stopped task already
+    sent back was "waiting for the owner's answer".
+    """
+    earlier = list(earlier)
     actions: list[Action] = []
     refused: list[str] = []
     open_tasks = {m.task_id: m.kind for m in matters if m.kind != "finding"}
-    disposed: set[str] = set()
+    disposed = {a.task_id for a in earlier if a.do in _DISPOSITIONS}
+    moved = {a.criterion_id for a in earlier if a.do == "move_check"}
     raw = (arguments or {}).get("actions") or []
     picks = [p for p in raw if isinstance(p, dict)] if isinstance(raw, list) else []
     # Work that will run again after this decision, for `wait` to wait on.
     will_run = {handles.tasks.get(str(p.get("to_task" if p.get("do") == "move_check"
                                              else "task", "")).strip(), "")
                 for p in picks if p.get("do") in ("send_back", "move_check")}
+    will_run |= {a.to_task_id if a.do == "move_check" else a.task_id for a in earlier
+                 if a.do in ("send_back", "move_check")}
     for pick in picks:
         do = str(pick.get("do", "")).strip()
         name = str(pick.get("task", "")).strip()
@@ -410,14 +429,19 @@ def read_decision(arguments: dict[str, Any] | None, handles: Handles, state: Run
         if do in _DISPOSITIONS and task_id in disposed:
             refused.append(f"{said}: {name} already has a pick in this decision")
             continue
+        check = handles.checks.get(str(pick.get("criterion", "")).strip())
+        if do == "move_check" and check is not None and check[1] in moved:
+            refused.append(f"{said}: that check is moved already")
+            continue
         problem = _problem(do, pick, task, handles, state, open_tasks, will_run, max_attempts)
         if problem:
             refused.append(f"{said}: {problem}")
             continue
         action = Action(do, task_id, message=message,
                         check=str(pick.get("check", "")).strip() if do == "send_back" else "")
-        if do == "move_check":
-            action.criterion_id = handles.checks[str(pick.get("criterion", "")).strip()][1]
+        if do == "move_check" and check is not None:
+            action.criterion_id = check[1]
+            moved.add(check[1])
         if do in ("move_check", "wait"):
             action.to_task_id = handles.tasks[str(pick.get("to_task", "")).strip()]
         if do in _DISPOSITIONS:

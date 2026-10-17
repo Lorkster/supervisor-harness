@@ -115,8 +115,9 @@ def at_the_moment(events: list[Any], since: int, seq: int,
     before = [m.key for m in coordinator.open_matters(state)
               if (sent.get(m.message_id, 0) if m.kind == "finding"
                   else changed.get(m.task_id, 0)) <= since]
-    state.coordination = ([Coordination(matters=before, summary="decided before this case")]
-                          if before else [])
+    # A coordinated run keeps what its coordinator decided, which it is shown.
+    state.coordination = [*state.coordination, *(
+        [Coordination(matters=before, summary="decided before this case")] if before else [])]
     return state
 
 
