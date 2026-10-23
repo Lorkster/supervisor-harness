@@ -1,0 +1,357 @@
+diff --git a/e2e/sound-motion.spec.ts b/e2e/sound-motion.spec.ts
+deleted file mode 100644
+index c1d09bc..0000000
+--- a/e2e/sound-motion.spec.ts
++++ /dev/null
+@@ -1,351 +0,0 @@
+-import { expect, test, type Page } from '@playwright/test';
+-import { clickAllSafe } from './helpers';
+-
+-const BOARD_5 = '*....,.....,.....,.....,.....'; // one mine at (0,0)
+-
+-interface AnimRecord { row: string; col: string; delay: number; duration: number }
+-interface AudioOsc { type: string; freq: number }
+-interface AudioRecord { contextsCreated: number; oscillators: AudioOsc[] }
+-
+-/**
+- * Install Web Animations + Web Audio spies before the page scripts run.
+- */
+-export async function installSpies(page: Page): Promise<void> {
+-  await page.addInitScript(() => {
+-    const anims: Array<{ row: string; col: string; delay: number; duration: number }> = [];
+-    (window as unknown as { __anims: typeof anims }).__anims = anims;
+-
+-    const origAnimate = Element.prototype.animate;
+-    Element.prototype.animate = function animate(this: Element, keyframes: Keyframe[] | PropertyIndexMap, options?: number | KeyframeAnimationOptions) {
+-      let delay = 0;
+-      let duration = 0;
+-      if (typeof options === 'number') {
+-        duration = options;
+-      } else if (options) {
+-        delay = Number(options.delay ?? 0);
+-        duration = Number(options.duration ?? 0);
+-      }
+-      const el = this as HTMLElement;
+-      anims.push({ row: el.dataset?.row ?? '', col: el.dataset?.col ?? '', delay, duration });
+-      return origAnimate.call(this, keyframes, options);
+-    };
+-
+-    // Store the oscillator nodes themselves: the app sets each oscillator's
+-    // frequency with setValueAtTime() *after* createOscillator returns, so the
+-    // value must be read later (AudioParam.value reflects the last set value).
+-    const record = { contextsCreated: 0, oscillators: [] as OscillatorNode[] };
+-    (window as unknown as { __audio: typeof record }).__audio = record;
+-
+-    const OrigAudioContext = window.AudioContext;
+-    if (!OrigAudioContext) return;
+-    window.AudioContext = class extends OrigAudioContext {
+-      constructor(...args: ConstructorParameters<typeof OrigAudioContext>) {
+-        super(...args);
+-        record.contextsCreated += 1;
+-      }
+-    };
+-    const origCreateOsc = OrigAudioContext.prototype.createOscillator;
+-    OrigAudioContext.prototype.createOscillator = function createOscillator(this: AudioContext) {
+-      const osc = origCreateOsc.call(this);
+-      record.oscillators.push(osc);
+-      return osc;
+-    };
+-  });
+-}
+-
+-async function audio(page: Page): Promise<AudioRecord> {
+-  return page.evaluate(() => {
+-    const raw = (window as unknown as { __audio: { contextsCreated: number; oscillators: OscillatorNode[] } }).__audio;
+-    return {
+-      contextsCreated: raw.contextsCreated,
+-      oscillators: raw.oscillators.map((o) => ({ type: o.type, freq: o.frequency.value })),
+-    };
+-  });
+-}
+-
+-async function anims(page: Page): Promise<AnimRecord[]> {
+-  return page.evaluate(() => (window as unknown as { __anims: AnimRecord[] }).__anims);
+-}
+-
+-/** Make sure the game is unmuted (the mute preference persists in localStorage). */
+-async function ensureUnmuted(page: Page): Promise<void> {
+-  const pressed = await page.locator('#mute').getAttribute('aria-pressed');
+-  if (pressed === 'true') await page.click('#mute');
+-}
+-
+-function gcd(a: number, b: number): number {
+-  while (b !== 0) { const t = b; b = a % b; a = t; }
+-  return a;
+-}
+-
+-test.describe('sound', () => {
+-  test('[R28] no AudioContext is created before the first click or key press', async ({ page }) => {
+-    await installSpies(page);
+-    await page.goto(`/?board=${encodeURIComponent(BOARD_5)}`);
+-
+-    const before = await audio(page);
+-    expect(before.contextsCreated, 'no AudioContext may be constructed before the player acts').toBe(0);
+-    const exposed = await page.evaluate(() => typeof (window as unknown as { __audioCtx?: unknown }).__audioCtx);
+-    expect(exposed, 'window.__audioCtx must be undefined before any interaction').toBe('undefined');
+-
+-    // Once the player acts, sound machinery does start (unmuted by default).
+-    await page.click('#board button[data-row="4"][data-col="3"]');
+-    const after = await audio(page);
+-    expect(after.contextsCreated, 'after the first click an AudioContext may exist').toBeGreaterThanOrEqual(1);
+-    expect(after.oscillators.length, 'revealing a cell while unmuted must start at least one oscillator').toBeGreaterThanOrEqual(1);
+-  });
+-
+-  test('[R29] muted means silent: no oscillator starts at all', async ({ page }) => {
+-    await installSpies(page);
+-    await page.goto(`/?board=${encodeURIComponent(BOARD_5)}`);
+-
+-    await page.click('#mute');
+-    await expect(page.locator('#mute'), '#mute must be pressed (muted)').toHaveAttribute('aria-pressed', 'true');
+-
+-    await page.click('#board button[data-row="4"][data-col="3"]');
+-    await page.click('#board button[data-row="4"][data-col="0"]', { button: 'right' });
+-    await page.click('#board button[data-row="4"][data-col="0"]', { button: 'right' });
+-
+-    const record = await audio(page);
+-    expect(record.oscillators.length, 'while muted, no oscillator may start for reveal or flag actions').toBe(0);
+-  });
+-
+-  test('[R26] all sounds are synthesised with the Web Audio API — no audio files', async ({ page, context }) => {
+-    await installSpies(page);
+-    const requests: string[] = [];
+-    context.on('request', (req) => requests.push(req.url()));
+-
+-    await page.goto(`/?board=${encodeURIComponent(BOARD_5)}`);
+-    await expect(page.locator('audio'), 'no <audio> elements may be used').toHaveCount(0);
+-    await expect(page.locator('source'), 'no <source> elements may be used').toHaveCount(0);
+-
+-    // Play every sound the page can play.
+-    await page.click('#board button[data-row="4"][data-col="3"]');
+-    await page.click('#board button[data-row="4"][data-col="0"]', { button: 'right' });
+-    await page.click('#board button[data-row="4"][data-col="0"]', { button: 'right' });
+-    await page.click('#board button[data-row="0"][data-col="0"]');
+-    await page.click('#new-game');
+-    await clickAllSafe(page, 5, 5, [[0, 0]]);
+-
+-    const record = await audio(page);
+-    expect(record.oscillators.length, 'all sounds must come from Web Audio oscillators').toBeGreaterThanOrEqual(5);
+-    const audioFiles = requests.filter((url) => /\.(mp3|wav|ogg|oga|m4a|aac|flac)(\?|$)/i.test(url));
+-    expect(audioFiles, 'no audio file may be requested').toEqual([]);
+-  });
+-
+-  test('[R27] distinct sounds per event; the win is a melody of at least three notes', async ({ page }) => {
+-    await installSpies(page);
+-    // 7x7 board, mines at (0,1),(1,1),(3,3),(4,2),(6,2). Verified cell-by-cell:
+-    //  - (6,6) is safe for flag/unflag (no adjacent mine)
+-    //  - (0,2) is a "1" (adjacent to mine (1,1)) and NOT in the cascade region → single-cell reveal
+-    //  - (5,0) is a zero cell; its cascade region is {(5,0),(6,0),(6,1),(5,1)} plus
+-    //    numbered borders {(4,1),(4,2)=mine-excluded,(5,2),(6,2)=mine-excluded} and the
+-    //    safe zero-border (1,0)... actually the region is exactly {(5,0),(6,0),(6,1),(5,1)}
+-    //    with numbered borders {(4,1),(5,2),(6,2)} — none of which is a mine and none is
+-    //    the chord target (0,0); the game stays playing
+-    //  - (0,0) is a "2" (mines at (0,1) and (1,1)); its only hidden neighbour (1,0),
+-    //    which is safe, is revealed by the chord
+-    const board = '.*.....,*.*....,.......,...*...,..*....,.......,..*....';
+-    await page.goto(`/?board=${encodeURIComponent(board)}`);
+-    await ensureUnmuted(page);
+-
+-    const signatures = new Set<string>();
+-    let markFrom = 0;
+-    const mark = async (label: string) => {
+-      const record = await audio(page);
+-      const fresh = record.oscillators.slice(markFrom);
+-      markFrom += fresh.length;
+-      expect(fresh.length, `${label} must start at least one oscillator`).toBeGreaterThanOrEqual(1);
+-      for (const o of fresh) signatures.add(`${o.type}:${o.freq}`);
+-    };
+-
+-    // Flag / unflag on a safe cell far from the zero region.
+-    const flagCell = '#board button[data-row="6"][data-col="6"]';
+-    await page.click(flagCell, { button: 'right' });
+-    await mark('placing a flag');
+-    await page.click(flagCell, { button: 'right' });
+-    await mark('removing a flag');
+-
+-    // Reveal one numbered cell (single-cell reveal): (0,2) is a "1".
+-    await page.click('#board button[data-row="0"][data-col="2"]');
+-    await expect(page.locator('#status'), 'game must still be playing after single reveal').toHaveAttribute('data-status', 'playing');
+-    await mark('revealing one cell');
+-
+-    // Cascade: (5,0) is a zero cell whose region is isolated from the chord target.
+-    await page.click('#board button[data-row="5"][data-col="0"]');
+-    await expect(page.locator('#status'), 'game must still be playing after cascade').toHaveAttribute('data-status', 'playing');
+-    await mark('a cascade reveal');
+-
+-    // Chord: (0,0) is a "2" with mines at (0,1) and (1,0).
+-    const two = page.locator('#board button[data-row="0"][data-col="0"]');
+-    await expect(two, 'chord target must still be hidden after the cascade').toHaveAttribute('data-state', 'hidden');
+-    await two.click();
+-    await expect(two, 'cell (0,0) must be a revealed "2"').toHaveText('2');
+-    await page.locator('#board button[data-row="0"][data-col="1"]').click({ button: 'right' });
+-    await page.locator('#board button[data-row="1"][data-col="0"]').click({ button: 'right' });
+-    await two.click();
+-    await mark('a chord');
+-
+-    // Explosion (loss) on a separate board. The navigation re-runs the init
+-    // script, so the audio record starts empty again — reset the mark.
+-    await page.goto(`/?board=${encodeURIComponent(BOARD_5)}`);
+-    markFrom = 0;
+-    await page.click('#board button[data-row="0"][data-col="0"]');
+-    const loss = await audio(page);
+-    expect(loss.oscillators.length, 'an explosion (loss) must start at least one oscillator').toBeGreaterThanOrEqual(markFrom + 1);
+-
+-    // Win: a short melody of at least three notes.
+-    const beforeWin = (await audio(page)).oscillators.length;
+-    await page.click('#new-game');
+-    await clickAllSafe(page, 5, 5, [[0, 0]]);
+-    const winNotes = (await audio(page)).oscillators.length - beforeWin;
+-    expect(winNotes, 'the win must be a melody of at least three notes').toBeGreaterThanOrEqual(3);
+-
+-    expect(signatures.size, 'the sounds must be distinct, not one repeated tone').toBeGreaterThanOrEqual(2);
+-  });
+-});
+-
+-test.describe('motion', () => {
+-  // Same 7x7 layout as the [R27] test: (5,0) is a zero cell whose cascade
+-  // reveals nine cells while the game stays playing, so the ripple is
+-  // exercised mid-game (not by an instant win).
+-  const CASCADE_BOARD = '.*.....,*.*....,.......,...*...,..*....,.......,..*....';
+-
+-  // These motion tests need animations to actually run: the app only animates
+-  // when the user does not prefer reduced motion. Headless Chromium can report
+-  // a reduced-motion default, so request no-preference explicitly (R34 below
+-  // overrides this with reduce for its own test).
+-  test.use({ reducedMotion: 'no-preference' });
+-
+-  test('[R30] the reveal ripple staggers newly revealed cells with a fixed step', async ({ page }) => {
+-    await installSpies(page);
+-    await page.goto(`/?board=${encodeURIComponent(CASCADE_BOARD)}`);
+-    // (5,0) is a zero cell in this layout: one click reveals many cells.
+-    await page.click('#board button[data-row="5"][data-col="0"]');
+-    await expect(page.locator('#status'), 'the cascade must leave the game playing').toHaveAttribute('data-status', 'playing');
+-    const recorded = await anims(page);
+-
+-    expect(recorded.length, 'a cascade must animate more than one newly revealed cell').toBeGreaterThanOrEqual(2);
+-
+-    const delays = [...new Set(recorded.map((a) => a.delay))].sort((x, y) => x - y);
+-    expect(delays[0], 'the clicked cell starts its animation at the input (delay 0 ms)').toBe(0);
+-    expect(delays.length, 'cells must start at staggered times, not all at once').toBeGreaterThanOrEqual(2);
+-
+-    // All non-zero delays must be multiples of a fixed step in [15, 40] ms.
+-    const nonZero = delays.filter((d) => d > 0);
+-    let step = nonZero[0];
+-    for (let i = 1; i < nonZero.length; i += 1) step = gcd(step, nonZero[i]);
+-    expect(step, 'the stagger step must be a fixed value in the 15–40 ms range').toBeGreaterThanOrEqual(15);
+-    expect(step, 'the stagger step must be a fixed value in the 15–40 ms range').toBeLessThanOrEqual(40);
+-    for (const d of nonZero) {
+-      expect(d % step, `delay ${d} ms must be a multiple of the fixed step ${step} ms`).toBe(0);
+-    }
+-
+-    expect(delays[delays.length - 1], 'no cell may start later than 1000 ms after the input').toBeLessThanOrEqual(1000);
+-
+-    for (const a of recorded) {
+-      expect(a.duration, 'each reveal animation must last 100–600 ms').toBeGreaterThanOrEqual(100);
+-      expect(a.duration, 'each reveal animation must last 100–600 ms').toBeLessThanOrEqual(600);
+-    }
+-  });
+-
+-  test('[R31] placing a flag animates', async ({ page }) => {
+-    await installSpies(page);
+-    await page.goto(`/?board=${encodeURIComponent(BOARD_5)}`);
+-    const cellSel = '#board button[data-row="4"][data-col="0"]';
+-    await page.click(cellSel, { button: 'right' });
+-    await expect(page.locator(cellSel), 'the right click must flag the cell').toHaveAttribute('data-state', 'flagged');
+-
+-    const recorded = (await anims(page)).filter((a) => a.row === '4' && a.col === '0');
+-    expect(
+-      recorded.length,
+-      'placing a flag must animate the flagged cell (a Web Animation on that cell)',
+-    ).toBeGreaterThanOrEqual(1);
+-  });
+-
+-  test('[R32] loss: the exploded mine is marked, other mines appear one after another', async ({ page }) => {
+-    // Mines at (0,0), (2,0) and (4,0): clicking (0,0) loses the game.
+-    await installSpies(page);
+-    await page.goto(`/?board=${encodeURIComponent('*....,.....,*....,.....,*....')}`);
+-    const mineSel = '#board button[data-row="0"][data-col="0"]';
+-    await page.click(mineSel);
+-
+-    await expect(page.locator(mineSel), 'the mine that lost the game must have data-exploded="true"').toHaveAttribute('data-exploded', 'true');
+-    const mines = page.locator('#board button[data-state="mine"]');
+-    await expect(mines, 'on loss every mine becomes visible (data-state="mine")').toHaveCount(3);
+-
+-    // The two non-exploded mines must be staggered: they start at different
+-    // delays, one after another rather than all at once.
+-    const otherMines = (await anims(page)).filter((a) => (a.row === '2' && a.col === '0') || (a.row === '4' && a.col === '0'));
+-    expect(otherMines.length, 'each other mine must be animated').toBeGreaterThanOrEqual(2);
+-    const distinctDelays = [...new Set(otherMines.map((a) => a.delay))];
+-    expect(
+-      distinctDelays.length,
+-      'the other mines must appear one after another (staggered animation delays), not all at once',
+-    ).toBeGreaterThanOrEqual(2);
+-  });
+-
+-  test('[R33] win: the board or the status celebrates', async ({ page }) => {
+-    await installSpies(page);
+-    await page.goto(`/?board=${encodeURIComponent(BOARD_5)}`);
+-    await clickAllSafe(page, 5, 5, [[0, 0]]);
+-    await expect(page.locator('#status'), 'the game must be won').toHaveAttribute('data-status', 'won');
+-
+-    const celebration = await page.evaluate(() => {
+-      const status = document.querySelector('#status')!;
+-      const board = document.querySelector('#board')!;
+-      const text = (status.textContent ?? '').toLowerCase();
+-      const classes = [...(status.className ? String(status.className).split(/\s+/) : []), ...(board.className ? String(board.className).split(/\s+/) : [])];
+-      const celebratingClass = classes.some((c) => /win|celebrate|victory|party/i.test(c));
+-      const animating = document.getAnimations().length > 0 ||
+-        getComputedStyle(status).animationName !== 'none' ||
+-        getComputedStyle(board).animationName !== 'none';
+-      return { text, celebratingClass, animating };
+-    });
+-
+-    expect(
+-      celebration.text.includes('won') || celebration.text.includes('cleared') || celebration.celebratingClass || celebration.animating,
+-      'on a win the board or the status must celebrate (a victory message in #status, a celebratory class, or an animation)',
+-    ).toBe(true);
+-  });
+-
+-  test('[R34] reduced motion: nothing animates and nothing transitions', async ({ page }) => {
+-    // Reduced motion applies only to this test (not the whole describe block).
+-    await page.emulateMedia({ reducedMotion: 'reduce' });
+-    await installSpies(page);
+-    await page.goto(`/?board=${encodeURIComponent(BOARD_5)}`);
+-
+-    // A cascade reveal normally ripples; under reduced motion nothing may run.
+-    await page.click('#board button[data-row="3"][data-col="3"]');
+-    const running = await page.evaluate(() => document.getAnimations());
+-    expect(running, 'with prefers-reduced-motion, no Web Animations or CSS animations may be running').toEqual([]);
+-
+-    // A flag normally animates; it must not now.
+-    await page.click('#board button[data-row="4"][data-col="0"]', { button: 'right' });
+-    const afterFlag = await page.evaluate(() => document.getAnimations());
+-    expect(afterFlag, 'with prefers-reduced-motion, flagging must not animate').toEqual([]);
+-
+-    // Computed animation-name is "none" on every cell.
+-    const names = await page.evaluate(() =>
+-      Array.from(document.querySelectorAll('#board button[role="gridcell"]')).map((c) => getComputedStyle(c).animationName),
+-    );
+-    expect(
+-      names.every((n) => n === 'none'),
+-      'with prefers-reduced-motion, every cell must have computed animation-name "none"',
+-    ).toBe(true);
+-
+-    // No CSS transitions on revealed cells.
+-    const transitions = await page.evaluate(() => {
+-      const cells = Array.from(document.querySelectorAll<HTMLButtonElement>('#board button[data-state="revealed"]'));
+-      return cells.map((c) => getComputedStyle(c).transitionDuration);
+-    });
+-    expect(
+-      transitions.every((d) => d === '0s' || d === 'none'),
+-      'with prefers-reduced-motion, revealed cells must have no CSS transitions',
+-    ).toBe(true);
+-
+-    // And the Web Animations spy should record nothing.
+-    const recorded = await anims(page);
+-    expect(recorded.length, 'with prefers-reduced-motion, no Web Animation may be created').toBe(0);
+-  });
+-});
