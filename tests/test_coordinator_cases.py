@@ -125,3 +125,13 @@ async def test_a_moment_is_put_back_as_a_coordinated_run_had_it(supervisor: Supe
     reduced = extract.reduced(state)
     assert set(reduced) >= {"tasks", "agents", "turns", "messages", "coordination"}
     assert reduced["notes"] == [] and reduced["briefs"] == {}
+
+
+def test_a_case_may_take_the_final_commit_with_files_taken_out() -> None:
+    spec = {"repo": "${MINESWEEPER}", "commit": "90beb78"}
+    assert extract.fixture(spec) == {"kind": "git", "repo": "${MINESWEEPER}",
+                                     "commit": "90beb78"}
+    patched = extract.fixture({**spec, "patch": "before.patch"})
+    assert patched["patch"] == "before.patch"
+    assert parse_case({**_case(RunState(), []), "fixture": patched},
+                      ROOT / "evals" / "cases").fixture.patch == "before.patch"

@@ -1,0 +1,86 @@
+{
+ "id": "ms-run24-motion-tests-record-the-call",
+ "role": "verifier",
+ "fixture": {
+  "kind": "git",
+  "repo": "${MINESWEEPER}",
+  "commit": "90beb78"
+ },
+ "request": "Build the browser Minesweeper described in docs/SPEC.md, from scratch: the repository holds only the brief. Read the whole spec before planning. Its interfaces -- the exports of src/game/engine.ts, the page's element ids and attributes, the URL parameters and the npm scripts -- are a contract other code relies on, so follow them exactly; everything else is yours to design. Sound is synthesised with the Web Audio API and animations respect reduced motion, as the spec says. Write unit tests for the game rules and Playwright tests that drive the page. The work is done when npm run check passes, and npm run test:e2e passes against the production build, as separate gates.",
+ "input": {
+  "task": {
+   "id": "tsk_ms24_e2e",
+   "title": "Write Playwright e2e tests",
+   "action": "Write Playwright end-to-end tests for R10-R34 against the production build, each test title carrying its requirement id in brackets.",
+   "motivation": "The request's page requirements, tested by running the page",
+   "scope": {
+    "paths": [
+     "e2e/"
+    ]
+   },
+   "status": "awaiting_verification",
+   "dod": [
+    {
+     "id": "dod_ms24_0",
+     "statement": "The tests marked R30, R32 check what each requirement says",
+     "method": "review",
+     "command": "",
+     "expect": "",
+     "rubric": "Pass only if each test marked with an id drives the result as a person or a caller would and asserts what that requirement says -- not the implementation's internals, and not a weaker claim. Fail naming each test that does not, and cite file:line:\n- R30: - **Reveal ripple.** Every newly revealed cell animates in (100–600 ms),\n  starting `distance × step` after the input, with a fixed step of 15–40 ms,\n  so a cascade ripples outward from the click. No cell starts later than\n  1000 ms after the input.\n- R32: - **Loss.** The exploded mine animates (a flash, a shake), and the other\n  mines appear one after another rather than all at once.",
+     "mandatory": true,
+     "status": "unverified",
+     "evidence": "",
+     "verified_at": "",
+     "verified_by": "",
+     "suite": false,
+     "goal_id": ""
+    },
+    {
+     "id": "dod_ms24_1",
+     "statement": "The tests marked R20 check what each requirement says",
+     "method": "review",
+     "command": "",
+     "expect": "",
+     "rubric": "Pass only if each test marked with an id drives the result as a person or a caller would and asserts what that requirement says -- not the implementation's internals, and not a weaker claim. Fail naming each test that does not, and cite file:line:\n- R20: - **Keyboard:** the board is one Tab stop — exactly one cell has\n  `tabindex=\"0\"`, the rest `-1`. Arrow keys move focus between cells and stop\n  at the edges. Enter or Space reveals the focused cell, or chords it if it is\n  a revealed number; `F` toggles its flag. Focus is always visible.",
+     "mandatory": true,
+     "status": "unverified",
+     "evidence": "",
+     "verified_at": "",
+     "verified_by": "",
+     "suite": false,
+     "goal_id": ""
+    },
+    {
+     "id": "dod_ms24_2",
+     "statement": "The tests marked R26 check what each requirement says",
+     "method": "review",
+     "command": "",
+     "expect": "",
+     "rubric": "Pass only if each test marked with an id drives the result as a person or a caller would and asserts what that requirement says -- not the implementation's internals, and not a weaker claim. Fail naming each test that does not, and cite file:line:\n- R26: - Every sound is synthesised with the Web Audio API — no audio files.",
+     "mandatory": true,
+     "status": "unverified",
+     "evidence": "",
+     "verified_at": "",
+     "verified_by": "",
+     "suite": false,
+     "goal_id": ""
+    }
+   ]
+  },
+  "change_summary": "Wrote e2e/contract.spec.ts, e2e/keyboard.spec.ts, e2e/url-params.spec.ts and e2e/sound-motion.spec.ts; the motion tests record each animation through a spy on Element.prototype.animate."
+ },
+ "checks": [
+  "answered",
+  "all_ruled",
+  "evidence_cites_file",
+  {
+   "check": "statuses",
+   "expect": {
+    "marked R30, R32": "fail",
+    "marked R20 ": "pass",
+    "marked R26 ": "pass"
+   }
+  }
+ ],
+ "labelled_by": "Claude, from run 24's final tree and the owner's hidden suite: the [R30] and [R32] tests assert on the delays passed to a spy on Element.prototype.animate, and pass while a CSS transition starts every cell at the click -- the hidden suite fails both. Controls: the [R20] tests drive the keyboard and assert data-state (the hidden keyboard tests pass); the [R26] test spies on Web Audio because R26 is about how sounds are made, so its spy checks what R26 says. The run's own review passed the motion tests when it judged R10-R34 in one criterion"
+}
