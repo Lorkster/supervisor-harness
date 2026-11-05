@@ -29,6 +29,8 @@ The tree a run had at that moment is gone: runs commit once, at the end. A
 case's fixture is the run's starting commit, which has the brief's documents.
 The run's final commit would mislead -- in run 16 it already had the fix the
 moment was about, and the coordinator, reading it, rightly found nothing wrong.
+Where only some files changed after the moment, a case may take the final commit
+and a ``patch`` (relative to the case file) that takes those files out.
 """
 
 from __future__ import annotations
@@ -140,6 +142,14 @@ def reduced(state: RunState) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def fixture(spec: dict[str, Any]) -> dict[str, str]:
+    """The case's repository at its commit, and the patch on top if the spec names one."""
+    fx = {"kind": "git", "repo": spec["repo"], "commit": spec["commit"]}
+    if spec.get("patch"):
+        fx["patch"] = spec["patch"]
+    return fx
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -155,7 +165,7 @@ def main() -> int:
         open_now = coordinator.open_matters(state)
         case = {
             "id": spec["id"], "role": "coordinator",
-            "fixture": {"kind": "git", "repo": spec["repo"], "commit": spec["commit"]},
+            "fixture": fixture(spec),
             "request": state.prompt,
             "input": {"state": reduced(state)},
             "checks": [{"check": "answered"}, {"check": "picked_for_each"},

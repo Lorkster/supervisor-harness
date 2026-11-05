@@ -1702,6 +1702,53 @@ copies no requirements at all: a child reads the source.
 24. **A refused quote is read again, once.** After the two readings, what was
     not kept goes back to the reader with why, to cite or copy word for word.
 
+### After run 24: a test that looked, traded for one that listened
+
+*Written 2026-10-21.* Run 24 verified all six tasks in 220 minutes with nothing
+for the owner, and both project gates passed. Rule 4 passed the hidden suite,
+held this time by a requirement cited by its lines and a test marked with it.
+The hidden browser suite failed two tests: a cascade ripples outward, and a loss
+shows the other mines one after another.
+
+The page set its delays right -- distance x 25 ms, mine i x 90 ms -- but a CSS
+transition on every cell button started at the click on every cell that
+changed. The hidden suite reads the animations running on the page and takes
+each cell's earliest start, so every cell started at 0. Without that one rule
+the hidden tests pass, eight of eight.
+
+The run's own tests had looked the same way. The e2e tester's first motion tests
+read `document.getAnimations()` and saw no animation. The coordinator read
+`src/ui/animation.ts`, found the `el.animate` calls, ruled the product right and
+told the tester, twice, to spy on `Element.prototype.animate` instead -- "more
+reliable". The final gate rewrote the tests that way and they passed: a spy on
+the call records the delay asked for, and never sees a transition. The
+faithfulness review let them through, though its rubric already said "not the
+implementation's internals". The prompt already said "never ask a tester to make
+a test check less"; the coordinator did not count this as less.
+
+25. **The moments, replayed; the wording, not taken.** Two coordinator cases
+    replay the moments (`ms-run24-motion-tests-saw-nothing`, seq 962-1185, and
+    `ms-run24-motion-tests-out-of-attempts`, seq 1226-1345), on the run's final
+    commit with the motion test file taken out by a patch: its contents then
+    are not recorded, and the page did not change after them. A case forbids
+    any pick whose message names `Element.prototype.animate` or a monkey-patch
+    -- words a message uses to advise the spy, not to report one. Both of the
+    run's own decisions fail them. A verifier case
+    (`ms-run24-motion-tests-record-the-call`) judges the run's final tests one
+    requirement set at a time, with two controls: keyboard tests that drive the
+    page, and a Web Audio spy for a requirement about how sounds are made.
+
+    A wording was tried first and dropped. The coordinator was told that
+    recording the call is checking less, and the faithfulness rubric that a test
+    asserting on what was passed to a wrapped function fails for a requirement
+    about what a person sees. Three runs a case on `qwen3.8-code`, it did not
+    help: `saw-nothing` passed 1 of 3 on main and 1 of 3 with it,
+    `out-of-attempts` 3 of 3 both ways, and the other twelve cases went from 35
+    of 36 to 34 of 36. The verifier case passes on main, 3 of 3 -- judged on R30
+    and R32 alone, the review fails the spy tests; the run's review judged
+    R10-R34 in one criterion. So on main `saw-nothing` is a case the coordinator
+    still loses: told the tests saw nothing, it offers the spy as a way to see.
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed
