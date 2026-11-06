@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from supervisor_harness.agents.brief import build_implementer_brief, build_verifier_brief
 from supervisor_harness.core import coordinator
 from supervisor_harness.core.supervisor import Supervisor
 from supervisor_harness.models import (
@@ -163,8 +164,37 @@ async def test_a_refused_pick_goes_back_once_with_the_reason(supervisor: Supervi
     engine = session.state.tasks[engine.id]
     assert engine.status is TaskStatus.APPROVED
     assert engine.follow_up_note == "Fix the type check."
-    assert "Did not pass:\n- the project type-checks" in engine.action
+    assert "Did not pass:\n- the project type-checks" in engine.as_told()
     assert session.state.coordination[0].refused
+
+
+async def test_what_the_coordinator_says_is_not_what_the_verifier_judges(
+    supervisor: Supervisor,
+) -> None:
+    """Run 24: the coordinator, reading the code, moved checks to the final gate with
+    "the product implements R30-R32 to spec ... rewrite using the animate spy". Written
+    into the gate's action, the verifier read it as what was supposed to happen, and
+    passed the spy tests: three of three in replay, and none of three without it."""
+    scaffold, engine, e2e = _engine_and_tests()
+    e2e.action = "Write browser tests for the page."
+    claim = "The product is correct; spy on Element.prototype.animate instead."
+    fake = Coordinator({"actions": [{"do": "move_check", "task": "T2", "criterion": "C1",
+                                     "to_task": "T3", "message": claim}]})
+    session = _run(supervisor, "run_Told", [scaffold, engine, e2e],
+                   [_writer(e2e, 1, "e2e/minesweeper.spec.ts")], provider=fake)
+
+    await supervisor._coordinate(session)
+
+    e2e = session.state.tasks[e2e.id]
+    assert e2e.action == "Write browser tests for the page.", "the plan's, as planned"
+    assert any(claim in told for told in e2e.told)
+    implementer = AgentSpec(kind=AgentKind.EXECUTION, role="implementer", task_id=e2e.id,
+                            scope=Scope(paths=["e2e/**"]))
+    assert claim in build_implementer_brief(session.state, implementer, e2e)
+    assert claim in e2e.as_told()
+    verifier = build_verifier_brief(session.state, e2e)
+    assert "Write browser tests for the page." in verifier
+    assert claim not in verifier and "Moved here from" not in verifier
 
 
 async def test_without_a_pick_the_harness_follows_up_as_before(supervisor: Supervisor) -> None:

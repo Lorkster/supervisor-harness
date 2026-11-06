@@ -265,6 +265,7 @@ class Reporting:
             "id": task.id,
             "title": task.title,
             "action": task.action,
+            "told": list(task.told),
             "motivation": task.motivation,
             "closes_findings": task.rationale_refs,
             "risk": str(task.risk),

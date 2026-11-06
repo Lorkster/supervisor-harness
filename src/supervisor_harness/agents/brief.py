@@ -404,7 +404,7 @@ def build_execution_brief(
         f"run. The user approved this task; implement it as approved.",
         _section("Original request", run.prompt),
         _section("Shared context", shared_context),
-        _section("What to do", task.action),
+        _section("What to do", task.as_told()),
         _section("Why it matters", task.motivation),
         _section("Findings behind this task", _bullets(supporting_findings or [])),
         _section("Your speciality", (role.charter if role else agent.brief)),
@@ -533,7 +533,8 @@ def build_implementer_brief(
     task: the run's request is a line of context, and how to work and how to
     finish are the system prompt's (`core/conversation.py`), stated once.
     """
-    what = task.action if task.action and task.action != task.title else task.title
+    what = "\n\n".join([task.action if task.action and task.action != task.title
+                        else task.title, *task.told])
     findings = _bullets(supporting_findings or [])
     if len(findings) > IMPLEMENTER_FINDINGS_CHARS:
         findings = findings[:IMPLEMENTER_FINDINGS_CHARS].rsplit("\n", 1)[0] + "\n- ..."

@@ -1631,10 +1631,8 @@ class Supervisor:
             await self._reopen_criteria(session, task)
             mine = corrections_for_task(task, corrections, tasks)
             if mine:
-                task.action = (
-                    f"{task.action}\n\nCheckpoint corrections from attempt {task.attempts}:\n"
-                    + "\n".join(f"- {c}" for c in mine[:6])
-                )
+                task.told.append(f"Checkpoint corrections from attempt {task.attempts}:\n"
+                                 + "\n".join(f"- {c}" for c in mine[:6]))
             task.updated_at = now_iso()
             await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
             count += 1
@@ -1677,8 +1675,8 @@ class Supervisor:
             task.status = TaskStatus.APPROVED
             task.assigned_agent_id = None
             await self._reopen_criteria(session, task)
-            task.action = (f"{task.action}\n\nFollow-up from attempt {task.attempts}, which "
-                           "did not pass:\n" + "\n".join(f"- {c}" for c in failed[:6]))
+            task.told.append(f"Follow-up from attempt {task.attempts}, which did not pass:\n"
+                             + "\n".join(f"- {c}" for c in failed[:6]))
             task.updated_at = now_iso()
             await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
             await session.anote(f"{task.title!r} followed up at once: {len(failed)} check(s) "
@@ -1848,7 +1846,7 @@ class Supervisor:
             task.dod.append(phases.goal_criterion(expectation, state.prompt))
         if task.status in (TaskStatus.PROPOSED, TaskStatus.APPROVED):
             if message:
-                task.action = f"{task.action}\n\nFrom the coordinator: {message}"
+                task.told.append(f"From the coordinator: {message}")
         else:
             failed = [c.statement for c in task.unmet_criteria()
                       if c.status is CriterionStatus.FAIL]
@@ -1859,10 +1857,10 @@ class Supervisor:
             task.assigned_agent_id = None
             await self._reopen_criteria(session, task)
             task.follow_up_note = message
-            task.action = (f"{task.action}\n\nFollow-up from attempt {task.attempts}"
-                           + (f": {message}" if message else "")
-                           + ("" if not failed else "\nDid not pass:\n"
-                              + "\n".join(f"- {c}" for c in failed[:6])))
+            task.told.append(f"Follow-up from attempt {task.attempts}"
+                             + (f": {message}" if message else "")
+                             + ("" if not failed else "\nDid not pass:\n"
+                                + "\n".join(f"- {c}" for c in failed[:6])))
         task.updated_at = now_iso()
         await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
 
@@ -1891,7 +1889,7 @@ class Supervisor:
         told = f"{action.message}\n\n{found}" if action.message else found
         if (target.status in (TaskStatus.PROPOSED, TaskStatus.APPROVED)
                 or _awaits_owner(state, target)):
-            target.action = f"{target.action}\n\n{told}"
+            target.told.append(told)
             target.updated_at = now_iso()
             await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(target)})
         else:
@@ -3560,7 +3558,7 @@ def _tasks_named_by(correction: str, tasks: list[ExecutionTask]) -> set[str]:
     # brief. A file only other tasks mention makes the correction theirs.
     files = {Path(name).name.lower() for name in _FILE_IN_TEXT.findall(text)}
     return {t.id for t in tasks if files and any(
-        name in " ".join([t.title, t.action, *(c.expect for c in t.dod)]).lower()
+        name in " ".join([t.title, t.as_told(), *(c.expect for c in t.dod)]).lower()
         for name in files)}
 
 

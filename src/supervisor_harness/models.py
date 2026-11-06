@@ -820,6 +820,13 @@ class ExecutionTask:
     # What the coordinator told the task for its coming attempt, said in its
     # follow-up (`core/coordinator.py`); replaced at each send-back.
     follow_up_note: str = ""
+    # What the run said to the task after it was planned -- checkpoint
+    # corrections, follow-ups, the coordinator's messages, checks moved here --
+    # for whoever does it (`as_told`). Not what the task was to do: a verifier
+    # judges the planned action. Run 24's coordinator, reading the code, wrote
+    # "the product implements R30-R32 to spec" into a task's action, and the
+    # verifier read it there as what was supposed to happen.
+    told: list[str] = field(default_factory=list)
     status: TaskStatus = TaskStatus.PROPOSED
     decision: Decision | None = None
     decision_note: str = ""
@@ -827,6 +834,10 @@ class ExecutionTask:
     attempts: int = 0
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
+
+    def as_told(self) -> str:
+        """The planned action and what the run has told the task since, for whoever does it."""
+        return "\n\n".join([self.action, *self.told]).strip()
 
     @property
     def mandatory_criteria(self) -> list[DoDCriterion]:
