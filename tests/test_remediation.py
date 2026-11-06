@@ -54,8 +54,8 @@ async def test_a_failing_checkpoint_reopens_the_task_with_its_corrections(
 
     task = next(iter(state.tasks.values()))
     assert task.attempts >= 2, "the task should have been tried again"
-    assert "Checkpoint corrections" in task.action
-    assert "Apply the limiter to the login route" in task.action
+    assert "Checkpoint corrections" in task.as_told()
+    assert "Apply the limiter to the login route" in task.as_told()
 
 
 async def test_a_remediated_task_gets_a_verifier_of_its_own(
@@ -222,17 +222,17 @@ async def test_each_reopened_task_is_briefed_with_its_own_corrections(
     audit = next(t for t in state.tasks.values() if "audit log" in t.title)
     assert limiter.attempts >= 2 and audit.attempts >= 2, "both tasks should be reopened"
 
-    assert LIMITER_CORRECTION in limiter.action
-    assert AUDIT_CORRECTION not in limiter.action, (
+    assert LIMITER_CORRECTION in limiter.as_told()
+    assert AUDIT_CORRECTION not in limiter.as_told(), (
         "the limiter was briefed with the audit log's correction"
     )
-    assert AUDIT_CORRECTION in audit.action
-    assert LIMITER_CORRECTION not in audit.action, (
+    assert AUDIT_CORRECTION in audit.as_told()
+    assert LIMITER_CORRECTION not in audit.as_told(), (
         "the audit log was briefed with the limiter's correction"
     )
     # A correction that names no task is everyone's.
-    assert "state the file you changed" in limiter.action
-    assert "state the file you changed" in audit.action
+    assert "state the file you changed" in limiter.as_told()
+    assert "state the file you changed" in audit.as_told()
 
 
 async def test_a_criterion_the_harness_failed_is_checked_again_on_the_next_attempt(

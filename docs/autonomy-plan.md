@@ -1749,6 +1749,45 @@ a test check less"; the coordinator did not count this as less.
     R10-R34 in one criterion. So on main `saw-nothing` is a case the coordinator
     still loses: told the tests saw nothing, it offers the spy as a way to see.
 
+### After run 24, again: the verifier was told the verdict
+
+*Written 2026-11-06.* The run's faithfulness review passed the spy tests; judged
+on R30 and R32 alone, the same review fails them. The suspect was breadth: the
+run's criterion covered R10-R34 at once. Replayed, that criterion as it was --
+one, over all 25 -- fails on main, three of three, under a neutral action. It is
+not the breadth.
+
+It is what the verifier read. The run judged that criterion on the final gate,
+and the gate's action carried the coordinator's message: "the product
+implements R30-R32 to spec ... Rewrite using the ... `Element.prototype.animate`
+spy". Under that action the same criterion passes, three of three, one replay
+calling the spy tests "now fixed". The harness appended every routing message
+to the task's `action` -- checkpoint corrections, follow-ups, the coordinator's
+send-backs and moved checks -- and the verifier's brief shows the action as
+"What was supposed to happen". The coordinator's misreading reached the check
+meant to catch it as part of the task.
+
+Turnstone keeps judges apart from the case argued to them. So does this now.
+
+26. **What the run says to a task is not what the task was.** Routing messages
+    go to `ExecutionTask.told`, not `action`. The implementer reads both
+    (`as_told`): its brief, its follow-up and the drift judge's objectives are
+    as before. The verifier judges the planned action, the definition of done
+    and the requirements; it does not see what the run told the task. The
+    owner's answer to an escalation stays in the action -- only the owner
+    changes what a task is. Two verifier cases replay it:
+    `ms-run24-motion-tests-judged-together`, the run's criterion under a
+    neutral action, and `ms-run24-motion-tests-judged-as-told`, under the
+    gate's planned action with the rest in `told`.
+
+    Measured, three runs a case on `qwen3.8-code`: under the gate's action as
+    main wrote it, the criterion passed three of three; with the run's messages
+    in `told`, it fails three of three, as under a neutral action (two of three
+    there, the third gave no verdict). What it fails on is R11's `wrong-flag`
+    and R14's stopping timer, not the spy -- one replay still calls the R30 test
+    strong. This keeps the coordinator's verdict out of the review; it does not
+    make the review see that a spy records the call.
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed

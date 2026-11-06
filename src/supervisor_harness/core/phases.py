@@ -808,7 +808,7 @@ def build_execution_agent(
         kind=AgentKind.EXECUTION,
         title=f"{role.title}: {task.title}",
         brief=role.charter,
-        objectives=[task.action, *[c.statement for c in task.mandatory_criteria]],
+        objectives=[task.as_told(), *[c.statement for c in task.mandatory_criteria]],
         scope=Scope(
             paths=list(task.scope.paths),
             forbidden_paths=list(task.scope.forbidden_paths),

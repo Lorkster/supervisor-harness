@@ -174,7 +174,7 @@ async def test_without_the_conversation_the_brief_carries_the_follow_up(
 
     assert await supervisor._follow_up(session) == 1
     assert task.status is TaskStatus.APPROVED
-    assert "Follow-up from attempt 1, which did not pass:\n- the e2e suite passes" in task.action
+    assert "Follow-up from attempt 1, which did not pass:\n- the e2e suite passes" in task.as_told()
     assert task.dod[0].status is CriterionStatus.UNVERIFIED, "reopened for the new attempt"
 
     task.status, task.attempts = TaskStatus.FAILED, supervisor.config.policy.max_task_attempts
