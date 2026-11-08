@@ -21,7 +21,12 @@ docstring for the three cases it settles and the two it refuses.
 from __future__ import annotations
 
 import fnmatch
+import os
+import posixpath
 import re
+import sys
+from collections.abc import Collection, Iterator
+from pathlib import Path
 
 # Suffixes that mean "and everything beneath this directory".
 _DIR_SUFFIXES = ("/**/*", "/**", "/*", "/")
@@ -378,3 +383,66 @@ def _clean(patterns: list[str]) -> list[str]:
         if pat and pat not in out:
             out.append(pat)
     return out
+
+
+# --------------------------------------------------------------------------
+# Walking a tree without leaving it
+# --------------------------------------------------------------------------
+
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: a symlink or a junction
+
+
+def collapse(relative: str) -> str | None:
+    """``relative`` with its ``.`` and ``..`` segments resolved, or ``None`` if it climbs out.
+
+    Lexical, like everything here. ``src/../../x`` and ``src/../docs/x`` pass a
+    prefix test for ``src/`` as spelled, and land somewhere else; the comparison
+    has to be made on where a path lands.
+    """
+    path = posixpath.normpath(relative.replace("\\", "/"))
+    if path == ".." or path.startswith("../"):
+        return None
+    return path
+
+
+def _is_link(entry: os.DirEntry[str]) -> bool:
+    """A symlink, or on Windows a junction: neither is followed."""
+    if entry.is_symlink():
+        return True
+    return (sys.platform == "win32"
+            and bool(entry.stat(follow_symlinks=False).st_file_attributes & _REPARSE_POINT))
+
+
+def _entries(directory: str | Path) -> list[os.DirEntry[str]]:
+    try:
+        with os.scandir(directory) as scan:
+            return sorted(scan, key=lambda entry: entry.name)
+    except OSError:
+        return []
+
+
+def iter_files(root: Path, skip_dirs: Collection[str] = ()) -> Iterator[Path]:
+    """Every regular file under ``root``, in path order, pruning as it goes.
+
+    A directory named in ``skip_dirs`` is never entered, which is the point:
+    listing ``node_modules`` to throw it away costs seconds. A link to a file or
+    to a directory (a symlink, or a Windows junction) is skipped without being
+    followed, so nothing outside ``root`` is reached through one. Iterative, so a
+    directory nested a thousand deep is a long walk and not a crash.
+    """
+    stack = [iter(_entries(root))]
+    while stack:
+        entry = next(stack[-1], None)
+        if entry is None:
+            stack.pop()
+            continue
+        try:
+            if _is_link(entry):
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                if entry.name not in skip_dirs:
+                    stack.append(iter(_entries(entry.path)))
+            elif entry.is_file(follow_symlinks=False):
+                yield Path(entry.path)
+        except OSError:
+            continue
