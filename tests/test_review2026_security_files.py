@@ -109,7 +109,9 @@ def _fenced(arguments: dict[str, Any], tmp_path: Path, schema: dict[str, Any] | 
 @pytest.mark.parametrize("arguments", [
     {"target": "../../../Windows/win.ini"},
     {"filename": "../../x"},
-    {"options": {"path": "C:/Windows/win.ini"}},
+    # A drive path is rooted only on Windows; elsewhere it names a file inside the tree.
+    pytest.param({"options": {"path": "C:/Windows/win.ini"}},
+                 marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows path")),
     {"options": {"nested": {"anything": "/etc/passwd"}}},
     {"items": [{"name": "..\\..\\secret"}]},
     {"url": "file:///etc/passwd"},
