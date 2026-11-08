@@ -17,70 +17,117 @@ function that draws its picture, and run the tool again.
 - [Where the two backends diverge](#where-the-two-backends-diverge)
 - [The fence](#the-fence)
 
+*Last verified on 2026-11-08 against the working tree of branch
+`review/code-and-docs-2026-11` (the commit is still `8f34f4e`): the phases and
+every move between them against `Phase` and the `_transition` calls in
+[`core/supervisor.py`](../src/supervisor_harness/core/supervisor.py), the bounds
+against `Policy`, the toolbox against `available_tools`.*
+
 ---
 
 ## The phase machine
 
-Every arrow is a `PHASE_CHANGED` event on the run's log, so a run resumes at
-whatever phase it had reached, in another process or a later session.
+Every arrow is a `PHASE_CHANGED` event on the run's log, except the two into
+`complete` and `failed`, which are written by `RUN_ENDED`. Either way a run
+resumes at whatever phase it had reached, in another process or a later session.
+
+Read the rail on the left as one path with several doors: the run reaches
+`improving` from `synthesizing` (report mode, or no tasks), from
+`awaiting_approval` (nothing approved), from `checkpoint` (nothing open) or from
+`awaiting_owner` (everything answered, nothing granted). The rail on the right is
+the way back to `executing`, from `checkpoint` (remediation) and from
+`awaiting_owner` (a grant). `awaiting_owner` is entered only when an escalation
+is actually open; with none, the run goes from `checkpoint` straight to
+`improving` and the phase never appears in its log.
 
 Rendered: [`images/run-lifecycle.svg`](images/run-lifecycle.svg).
 
 ```
-  supervisor start
-        │
-        ▼
-   ┌─────────┐
-   │ created │
-   └────┬────┘
-        ▼
-   ┌───────────┐   analysis lenses, in parallel. After every turn: score the
-   │ analyzing │   drift, issue a directive, route the messages. A lens that
-   └────┬──────┘   goes silent is abandoned; the phase settles without it.
-        ▼
-  ┌──────────────┐
-  │ synthesizing │────────────────────────────┐  report mode, or no tasks
-  └──────┬───────┘                            │  proposed at all
-         │ execute mode, tasks proposed       │
-         ▼                                    │
-  ┌───────────────────┐                       │
-  │ awaiting_approval │───▶ envelope stale?   │
-  └─────────┬─────────┘     wait here for     │
-            │               --renew-envelope  │
-            │ you approve (per task) -- or,   │
-            │ under an envelope grant, the    │
-            │ harness's gate does, and parks  │
-            │ what it refuses for the owner   │
-            ▼                                 │
-      ┌───────────┐                           │
-      │ executing │◀────────────────┐         │
-      └─────┬─────┘                 │         │
-            ▼                       │         │
-      ┌───────────┐                 │ remediation: the tasks that fell
-      │ verifying │                 │ short are reopened, carrying the
-      └─────┬─────┘                 │ checkpoint's corrections into
-            ▼                       │ their action
-      ┌────────────┐   not passed   │
-      │ checkpoint │────────────────┘
-      └─────┬──────┘
-            │ passed — or the remediation budget is spent, or nothing
-            │ actionable came back
-            ▼
-      ┌────────────────┐   an escalation is open: an execution agent
-      │ awaiting_owner │   said it could not go on, its task is parked,
-      └───────┬────────┘   and the run waits for supervisor_resolve.
-            │              A grant sends the task back to executing;
-            │              with none open, the run goes on below
-            ▼                                 │
-      ┌───────────┐◀──────────────────────────┘
-      │ improving │   lessons, the final report, the reconciliation
-      └─────┬─────┘
-            ▼
-      ┌──────────┐          ┌────────┐  an error the run cannot continue
-      │ complete │          │ failed │  past: a stage routed somewhere this
-      └──────────┘          └────────┘  backend cannot reach, a phase that
-                                        will not settle
+        supervisor start
+                │
+                ▼
+           ┌─────────┐
+           │ created │
+           └────┬────┘
+                ▼
+          ┌───────────┐  analysis lenses, in parallel; drift scored
+          │ analyzing │  after every turn. A lens that goes silent is
+          └─────┬─────┘  abandoned, and the phase settles without it
+                ▼
+         ┌──────────────┐
+         │ synthesizing │─ report mode, or no tasks proposed ───────────┐
+         └──────┬───────┘                                               │
+                │ execute mode, tasks proposed                          │
+                ▼                                                       │
+      ┌───────────────────┐                                             │
+      │ awaiting_approval │─ nothing approved ──────────────────────────┤
+      └─────────┬─────────┘                                             │
+                │ you approve (per task) -- or, under an envelope       │
+                │ grant, the harness's gate does. What it refuses       │
+                │ is parked for the owner; if it parks every task       │
+                │ the run goes to awaiting_owner, not executing         │
+                ▼                                                       │
+          ┌───────────┐                                                 │
+          │ executing │◀────────────────────────────┐                   │
+          └─────┬─────┘  stale envelope: waits here │                   │
+                ▼                                   │                   │
+          ┌───────────┐                             │                   │
+          │ verifying │                             │                   │
+          └─────┬─────┘  may return to executing    │                   │
+                ▼                                   │                   │
+          ┌────────────┐                            │                   │
+          │ checkpoint │─ not passed: remediation ──┤                   │
+          └─────┬──────┘                            │                   │
+                ├─ passed, none open ───────────────┼───────────────────┤
+                │ passed, or the budget is          │                   │
+                │ spent, or nothing actionable,     │                   │
+                │ with an escalation open           │                   │
+                ▼                                   │                   │
+        ┌────────────────┐                          │                   │
+        │ awaiting_owner │─ a grant ────────────────┘                   │
+        └───────┬────────┘  (to verifying, if a held check is next)     │
+                │ every escalation answered, nothing granted            │
+                ▼                                                       │
+          ┌───────────┐                                                 │
+          │ improving │◀────────────────────────────────────────────────┘
+          └─────┬─────┘
+                ▼
+           ┌──────────┐           ┌────────┐
+           │ complete │           │ failed │  an error the run cannot continue past,
+           └──────────┘           └────────┘  from any phase
 ```
+
+### Every move between phases
+
+The drawing shows the paths; this is the whole list, as the code emits them.
+`failed` is reachable from any phase, through `Reporting._error`, and is left
+out of the table.
+
+| From | To | When | Where |
+| --- | --- | --- | --- |
+| `created` | `analyzing` | the plan landed, or planning was abandoned and the derived lenses stand in | `_apply_plan`, `_begin_planning` |
+| `analyzing` | `synthesizing` | every lens has settled | `_continue_analysis` |
+| `synthesizing` | `awaiting_approval` | execute mode (or `auto`, recommended to execute) and tasks were proposed | `_apply_synthesis` |
+| `synthesizing` | `improving` | report mode, or no tasks proposed | `_apply_synthesis` |
+| `awaiting_approval` | `executing` | something was approved: by `supervisor_approve`, or by the envelope gate | `approve`, `_approve_within_envelope` |
+| `awaiting_approval` | `awaiting_owner` | under an envelope grant, the gate (or the veto reviewer) parked every task | `_approve_within_envelope` |
+| `awaiting_approval` | `improving` | nothing approved and nothing parked: every task rejected or deferred | `approve`, `_approve_within_envelope` |
+| `executing` | `verifying` | no task can start and none is running | `_continue_execution` |
+| `verifying` | `executing` | a task that waited on one just verified can start now | `_continue_verification` |
+| `verifying` | `checkpoint` | nothing more can start | `_continue_verification` |
+| `checkpoint` | `executing` | remediation: failed tasks under `max_task_attempts` are reopened; or a task whose dependency failed for good is released | `_apply_checkpoint`, `_leave_or_release` |
+| `checkpoint` | `awaiting_owner` | passed, or the remediation budget is spent, or nothing actionable came back -- and an escalation is open | `_leave_execution` |
+| `checkpoint` | `improving` | the same three, and none is open | `_leave_execution` |
+| `awaiting_owner` | `executing` | every escalation is answered and a granted task is runnable again | `_await_owner` |
+| `awaiting_owner` | `verifying` | answered, nothing to run, but a check held for an answered task is waiting | `_await_owner` |
+| `awaiting_owner` | `improving` | answered, nothing to run: declined tasks are deferred and reported | `_await_owner` |
+| `improving` | `complete` | lessons, the final report and the reconciliation are written | `Reporting._complete` |
+
+One thing happens in a phase without leaving it. A run resumed past
+`policy.envelope_max_age_days` stops in `executing`, before it starts a new
+execution agent, and answers `await_approval` with `needs: "envelope_renewal"`
+until `supervisor approve --renew-envelope` re-grants the date (never the
+paths). The `phase` it reports stays `executing`.
 
 ### The bounds on the loops
 
@@ -106,12 +153,17 @@ menu: send the task back to its own implementer with a message, move a check to
 the task whose work it fails on, make a task wait for another, judge a stopped
 task as it stands, ask the owner, or leave it failed. The harness refuses a pick
 it cannot carry out, with the reason, once; the coordinator can pass no check,
-drop none, and widen nothing. The checkpoint then judges the round; if it does not pass, `_remediate` reopens
-every failed task whose `attempts` are still under `max_task_attempts`, appends
-the checkpoint's own corrections to the task's action, and the run goes back to
-`executing`. That is the second attempt. The same happens after it fails again —
-until either the checkpoint passes, the task reaches three attempts, or the run
-has spent three remediation rounds. Then the run moves on and *says so*: the
+drop none, and widen nothing; a task it leaves failed is not reopened. The
+checkpoint then judges the round; if it does not pass, `_remediate` reopens
+every other failed task whose `attempts` are still under `max_task_attempts`,
+adds the checkpoint's own corrections to what the task is told (`told`, which the
+implementer reads and the verifier does not: the verifier judges the planned
+`action`, so what the run said to a task cannot become part of what is checked),
+and the run goes back to `executing`. That is the second attempt. The same
+happens after it fails again — until either the checkpoint passes, the task
+reaches three attempts, or the run has spent three remediation rounds (the
+defaults of `max_task_attempts` and `max_checkpoint_iterations`). Then the run
+moves on and *says so*: the
 task is `failed` in the report, its unmet criteria are listed, and the
 reconciliation names the finding it was meant to close as still open. Nothing
 is quietly dropped, and nothing is called done.
@@ -150,19 +202,24 @@ Rendered: [`images/event-log.svg`](images/event-log.svg).
 │ a cache      │  │ a projection     │  criterion, finding, message, event
 │ + last_seq   │  │                  │
 └──────────────┘  └──────────────────┘
- read only when    rebuilt by `supervisor reindex`; a failure to write it
- last_seq >= the   is noted on the log and the run carries on
- log's own tail
+ written every 100  rebuilt by `supervisor reindex`; a failure to write it
+ events and at     is noted on the log and the run carries on
+ phase edges; a
+ read folds the
+ tail on top
 ```
 
 | File | Lost or damaged means | Recovered by |
 | --- | --- | --- |
 | `events.jsonl` | the run is gone; this is the record | nothing — which is why it is append-only, locked and fsynced |
-| a line inside it | that event is gone; the rest still replays | counted in `damaged_lines` and reported by `status`, never skipped in silence |
-| `state.json` | one fold's worth of time | rebuilt from the log on the next read |
-| `index.sqlite3` | cross-run queries until it is rebuilt | `supervisor reindex`, which also prunes rows for runs that no longer exist |
+| a line inside it | that event is gone; the rest still replays | counted in `damaged_lines` and reported by `status`, never skipped in silence. A multibyte character torn by a crashed write is counted too, and does not take the rest of the log with it |
+| `state.json` | the cost of a fold from the start | rebuilt from the log on the next read. It is written compact, at `RUN_CREATED`, every `PHASE_CHANGED`, `RUN_ENDED`, when a session closes, and otherwise every 100 events (`SNAPSHOT_EVERY`), so it can lag the log by up to about a hundred events; `load_state` and `RunStore.open` fold the events after its `last_seq` on top of it. A session that finds another writer's events in the log refolds them before it snapshots, so a snapshot never claims a sequence it did not fold |
+| `index.sqlite3` | cross-run queries until it is rebuilt | `supervisor reindex`, which also prunes rows for runs that no longer exist. It is kept current incrementally: only runs whose log moved are touched, and only their new events written |
 | `runs/<id>/worktree/` | an autonomous execute-mode run's working copy, on the branch `supervisor/<id>`; removed once its changes are committed | the branch, which holds the commit; if the commit failed, the worktree is kept and the run's notes say why |
-| `lessons.jsonl` | what earlier runs taught | nothing; it is the one store not derived from a single run's log |
+| `progress.ndjson` | the line `tail -f` follows while a run is going; a failure to write it is isolated | not recovered; `events.jsonl` has every event |
+| `packets/`, `contracts/`, `results/` | the briefs, answer schemas and answers a host was handed and wrote, by path. Only events are redacted: these files are not | the briefs are on the log (`BRIEF_RENDERED`); an answer reported is on the log as a turn |
+| `artifacts/` | `report.md`, `reconciliation.md` and what an agent produced | the two reports are rewritten from state when the run ends |
+| `lessons.jsonl` | what earlier runs taught | nothing; it is the one store not derived from a single run's log. Read by splitting on newlines only (a lesson holding U+2028 is one line), and rewritten through a unique temporary file, fsynced and renamed. Confidence decays by one flat step (`lesson_decay_per_run`) for each run that passes unconfirmed once the grace period is over |
 
 **So: what is written where, and what survives a crash?** Everything a run
 decided is in `events.jsonl` before it is anywhere else, written under an
@@ -170,8 +227,11 @@ advisory lock and fsynced, one batch per turn. A crash costs whatever had not
 been emitted yet — never something that had. The snapshot beside it is a cache
 that records the sequence number it was folded up to, so a snapshot written by
 a process that died mid-run is *behind* rather than wrong, and the next read
-notices and refolds. The SQLite index is a convenience for asking questions
-across runs; losing it costs the answers until `reindex`, not the run.
+notices and folds the events after it. The SQLite index is a convenience for asking questions
+across runs; losing it costs the answers until `reindex`, not the run. Every id
+the harness mints is time-ordered and, within one process,
+strictly increasing, so a directory listing and a sort by id are both
+chronological.
 
 ---
 
@@ -212,7 +272,7 @@ Three differences follow from the backend rather than being oversights:
 
 | | Host-delegated | Autonomous |
 | --- | --- | --- |
-| Tools | the host's, under your permission model | `list_files`, `read_file`, `search`; `edit_file`, `write_file` and `delete_file` for execution agents; `run_command` only if `policy.allow_command_execution` |
+| Tools | the host's, under your permission model | `list_files`, `read_file`, `search`; `edit_file`, `write_file` and `delete_file` for execution agents; `run_command` only if `policy.allow_command_execution`. In the conversation loops an agent also gets `report` (an implementer) or `verdict` (a verifier), `message`, and `find_tool` / `use_tool` for the owner's tool servers |
 | A second opinion on drift | skipped when the `drift` stage is itself routed to `host` — there is no model call to make | made whenever the heuristics fire |
 | An agent that goes silent | abandoned after `max_unreported_dispatches` packets: silence is all there is to go on | cannot happen — it answers, raises, or runs out of turns |
 
@@ -270,6 +330,15 @@ approval, and reported by `supervisor status`.
 The command fence is universal — every agent gets it, whether or not it declared
 a scope. An empty scope relaxes the per-path check alone, and relaxes it to the
 workspace rather than to the machine.
+
+Two lists inside a scope narrow what it reaches without being a ceiling of their
+own. `forbidden_paths` (from the envelope's `scope_envelope_forbidden` and from a
+plan's "do not modify" documents) bars writes, and constrains only an agent that
+can write: a lens reading such a document is not breaking anything.
+`unread_paths` is what an agent's read tools will not show it, set for a task
+that tests another task's work so that its tests come from the request's words
+and from running the result, not from the code. It is not a security boundary:
+the tests that tester writes run that code.
 
 ---
 

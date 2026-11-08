@@ -35,6 +35,11 @@ declines something it does, this document says so.
 All four dimensions are implemented. What follows is what each one means, how
 the harness does it, where the code is, and what it deliberately does not do.
 
+*Last verified on 2026-11-08 against the working tree of branch
+`review/code-and-docs-2026-11` (the commit is still `8f34f4e`). The line citations
+are checked by `tools/check_doc_refs.py` in CI; the prose around them is checked
+by reading the code it names, which is what this line records.*
+
 The shape of the claim, before the detail — what sits outside the model's
 reasoning, and what the model is left to do:
 
@@ -72,7 +77,7 @@ reasoning, and what the model is left to do:
                     verdict that only evidence can move
 ```
 
-The four bounds drawn against the code that applies them, rather than against
+The same bounds drawn against the code that applies them, rather than against
 the reasoning they govern, are in [`architecture.md`](architecture.md).
 
 ---
@@ -88,28 +93,33 @@ consults the model about whether it should apply.
 
 **The execution fence.** Writes and commands are checked against the agent's
 scope, and under that scope sits a floor nothing can lower: `VCS_DIRS` and
-`STORE_DIRS` in [core/tools.py:127](../src/supervisor_harness/core/tools.py:127)
+`STORE_DIRS` in [core/tools.py:133](../src/supervisor_harness/core/tools.py:133)
 keep every agent out of `.git` and out of the harness's own run store, whatever
-its scope says. The command fence is **universal** — every agent gets it, not
+its scope says. The floor is compared case-insensitively, without trailing dots
+and spaces, and after `..` is collapsed, so `.GIT` and `src/../.git` are the same
+refusal as `.git`. The command fence is **universal** — every agent gets it, not
 only those with a declared scope. An empty scope relaxes the per-path check
 alone, and relaxes it to the workspace rather than to the machine.
 
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:417](../src/supervisor_harness/config.py:417)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:467](../src/supervisor_harness/config.py:467))
-are the list of what it may not set: command execution, provider `base_url`, API
-keys, the AWS `region` and `profile` a Bedrock route would use, the store
-location. The principle is the same one in a different costume —
-a repository may tune how much work the harness does, not how sceptical it is
-about work done on it.
+([config.py:424](../src/supervisor_harness/config.py:424)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:493](../src/supervisor_harness/config.py:493))
+are the list of what it may not set: command execution, the quality bars and
+drift thresholds, how tasks are approved, `backend`, what a run may spend
+(parallelism, turn counts, attempt bounds, the grant's expiry), provider
+`base_url`, API keys, `params` and `default_model`, the AWS `region` and `profile`
+a Bedrock route would use, the store location. The scope envelope is the one run
+limit it may set, and only to narrow (`_narrow_scope`). The principle is the same
+one in a different costume — a repository may choose how the harness routes its
+work, not how sceptical it is about work done on it, and not what it costs you.
 
 **The definition-of-done bars.** Criteria that cannot fail are rejected at
 proposal time, not at verification time. Policy inserts test, security and
 code-quality bars where a task admits them, and `verify_command`
-([core/dod.py:1566](../src/supervisor_harness/core/dod.py:1566)) holds a runner to
-an allow-list. A criterion marked passed with no evidence is recorded as
+([core/dod.py:1745](../src/supervisor_harness/core/dod.py:1745)) holds a runner to
+an allow-list: it runs nothing that `unsafe_command` does not clear. A criterion marked passed with no evidence is recorded as
 **failed** — the one place where the harness overrules a model's own report of
 its work.
 
@@ -118,6 +128,21 @@ A behaviour change's tests also have to fail without it. `verify_fails_before`
 runs them in a worktree at the baseline commit and then in the working tree,
 and compares them test by test. The verdict is the harness's own, so a verifier
 agent can neither overturn it nor take the credit for it by agreeing.
+
+**Model judgements that can only tighten.** Some judgements are better made by a
+model than by a rule, and the harness lets a model make them on one condition:
+the answer may refuse or add a check, and can never approve what a deterministic
+rule refused. The veto-only reviewer
+([core/review.py](../src/supervisor_harness/core/review.py)) reads each task the
+envelope gate passed and may stop it; the goal's expectations
+(a page one names is rendered by
+[core/observe.py](../src/supervisor_harness/core/observe.py) and shown to the
+verifier) become mandatory criteria and can fail a task, never pass one; the coordinator ([core/coordinator.py](../src/supervisor_harness/core/coordinator.py))
+chooses what happens after a report from a fixed menu, each pick checked by the
+harness, and can pass no check, drop none, overrule no mechanical result and
+widen nothing. A model that only *picks* among actions the plain rules already
+allow does not set the terms it is judged on. Each consultation and each refused
+pick is on the log (`COORDINATED`), so it can be reconstructed like any directive.
 
 **What this deliberately does not do.** It does not sandbox. The autonomous
 toolset confines reads to the workspace and writes to the agent's scope, but
@@ -155,7 +180,7 @@ authority is handed on — when synthesis creates a task (`attenuate` at
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:3719](../src/supervisor_harness/core/supervisor.py:3719)). It
+[supervisor.py:3887](../src/supervisor_harness/core/supervisor.py:3887)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -164,7 +189,7 @@ re-asked rather than silently honoured (`stale_reason`,
 [envelope.py:219](../src/supervisor_harness/core/envelope.py:219)). Renewal
 renews the *date*, never the paths.
 
-**Two decisions worth not re-deriving:**
+**Three decisions worth not re-deriving:**
 
 - **Approval may not widen the envelope.** A `scope_paths` edit at approval time
   is clamped like any other scope, and the clamp is recorded. A per-task
@@ -198,7 +223,8 @@ it.*
 After every turn the harness issues a directive back to the agent — one of the
 nine kinds in `DirectiveKind`
 ([models.py:120](../src/supervisor_harness/models.py:120)): continue, refocus,
-narrow, deepen, answer, escalate, accept, reject, stop. The choice is driven by
+narrow, deepen, answer, escalate, accept, reject, stop (`reject` is declared and
+treated as a continuation, but no code path issues it today). The choice is driven by
 deterministic drift heuristics and, only when those fire, a second model
 opinion. A directive whose reasoning cannot be recovered is indistinguishable
 from an arbitrary one.
@@ -244,7 +270,7 @@ because the contradiction only surfaces in the work.
 **A `Fact`** ([models.py:317](../src/supervisor_harness/models.py:317)) is
 something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
-`FACT_ESTABLISHED` ([events.py:53](../src/supervisor_harness/store/events.py:53)),
+`FACT_ESTABLISHED` ([events.py:56](../src/supervisor_harness/store/events.py:56)),
 and facts reach later agents' briefs through `render_context`
 ([core/blackboard.py:104](../src/supervisor_harness/core/blackboard.py:104)).
 
@@ -315,7 +341,7 @@ have opposite failure rules.
 | --- | --- | --- |
 | may refuse or change the outcome | yes — that is what it is for | never |
 | what an error inside it means | refuse: fail closed | isolate: the run continues |
-| examples | `core/tools.py`, `core/dod.py`, `core/envelope.py`, `core/facts.py`, the config trust boundary, the store's containment, the drift model's second opinion (it decides a directive; if it fails, the stricter heuristic assessment stands) | `store/progress.py`, the SQLite index, `core/timing.py`, `core/journal.py`, `core/trajectory.py`, `core/audit.py`, `assists`, lesson consolidation |
+| examples | `core/tools.py`, `core/dod.py`, `core/fails_before.py`, `core/envelope.py`, `core/facts.py`, `core/autonomy.py`, the config trust boundary, the store's containment, the drift model's second opinion (it decides a directive; if it fails, the stricter heuristic assessment stands) | `store/progress.py`, the SQLite index, `core/timing.py`, `core/journal.py`, `core/trajectory.py`, `core/audit.py`, `assists`, lesson consolidation |
 
 The rule is borrowed from NOOA's middleware documentation, which draws the same
 line for the same reason: interception is control flow, so its exceptions
@@ -375,10 +401,11 @@ things you take the agent's word for.
 | | |
 | --- | --- |
 | [`../README.md`](../README.md) | What the harness does, and how to run it |
-| [`architecture.md`](architecture.md) | The same four bounds **drawn**: the phase machine, the durability story, the two backends, and the fence |
+| [`architecture.md`](architecture.md) | The same bounds **drawn**: the phase machine, the durability story, the two backends, and the fence |
 | [`protocol.md`](protocol.md) | The wire protocol between harness and host |
 | [`history/shared-context-spec.md`](history/shared-context-spec.md) | The design pass behind dimension 4, and how its open choices were settled |
 | [`history/`](history/) | The **records**: the self-review that found the defects, and the plan that closed them. Closed, and kept for the reasoning rather than the conclusions |
+| [`autonomy-plan.md`](autonomy-plan.md) | The live plan that built the escalation, envelope-approval, reviewer and coordinator machinery described above, with what each batch measured |
 
 [`history/self-review.md`](history/self-review.md) is where this framing was
 first written down, in the middle of a document about closing 37 findings. That section is kept as the

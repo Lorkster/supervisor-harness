@@ -263,8 +263,8 @@ def run_lifecycle(sheet: Sheet) -> None:
         sheet.box(cols[c], rows[r], bw, bh, name, sub, kind, dashed=dashed)
 
     sheet.heading("SUPERVISOR-HARNESS", "The lifecycle of a run",
-                  "Every arrow is a PHASE_CHANGED event on the run's log, so a run resumes at "
-                  "whatever phase it reached.")
+                  "Every arrow is a PHASE_CHANGED event on the run's log (complete and failed "
+                  "come from RUN_ENDED), so a run resumes at whatever phase it reached.")
     sheet.pill(cx(0) - 60, 128, 120, "your task")
     sheet.wire([(cx(0), 158), (cx(0), rows[0])], "down")
 
@@ -275,8 +275,8 @@ def run_lifecycle(sheet: Sheet) -> None:
     for c in range(3):
         sheet.wire([(cols[c] + bw, cy(0)), (cols[c + 1], cy(0))], "right")
     sheet.wire([(cx(3), rows[0] + bh), (cx(3), rows[1])], "down")
-    sheet.note("approved by you,", cx(3) - 214, 304, width=200, align="right")
-    sheet.note("or under an envelope grant", cx(3) - 214, 320, width=200, align="right")
+    for i, line in enumerate(("approved by you,", "or under an", "envelope grant")):
+        sheet.note(line, cx(3) + 14, 322 + 16 * i)
 
     box(3, 1, "executing", "agents work inside their scope", "agent")
     box(2, 1, "verifying", "definition of done, with evidence", "agent")
@@ -284,7 +284,9 @@ def run_lifecycle(sheet: Sheet) -> None:
     box(0, 1, "awaiting_owner", "an open escalation waits for you", "human")
     for c in (3, 2, 1):
         sheet.wire([(cols[c], cy(1)), (cols[c - 1] + bw, cy(1))], "left")
-    sheet.note("passed", cols[0] + bw + 18, cy(1) - 22)
+    # The gap between the two boxes is 80 wide, so the label is three short lines.
+    for i, line in enumerate(("passed,", "escalation", "open")):
+        sheet.note(line, cols[0] + bw + 2, cy(1) - 50 + 14 * i, width=76, align="center")
 
     loop_y = rows[1] + bh + 44
     sheet.wire([(cx(1), rows[1] + bh), (cx(1), loop_y), (cx(3), loop_y), (cx(3), rows[1] + bh)],
@@ -296,7 +298,19 @@ def run_lifecycle(sheet: Sheet) -> None:
     box(1, 2, "complete", "verified report delivered", "done")
     box(3, 2, "failed", "unrecoverable, from any phase", "failed", dashed=True)
     sheet.wire([(cx(0), rows[1] + bh), (cx(0), rows[2])], "down")
-    sheet.note("resolved, or none open", cx(0) + 12, rows[1] + bh + 66)
+    sheet.note("answered,", 64, rows[1] + bh + 66, width=cx(0) - 12 - 64, align="right")
+    sheet.note("nothing granted", 64, rows[1] + bh + 82, width=cx(0) - 12 - 64, align="right")
+    # A checkpoint that passes with no escalation open skips awaiting_owner altogether.
+    skip_y, skip_x = rows[1] + bh + 30, cx(0) + 70
+    sheet.wire([(cx(1) - 40, rows[1] + bh), (cx(1) - 40, skip_y), (skip_x, skip_y),
+                (skip_x, rows[2])], "down")
+    sheet.note("passed, none open", skip_x + 12, rows[1] + bh + 82)
+    # A grant sends the task back to executing, over the top of the row.
+    back_y = rows[1] - 34
+    sheet.wire([(cx(0), rows[1]), (cx(0), back_y), (cx(3) - 60, back_y), (cx(3) - 60, rows[1])],
+               "down", color=INDIGO)
+    sheet.note("a grant (or to verifying, if a held check is waiting)", cols[1], back_y - 24,
+               color=INDIGO, width=cols[3] - cols[1] - 100, align="center")
     sheet.wire([(cols[0] + bw, cy(2)), (cols[1], cy(2))], "right")
     sheet.wire([(cols[1] + bw, cy(2)), (cols[2] + 14, cy(2))], "right")
     sheet.pill(cols[2] + 14, cy(2) - 15, 196, "report + verified DoD", fill="#10B981")
@@ -305,10 +319,15 @@ def run_lifecycle(sheet: Sheet) -> None:
     sheet.wire([(cx(2), rows[0] + bh), (cx(2), bypass), (52, bypass), (52, cy(2)),
                 (cols[0], cy(2))], "right", color=FAINT, dash=[6, 5])
     sheet.note("report mode, or no tasks proposed", 64, bypass - 18)
+    # awaiting_approval with nothing approved joins the same rail, corner to corner.
+    sheet.wire([(cx(3) - 70, rows[0] + bh), (cx(3) - 70, bypass), (cx(2), bypass)], "left",
+               color=FAINT, dash=[6, 5], arrow=False)
+    sheet.note("nothing approved", cx(2) + 24, bypass - 18, width=cx(3) - 70 - 24 - cx(2) - 12,
+               align="right")
 
     sheet.legend(700, [("agent", "agents at work, drift-supervised", "box"),
                        ("human", "waits for you", "box"), ("core", "harness bookkeeping", "box"),
-                       ("done", "finish line", "box"), ("core", "report-only path", "line")],
+                       ("done", "finish line", "box"), ("core", "nothing to run", "line")],
                  "docs/architecture.md")
 
 
@@ -343,9 +362,9 @@ def event_log(sheet: Sheet) -> None:
     sheet.wire([(col, fork), (right, fork), (right, 572)], "down")
 
     sheet.box(left - 125, 572, 250, 76, "state.json", "a cache, + last_seq", "core", dashed=True)
-    sheet.note("read only when last_seq reaches the log's", left - 125, 668, width=250,
+    sheet.note("may lag the log by a few events: a read", left - 125, 668, width=250,
                align="center")
-    sheet.note("own tail; otherwise refolded from it", left - 125, 684, width=250, align="center")
+    sheet.note("folds the tail on top of it", left - 125, 684, width=250, align="center")
 
     sheet.box(right - 125, 572, 250, 76, "index.sqlite3", "a projection", "core", dashed=True)
     sheet.note("one row per run, agent, task, criterion,", right - 125, 668, width=250,
@@ -355,7 +374,7 @@ def event_log(sheet: Sheet) -> None:
     sheet.text("A crash costs what had not been emitted yet,", 900, 572, 14, INK, style="SemiBold")
     sheet.text("never something that had.", 900, 592, 14, INK, style="SemiBold")
     sheet.note("A snapshot from a process that died mid-run is", 900, 620)
-    sheet.note("behind, not wrong: the next read refolds. Losing", 900, 638)
+    sheet.note("behind, not wrong: the next read folds the tail. Losing", 900, 638)
     sheet.note("the index costs the answers until supervisor", 900, 656)
     sheet.note("reindex is run, not the run itself.", 900, 674)
 
@@ -450,9 +469,11 @@ def fence(sheet: Sheet) -> None:
 DIAGRAMS: dict[str, tuple[Callable[[Sheet], None], int, int, str, str]] = {
     "run-lifecycle": (run_lifecycle, 1280, 770, "The lifecycle of a supervisor-harness run",
                       "created, analyzing, synthesizing, awaiting_approval, executing, "
-                      "verifying, checkpoint (not passed: back to executing), awaiting_owner "
-                      "while an escalation is open, improving, complete; report mode goes from "
-                      "synthesizing to improving; failed is reachable from any phase."),
+                      "verifying, checkpoint (not passed: back to executing; passed: to improving, "
+                      "or to awaiting_owner while an escalation is open, which returns to "
+                      "executing on a grant), improving, complete; report mode and an "
+                      "approval with nothing approved go straight to improving; failed is "
+                      "reachable from any phase."),
     "event-log": (event_log, 1280, 830, "What a supervisor-harness run writes where",
                   "Every event is appended to runs/<id>/events.jsonl under a lock and fsynced; "
                   "RunState is folded from it, and state.json and index.sqlite3 are derived "

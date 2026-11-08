@@ -24,4 +24,4 @@ For what is true now:
 | [`../reasoning-control-plane.md`](../reasoning-control-plane.md) | What the harness is |
 | [`../architecture.md`](../architecture.md) | How a run works, drawn |
 | [`../quality-standard.md`](../quality-standard.md) | The standard it is held to, and the gates that enforce it |
-| [`../development-plan.md`](../development-plan.md) | The work that is scheduled |
+| [`../development-plan.md`](../development-plan.md) | The batches, their status, and what is still open |
