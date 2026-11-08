@@ -4,6 +4,7 @@ Layering, later wins::
 
     built-in defaults
     ~/.supervisor/config.json          user-wide
+    $SUPERVISOR_HOME/config.json       when SUPERVISOR_HOME is set
     <workspace>/.supervisor/config.json
     <workspace>/supervisor.config.json  checked into the project
     environment overrides
@@ -83,7 +84,10 @@ class Policy:
     execution_max_turns: int = 10
 
     # Drift control
-    drift_check_every: int = 1          # assess after every N turns
+    # Heuristics assess every turn. This sets the cadence of the *model*
+    # spot-check that catches quiet drift: one on every 3 x N-th turn. 0 turns
+    # the spot-check off.
+    drift_check_every: int = 1
     drift_threshold: float = 0.45       # score above which a correction is issued
     drift_hard_threshold: float = 0.8   # score above which the agent is stopped
     model_drift_check: bool = True      # escalate to a model when heuristics fire
@@ -209,11 +213,12 @@ class Policy:
 
     # The run's scope envelope: the ceiling on every agent scope in the run.
     # Empty means the whole workspace, which is what an empty scope already
-    # means to the toolbox and to the floor beneath it. This is deliberately
-    # not in PROTECTED_SETTINGS: the default is already the widest an envelope
-    # can be, so a workspace file can only ever narrow it, and a workspace
-    # narrowing what the harness may touch in it is the direction batch 7's
-    # rule allows. A plan may narrow this further; nothing may widen it.
+    # means to the toolbox and to the floor beneath it. Not in
+    # PROTECTED_SETTINGS, but a workspace file is merged *narrowing only*
+    # (`_narrow_scope`): it cannot replace the owner's envelope with a wider
+    # one, nor empty their forbidden list -- lists are replaced by a plain
+    # merge, which is how an empty list once widened it. A plan may narrow this
+    # further; nothing may widen it.
     scope_envelope: list[str] = field(default_factory=list)
     scope_envelope_forbidden: list[str] = field(default_factory=list)
     # How long a grant stands before a resume has to ask again. Resuming a run
@@ -222,10 +227,8 @@ class Policy:
     # approve before anything touches your code", applied to consent that has
     # gone stale rather than to consent that was never given. 0 disables it.
     #
-    # Not a PROTECTED_SETTING for the same reason `scope_envelope` is not: a
-    # workspace can shorten the life of a grant over itself, and lengthening it
-    # past the default is the direction that would need protecting -- which the
-    # user's own config, being trusted, is where it belongs.
+    # Protected: 0 turns the expiry off and a large number is as good, so a
+    # workspace able to set it could keep its own grant alive for ever.
     envelope_max_age_days: int = 7
 
     # Analysis
@@ -263,7 +266,7 @@ class Policy:
     # the next time the file is rewritten, and one lesson cannot accumulate
     # unbounded occurrences and dominate the ranking of every later brief.
     lesson_max_age_days: int = 180
-    lesson_max_occurrences: int = 20
+    lesson_max_occurrences: int = 20      # `Supervisor._record_lesson` passes it to the store
 
 
 # Only "default" is set. Every other stage resolves through the fallback chain
@@ -276,7 +279,7 @@ DEFAULT_ROUTING: dict[str, str] = {"default": "host"}
 # and in the generated example config.
 KNOWN_STAGES: tuple[str, ...] = (
     "default", "supervisor", "planning", "analysis", "synthesis",
-    "execution", "verification", "drift", "improvement", "review",
+    "execution", "verification", "drift", "improvement", "review", "coordination",
 )
 
 
@@ -406,11 +409,15 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
 # on and redirect a provider's base_url to an attacker's host, at which point the
 # provider still resolves the real API key from the environment and posts it there.
 
-# The line the second group draws: a workspace file may tune how much work the
-# harness does, and may not tune how sceptical it is. Budgets, parallelism and
-# turn counts are a project's own business. The bars a change is judged against,
-# and the thresholds at which an agent is corrected or stopped, are the
-# supervisor's -- and the workspace is the subject of that judgement. A
+# The line the second group draws: a workspace file may choose how the harness
+# routes its work, and may not tune how sceptical it is, how much it spends, or
+# which backend runs it. Budgets, parallelism and turn counts were once a
+# project's own business; they are the owner's now, because a repository that
+# sets `max_parallel_agents` or `execution_max_turns` spends the owner's API
+# budget, and `backend` decides whether the harness answers for itself. The bars
+# a change is judged against, and the thresholds at which an agent is corrected
+# or stopped, are the supervisor's -- and the workspace is the subject of that
+# judgement. A
 # repository that can set `require_security_review: false`, or
 # `checkpoint_threshold: 0.0`, or `drift_threshold: 1.0`, is marking its own
 # homework: it lowers the bar for work done *on it*, in a file it ships.
@@ -439,6 +446,25 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     ("policy", "approval"),
     ("policy", "veto_review"),
     ("policy", "requirements_ledger"),
+    # Whether the harness drives the run itself or hands it to a host agent.
+    ("backend",),
+    # What the run may spend, and for how long: parallelism, turn counts and
+    # attempt bounds multiply API calls, and the grant's expiry is a bound the
+    # workspace would otherwise be setting on its own consent.
+    ("policy", "max_parallel_agents"),
+    ("policy", "default_max_turns"),
+    ("policy", "execution_max_turns"),
+    ("policy", "max_checkpoint_iterations"),
+    ("policy", "max_task_attempts"),
+    ("policy", "max_coordinator_decisions"),
+    ("policy", "max_unreported_dispatches"),
+    ("policy", "max_analysis_lenses"),
+    ("policy", "max_lessons_in_brief"),
+    ("policy", "envelope_max_age_days"),
+    # How often a model is asked about drift, and whether the final gates are
+    # checked again on a clean checkout.
+    ("policy", "drift_check_every"),
+    ("policy", "clean_check"),
     # The harness runs a tool server's command, and its tools act on the owner's
     # machine: a repository able to add one would choose what runs.
     ("tool_servers",),
@@ -465,7 +491,8 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
 # naming a key, because the AWS credential chain resolves those from the
 # environment exactly as ``api_key_env`` does.
 PROTECTED_PROVIDER_KEYS: frozenset[str] = frozenset(
-    {"type", "base_url", "api_key", "api_key_env", "region", "profile", "params"}
+    {"type", "base_url", "api_key", "api_key_env", "region", "profile", "params",
+     "default_model"}
 )
 
 
@@ -570,9 +597,16 @@ def load_config(workspace: Path | str | None = None) -> HarnessConfig:
             overlay = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON in {path}: {exc}") from exc
+        except (UnicodeDecodeError, OSError) as exc:
+            # Not valid UTF-8, or not readable: this file contributes nothing,
+            # and the owner is told so rather than shown a traceback.
+            rejected.append(f"{path} (unreadable, so the whole file was ignored: {exc})")
+            continue
         if not isinstance(overlay, dict):
             continue
         if not trusted:
+            overlay, narrowed = _narrow_scope(overlay, merged)
+            rejected.extend(f"{setting} (from {path})" for setting in narrowed)
             overlay, dropped = _strip_untrusted(overlay)
             rejected.extend(f"{setting} (from {path})" for setting in dropped)
         overlay, dropped = _check_roles(overlay, trusted, set(merged.get("roles") or {}))
@@ -584,7 +618,76 @@ def load_config(workspace: Path | str | None = None) -> HarnessConfig:
     config.sources = sources
     config.rejected_settings = rejected
     _apply_env_overrides(config)
+    config.rejected_settings.extend(_clamp_policy(config.policy))
     return config
+
+
+#: Policy bounds that must be at least this, whoever set them. A zero here is
+#: not "unlimited" everywhere: `asyncio.Semaphore(0)` never admits an agent, and
+#: a zero turn budget means "unlimited" to one reader and "no turns" to another.
+_AT_LEAST: dict[str, int] = {
+    "max_parallel_agents": 1,
+    "default_max_turns": 1,
+    "execution_max_turns": 1,
+}
+
+
+def _clamp_policy(policy: Policy) -> list[str]:
+    """Raise out-of-range bounds to their minimum; say what was changed."""
+    notes: list[str] = []
+    for name, minimum in _AT_LEAST.items():
+        value = getattr(policy, name)
+        if value < minimum:
+            setattr(policy, name, minimum)
+            notes.append(f"policy.{name} = {value} (must be at least {minimum}; using {minimum})")
+    return notes
+
+
+def _narrow_scope(
+    overlay: dict[str, Any], merged: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """A workspace file's scope envelope, merged so that it can only narrow.
+
+    A plain merge replaces a list, so ``scope_envelope: []`` -- the whole
+    workspace -- or an empty ``scope_envelope_forbidden`` from a repository
+    replaced the owner's own, and widened it. The allowed paths are kept only
+    where they lie inside the envelope already in force; the forbidden paths
+    are added to the owner's, never taken from them.
+    """
+    policy = overlay.get("policy")
+    if not isinstance(policy, dict):
+        return overlay, []
+    from .core.paths import globs_within
+
+    base = (merged.get("policy") or {})
+    notes: list[str] = []
+    clean = dict(overlay)
+    policy = dict(policy)
+    clean["policy"] = policy
+
+    if "scope_envelope" in policy:
+        wanted = policy["scope_envelope"]
+        current = [str(p) for p in base.get("scope_envelope") or []]
+        if not isinstance(wanted, list):
+            policy.pop("scope_envelope")
+            notes.append("policy.scope_envelope (must be a list of paths)")
+        else:
+            kept = [str(p) for p in wanted if globs_within([str(p)], current)]
+            if len(kept) != len(wanted) or (current and not wanted):
+                notes.append("policy.scope_envelope (a workspace file may narrow the envelope, "
+                             "not widen it; entries outside yours were ignored)")
+            policy["scope_envelope"] = kept if (kept or not current) else current
+    if "scope_envelope_forbidden" in policy:
+        wanted = policy["scope_envelope_forbidden"]
+        current = [str(p) for p in base.get("scope_envelope_forbidden") or []]
+        if not isinstance(wanted, list):
+            policy.pop("scope_envelope_forbidden")
+            notes.append("policy.scope_envelope_forbidden (must be a list of paths)")
+        else:
+            policy["scope_envelope_forbidden"] = current + [
+                str(p) for p in wanted if str(p) not in current
+            ]
+    return clean, notes
 
 
 def _apply_env_overrides(config: HarnessConfig) -> None:
@@ -647,14 +750,15 @@ def write_example(path: Path, *, trusted: bool = False) -> Path:
         example["backend"] = "host"
     else:
         example["_note"] = (
-            "Workspace config. It may tune how much work the harness does -- "
-            "budgets, parallelism, turn counts, routing. It may not tune how "
-            "sceptical the harness is about work done on this repository, nor "
-            "where your credentials go, so the quality bars, the checkpoint pass "
-            "mark, the drift thresholds, providers.*.base_url / api_key / "
-            "api_key_env / type / params, policy.allow_command_execution and home "
-            "are all ignored here on purpose. Put those in "
-            "~/.supervisor/config.json instead, where you own the file."
+            "Workspace config. It may choose routing, add analysis lenses and "
+            "narrow the scope envelope. It may not tune how sceptical the harness "
+            "is about work done on this repository, what the run may spend, or "
+            "where your credentials go, so these are ignored here on purpose: "
+            + ", ".join(".".join(setting) for setting in PROTECTED_SETTINGS)
+            + ", and providers.*."
+            + " / providers.*.".join(sorted(PROTECTED_PROVIDER_KEYS))
+            + ". Put those in ~/.supervisor/config.json instead, where you own "
+            "the file."
         )
         # Everything the loader would strip is left out rather than written and
         # then ignored: a generated file that trips its own trust boundary

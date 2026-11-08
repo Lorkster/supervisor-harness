@@ -294,7 +294,8 @@ def test_deleting_a_run_mid_execution_unregisters_its_worktree(repo: Path) -> No
     assert len(git(repo, "worktree", "list").splitlines()) == 2
 
     notes: dict[str, str] = {}
-    assert store.delete_run("run_A", _git_releaser(notes, unmerged=True)) is True
+    release = _git_releaser(notes, unmerged=True, runs_dir=store.runs_dir)
+    assert store.delete_run("run_A", release) is True
 
     assert len(git(repo, "worktree", "list").splitlines()) == 1, "no stale registration"
     assert worktree.branch_for("run_A") not in _branches(repo)
@@ -347,7 +348,8 @@ def test_a_branch_the_harness_did_not_make_is_never_deleted(repo: Path) -> None:
     _held(store, repo, "run_A", "feature")
 
     notes: dict[str, str] = {}
-    assert store.delete_run("run_A", _git_releaser(notes, unmerged=True)) is True
+    release = _git_releaser(notes, unmerged=True, runs_dir=store.runs_dir)
+    assert store.delete_run("run_A", release) is True
 
     assert "feature" in _branches(repo)
     assert "run_A" not in notes

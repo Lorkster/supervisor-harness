@@ -127,6 +127,7 @@ from .dod import (
     fill_what_the_harness_can,
     project_scripts,
     quotes_the_file,
+    register_secret_env,
     verify_criterion,
     verify_inspection,
 )
@@ -257,6 +258,8 @@ class Supervisor:
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.config = config or load_config(self.workspace)
+        # A provider may name any variable as its key; a command must not inherit it.
+        register_secret_env(*(p.api_key_env for p in self.config.providers.values()))
         # Own what you made: a store passed in belongs to the caller and is not
         # ours to close, but one constructed here has no other owner and would
         # otherwise hold its index connection until the process ended.
@@ -320,7 +323,7 @@ class Supervisor:
             host=self.host.name,
         )
         session = self.store.create(state)
-        self.packets._registry_for(session, host_agents)
+        self.packets.declare_host_agents(session, host_agents)
         await session.anote(
             "run created",
             host=self.host.name,
@@ -357,14 +360,13 @@ class Supervisor:
         self, run_id: str, host_agents: list[dict[str, Any]] | None = None
     ) -> SupervisorResponse:
         session = self.store.open(run_id)
-        self.packets._registry_for(session, host_agents)
+        self.packets.declare_host_agents(session, host_agents)
         return await self._advance(session)
 
     async def resume(self, run_id: str) -> SupervisorResponse:
         """Reopen a persisted run and continue from wherever it stopped."""
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self.packets._registry_for(session, None)
         await session.anote("run resumed", phase=str(session.state.phase))
         return await self._advance(session)
 
@@ -381,7 +383,6 @@ class Supervisor:
         """
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self.packets._registry_for(session, None)
         state = session.state
 
         agent = state.agents.get(agent_id)
@@ -416,8 +417,6 @@ class Supervisor:
             session, agent, reason.strip() or "the host reported it as gone"
         )
         return await self._advance(session)
-
-
 
     # ------------------------------------------------------------------
     # Phase machine
@@ -622,8 +621,8 @@ class Supervisor:
             registry = self.packets._registry_for(session, None)
             lenses = phases.plan_lenses(state, self.config)
             self.lifecycle._spawn(
-            session, phases.build_analysis_agents(state, self.config, registry, lenses)
-        )
+                session, phases.build_analysis_agents(state, self.config, registry, lenses)
+            )
             analysts = [a for a in state.agents.values() if a.kind is AgentKind.ANALYSIS]
 
         pending = await self.lifecycle._reap_unreported(
@@ -1092,7 +1091,8 @@ class Supervisor:
             return self._await_envelope_renewal(session, stale)
 
         if not active and phases.runnable_tasks(state):
-            refused = self._open_worktree(session)
+            # Off the loop: preparing a worktree can run an install (npm ci).
+            refused = await asyncio.to_thread(self._open_worktree, session)
             if refused is not None:
                 return self.reporting._error(session, refused)
 
@@ -1105,7 +1105,7 @@ class Supervisor:
             # the run and not of the task.
             if any(t.status is TaskStatus.AWAITING_VERIFICATION
                    for t in state.tasks.values()):
-                self._verify_mechanically(session)
+                await self._verify_off_the_loop(session)
             registry = self.packets._registry_for(session, None)
             fresh: list[AgentSpec] = []
             started: list[ExecutionTask] = []
@@ -1160,7 +1160,7 @@ class Supervisor:
         state = session.state
 
         # Prove what can be proven here before asking anyone to look at it.
-        self._verify_mechanically(session)
+        await self._verify_off_the_loop(session)
 
         active = await self.lifecycle._reap_unreported(session, [
             a for a in state.agents.values()
@@ -1226,6 +1226,17 @@ class Supervisor:
             ),
             packets=packets,
         )
+
+    async def _verify_off_the_loop(self, session: RunSession) -> None:
+        """`_verify_mechanically` in a worker thread.
+
+        It runs the project's tests (up to `check_timeout_seconds` each), which
+        on the loop froze every other coroutine -- the MCP server's other calls
+        among them -- for as long as they took. Only called where nothing else
+        is running for this run (no agent is active at either call site), so the
+        thread is the only one touching its state while the loop waits.
+        """
+        await asyncio.to_thread(self._verify_mechanically, session)
 
     def _verify_mechanically(self, session: RunSession) -> None:
         """Close the criteria the harness can prove without asking anyone."""
@@ -1312,6 +1323,14 @@ class Supervisor:
         """
         state = session.state
         if not self.config.policy.clean_check:
+            return 0
+        if not self.config.policy.allow_command_execution:
+            # Installing dependencies and running the criteria's commands in a
+            # fresh checkout is command execution like any other.
+            skipped = ("the final gates were not checked on a clean checkout: "
+                       "skipped because command execution is off")
+            if not any(n.text == skipped for n in state.notes):
+                await session.anote(skipped)
             return 0
         waited_on = {d for t in state.tasks.values() for d in t.depends_on}
         due = [(task, crit) for task in state.tasks.values()
@@ -1995,12 +2014,17 @@ class Supervisor:
 
     async def _run_improvement(self, session: RunSession) -> SupervisorResponse | None:
         state = session.state
-        self._close_worktree(session)
+        await asyncio.to_thread(self._close_worktree, session)
         if not self.config.policy.learn_from_failures:
             return self._finish(session)
 
-        for lesson in phases.mechanical_lessons(state):
-            self._record_lesson(session, lesson)
+        # Once per run: a delegated improvement stage enters this method again
+        # when its agent reports, and every entry used to record them anew --
+        # one lesson reached three occurrences from one run.
+        if not any(n.text == MECHANICAL_LESSONS_NOTE for n in state.notes):
+            session.note(MECHANICAL_LESSONS_NOTE)
+            for lesson in phases.mechanical_lessons(state):
+                self._record_lesson(session, lesson)
 
         stage = "improvement"
         checkpoint = state.checkpoints[-1] if state.checkpoints else None
@@ -2042,7 +2066,8 @@ class Supervisor:
         return self._finish(session)
 
     def _record_lesson(self, session: RunSession, lesson: Any) -> None:
-        stored = self.store.add_lesson(lesson)
+        stored = self.store.add_lesson(
+            lesson, max_occurrences=self.config.policy.lesson_max_occurrences)
         session.emit(EventType.LESSON_LEARNED, {"lesson": to_jsonable(stored)})
 
     def _finish(self, session: RunSession) -> SupervisorResponse:
@@ -2091,7 +2116,6 @@ class Supervisor:
         """Record one agent turn, supervise it, and say what happens next."""
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self.packets._registry_for(session, None)
         state = session.state
 
         agent = state.agents.get(agent_id)
@@ -2163,7 +2187,7 @@ class Supervisor:
         if agent.kind is AgentKind.EXECUTION and directive.kind in (
             DirectiveKind.ACCEPT, DirectiveKind.STOP, DirectiveKind.ESCALATE
         ):
-            self._mark_task_awaiting_verification(session, agent, payload)
+            await self._mark_task_awaiting_verification(session, agent, payload)
 
         return self.supervision._after_directive(session, agent, directive)
 
@@ -2218,14 +2242,7 @@ class Supervisor:
             )
         return None
 
-
-
-
-
-
-
-
-    def _mark_task_awaiting_verification(
+    async def _mark_task_awaiting_verification(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
     ) -> None:
         state = session.state
@@ -2235,7 +2252,7 @@ class Supervisor:
         for claim in payload.get("criteria_progress") or []:
             if not isinstance(claim, dict):
                 continue
-            session.note(
+            await session.anote(
                 "implementer claim recorded (not a verification)",
                 task_id=task.id,
                 criterion_id=str(claim.get("criterion_id", "")),
@@ -2250,7 +2267,7 @@ class Supervisor:
             return
         task.status = TaskStatus.AWAITING_VERIFICATION
         task.updated_at = now_iso()
-        session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
 
     async def _report_verification(
         self, session: RunSession, agent: AgentSpec, payload: dict[str, Any]
@@ -2442,8 +2459,22 @@ class Supervisor:
         """
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self.packets._registry_for(session, None)
         state = session.state
+
+        # Approval answers one question, asked in one phase. Anywhere else a
+        # stray call used to restart a finished run, re-record its lessons, and
+        # flip a task under the agent that was working on it. The one other
+        # place it is asked is execution, where a grant gone stale holds the
+        # spawn of the next agent until it is renewed.
+        renewal_pending = (
+            renew_envelope
+            and state.phase is Phase.EXECUTING
+            and stale_reason(
+                state.envelope, state.created_at, self.config.policy.envelope_max_age_days
+            ) is not None
+        )
+        if state.phase is not Phase.AWAITING_APPROVAL and not renewal_pending:
+            return self._approval_not_applicable(session, decisions)
 
         if renew_envelope:
             # Synchronous emission: `approve` is a phase boundary with nothing
@@ -2454,10 +2485,26 @@ class Supervisor:
             )
 
         applied = 0
+        not_applied: dict[str, str] = {}
         for raw in decisions:
-            decision = raw if isinstance(raw, TaskDecision) else _coerce_decision(raw)
+            decision: TaskDecision | None
+            if isinstance(raw, TaskDecision):
+                decision, why, task_id = raw, "", raw.task_id
+            else:
+                decision, why = _coerce_decision(raw)
+                task_id = str(raw.get("task_id", ""))
+            if decision is None:
+                not_applied[task_id] = why
+                continue
             task = state.tasks.get(decision.task_id)
             if task is None:
+                not_applied[task_id] = "no such task in this run"
+                continue
+            if task.status is not TaskStatus.PROPOSED:
+                not_applied[task_id] = (
+                    f"the task is {task.status.value}, not proposed; a decision applies only "
+                    "to a task still waiting for one"
+                )
                 continue
             for text in _apply_modifications(
                 task, decision.modifications, self.config.policy, self.workspace,
@@ -2476,17 +2523,89 @@ class Supervisor:
             await session.aemit(EventType.TASK_DECIDED, {"task": to_jsonable(task)})
             applied += 1
 
-        approved = [t for t in state.tasks.values() if t.status is TaskStatus.APPROVED]
-        if not approved:
-            await session.anote("no tasks approved; ending with the analysis report")
-            self.reporting._write_run_artifacts(session)
-            self._transition(session, Phase.IMPROVING)
+        if state.phase is Phase.AWAITING_APPROVAL and not applied and any(
+            t.status is TaskStatus.PROPOSED for t in state.tasks.values()
+        ):
+            # Nothing the caller sent took effect and tasks are still waiting:
+            # ending the run as "no tasks approved" over a typo would be the
+            # same mistake as approving over one.
+            response = await self._advance(session)
+            response.detail = {**response.detail, "decisions_applied": 0,
+                               "approved": 0, "not_applied": not_applied}
+            return response
+
+        if state.phase is Phase.AWAITING_APPROVAL:
+            await self._settle_dependencies(session)
+            approved = [t for t in state.tasks.values() if t.status is TaskStatus.APPROVED]
+            if not approved:
+                await session.anote("no tasks approved; ending with the analysis report")
+                self.reporting._write_run_artifacts(session)
+                self._transition(session, Phase.IMPROVING)
+            else:
+                self._transition(session, Phase.EXECUTING)
         else:
-            self._transition(session, Phase.EXECUTING)
+            approved = [t for t in state.tasks.values() if t.status is TaskStatus.APPROVED]
 
         response = await self._advance(session)
         response.detail = {**response.detail, "decisions_applied": applied,
-                           "approved": len(approved)}
+                           "approved": len(approved), "not_applied": not_applied}
+        return response
+
+    async def _settle_dependencies(self, session: RunSession) -> None:
+        """What approved tasks wait on that the owner turned down, said and settled.
+
+        A task is runnable only when every task it depends on is verified, so
+        one waiting on a rejected task was approved and then never started, and
+        the run ended "approved, not finished" without a word. A rejected
+        dependency is dropped, as `_leave_or_release` drops a failed one: the
+        task runs on the tree as it stands, judged by its own criteria. A
+        deferred one is the owner's to bring back, so the dependent keeps
+        waiting -- and the owner is told that it will.
+        """
+        state = session.state
+        for task in state.tasks.values():
+            if task.status is not TaskStatus.APPROVED:
+                continue
+            rejected = [d for d in task.depends_on
+                        if d in state.tasks and state.tasks[d].status is TaskStatus.REJECTED]
+            deferred = [d for d in task.depends_on
+                        if d in state.tasks and state.tasks[d].status is TaskStatus.DEFERRED]
+            if rejected:
+                task.depends_on = [d for d in task.depends_on if d not in rejected]
+                task.updated_at = now_iso()
+                await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+                await session.anote(
+                    f"{task.title!r} was approved and waited on "
+                    f"{', '.join(repr(state.tasks[d].title) for d in rejected)}, which you "
+                    "rejected; it runs without it, judged by its own criteria",
+                    task_id=task.id)
+            if deferred:
+                await session.anote(
+                    f"{task.title!r} was approved but waits on "
+                    f"{', '.join(repr(state.tasks[d].title) for d in deferred)}, which is "
+                    "deferred; it will not run until that is done",
+                    task_id=task.id)
+
+    def _approval_not_applicable(
+        self, session: RunSession, decisions: list[dict[str, Any]] | list[TaskDecision]
+    ) -> SupervisorResponse:
+        """The answer to an approval the run is not waiting for: nothing happened."""
+        state = session.state
+        why = f"nothing applied: run is in {state.phase.value}, which is not waiting for approval"
+        refused = {
+            (d.task_id if isinstance(d, TaskDecision) else str(d.get("task_id", ""))): why
+            for d in decisions
+        }
+        if state.phase in (Phase.COMPLETE, Phase.FAILED):
+            response = self.reporting._final_response(session)
+            response.message = f"{why}. {response.message}"
+        else:
+            response = SupervisorResponse(
+                run_id=state.id, phase=str(state.phase), action="await_reports",
+                message=f"{why}. Carry on with supervisor_advance.",
+            )
+        response.detail = {**response.detail, "decisions_applied": 0, "approved": 0,
+                           "not_applied": refused or {"": why}}
         return response
 
     async def resolve(
@@ -2502,7 +2621,6 @@ class Supervisor:
         """
         session = self.store.open(run_id)
         self._check_resume_fidelity(session)
-        self.packets._registry_for(session, None)
         state = session.state
 
         applied: list[str] = []
@@ -2625,12 +2743,15 @@ class Supervisor:
             await (self._converse_verifier if agent.kind is AgentKind.VERIFICATION
                    else self._converse)(session, agent)
             return
-        packet = self.packets._agent_packet(session, agent)
+        deferred: list[dict[str, Any]] = []
+        packet = self.packets._agent_packet(session, agent, defer_brief=deferred)
+        for rendered in deferred:
+            await session.aemit(EventType.BRIEF_RENDERED, rendered)
         history: list[ChatMessage] = [ChatMessage("user", packet.brief)]
 
         for turn_number in range(agent.budget.max_turns):
             turns_after = agent.budget.max_turns - turn_number - 1
-            payload: dict[str, Any] | None = None
+            payload: dict[str, Any] = {}
             raw_text = ""
             tools_called = 0
             # Tool results accumulate across the rounds of one turn and are
@@ -2709,8 +2830,8 @@ class Supervisor:
 
                 toolbox = self._toolbox_for(session.state)
                 checks = _run_checks(session.state)
-                results = [toolbox.call(name, args, agent, checks=checks)
-                           for name, args in calls]
+                results = await asyncio.to_thread(
+                    _call_each, toolbox, calls, agent, checks)
                 tools_called += len(calls)
                 files_read.update(r.path for r in results if r.ok and r.path)
                 await session.anote(
@@ -2724,12 +2845,6 @@ class Supervisor:
                     ChatMessage("user", render_results(results, limit=TOOL_RESULT_CHARS))
                 )
 
-            if payload is None:
-                await self.lifecycle._set_status(
-                    session, agent, AgentStatus.FAILED, cause=EndCause.ERROR,
-                    reason="no answer the output contract accepts",
-                )
-                return
             # Measured, like the tokens: what the drift check reads to tell a turn
             # spent reading from an idle one, and what `Budget.max_tool_calls`
             # is enforced against -- a ceiling nothing counted until now.
@@ -2755,7 +2870,7 @@ class Supervisor:
 
             if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP, DirectiveKind.ESCALATE):
                 if agent.kind is AgentKind.EXECUTION:
-                    self._mark_task_awaiting_verification(session, agent, payload)
+                    await self._mark_task_awaiting_verification(session, agent, payload)
                 return
 
             history = [
@@ -2835,7 +2950,7 @@ class Supervisor:
             directive = await self.supervision._supervise(session, agent, turn)
             if directive.kind in (DirectiveKind.ACCEPT, DirectiveKind.STOP,
                                   DirectiveKind.ESCALATE):
-                self._mark_task_awaiting_verification(session, agent, payload)
+                await self._mark_task_awaiting_verification(session, agent, payload)
                 return
             messages.append(ChatMessage("user", render_directive(directive, agent)))
         await self._out_of_turns(session, agent)
@@ -3103,39 +3218,35 @@ class Supervisor:
                 idle += 1
                 messages.append(ChatMessage("user", nudge))
                 continue
-            idle = 0
             failures: list[str] = []
             unreadable: list[str] = []
             specs = {t["name"]: t for t in tools}
+            only_refused = True
             for call in response.tool_calls:
+                if report is not None:
+                    # The finishing call was taken: whatever followed it in the
+                    # same answer is not run, and is told so.
+                    messages.append(ChatMessage(
+                        "tool", f"Not run: {finish} had already ended this work.",
+                        tool_name=call.name, tool_call_id=call.id))
+                    continue
                 call = replace(call, arguments=as_specified(call.arguments,
                                                             specs.get(call.name)))
-                problems = (shape_problems(call.arguments,
-                                           specs[finish].get("parameters") or {})
-                            if call.name == finish and finish in specs else [])
-                if call.name == finish and problems:
-                    # Taken as sent, an unreadable plan was a plan of no tasks.
-                    text = refusal(finish, problems)
-                    failures.append(call.name)
-                    unreadable += problems
-                    # Counted, or a model that never sends a readable answer
-                    # would be refused for ever: the stretch ends on its calls.
-                    stint.tool_calls += 1
-                elif (call.name == finish and in_run
-                      and (reachable := self._blocked_within_reach(session.state, agent,
-                                                                   call.arguments, toolbox))):
-                    text = _yours_to_fix(reachable)
-                    failures.append(call.name)
-                    stint.tool_calls += 1
-                    await session.anote(
-                        f"{SENT_BACK_BLOCKED}: what it was blocked on is within "
-                        "the run's plan, and the harness lets the agent change it",
-                        actor=agent.id, task_id=agent.task_id, paths=reachable)
+                only_refused &= call.name not in offered and call.name != finish
+                refused = (await self._refuse_finish(
+                    session, agent, call, specs, finish, toolbox, in_run, stint,
+                    failures, unreadable) if call.name == finish else None)
+                if refused is not None:
+                    text = refused
                 elif call.name == finish:
                     report, text = call.arguments, "Received; the supervisor will answer."
                 elif call.name not in offered:
                     text = f"{call.name} is not available now. Call {finish}."
                     failures.append(call.name)
+                    # Counted like every other refusal: left uncounted, a model
+                    # that kept asking for a tool it was not offered was never
+                    # ended by the call budget, and was not idle either.
+                    stint.record(call, ok=False, path="")
                 elif call.name == "message":
                     text = stint.send(call.arguments)
                     stint.record(call, ok=bool(stint.messages), path="")
@@ -3147,18 +3258,51 @@ class Supervisor:
                     if call.name in ("edit_file", "write_file", "delete_file"):
                         await self._widen_for_write(session, agent, toolbox,
                                                     str(call.arguments.get("path", "")))
-                    result = toolbox.call(call.name, call.arguments, agent, whole_files=True,
-                                          checks=_run_checks(session.state))
+                    # Off the loop: a command runs for up to its timeout.
+                    result = await asyncio.to_thread(
+                        toolbox.call, call.name, call.arguments, agent, whole_files=True,
+                        checks=_run_checks(session.state))
                     self._remember_named(session.state, agent, call, result, toolbox)
                     stint.record(call, result.ok, result.path)
                     failures += [] if result.ok else [call.name]
                     text = render_results([result], limit=TOOL_RESULT_CHARS)
                 messages.append(ChatMessage("tool", text, tool_name=call.name,
                                             tool_call_id=call.id))
+            # An answer made only of calls it was not offered is as idle as one
+            # with no calls: both are the model not doing what it was asked.
+            idle = idle + 1 if only_refused else 0
             await session.anote("tools called", actor=agent.id,
                                 tools=[c.name for c in response.tool_calls], failures=failures,
                                 **({"unreadable": unreadable} if unreadable else {}))
         return report
+
+    async def _refuse_finish(
+        self, session: RunSession, agent: AgentSpec, call: ToolCall,
+        specs: dict[str, dict[str, Any]], finish: str, toolbox: Toolbox, in_run: bool,
+        stint: Stint, failures: list[str], unreadable: list[str],
+    ) -> str | None:
+        """Why the finishing call is not taken yet, as the text the agent is told; else None."""
+        problems = (shape_problems(call.arguments, specs[finish].get("parameters") or {})
+                    if finish in specs else [])
+        if problems:
+            # Taken as sent, an unreadable plan was a plan of no tasks.
+            failures.append(call.name)
+            unreadable += problems
+            # Counted, or a model that never sends a readable answer
+            # would be refused for ever: the stretch ends on its calls.
+            stint.tool_calls += 1
+            return refusal(finish, problems)
+        reachable = (self._blocked_within_reach(session.state, agent, call.arguments, toolbox)
+                     if in_run else [])
+        if not reachable:
+            return None
+        failures.append(call.name)
+        stint.tool_calls += 1
+        await session.anote(
+            f"{SENT_BACK_BLOCKED}: what it was blocked on is within "
+            "the run's plan, and the harness lets the agent change it",
+            actor=agent.id, task_id=agent.task_id, paths=reachable)
+        return _yours_to_fix(reachable)
 
     async def _external_call(self, session: RunSession, agent: AgentSpec,
                              call: ToolCall) -> tuple[bool, str]:
@@ -3280,7 +3424,7 @@ class Supervisor:
         failed = " ".join(c.evidence for c in task.dod if c.status is CriterionStatus.FAIL)
         named = self._named_by_checks.get(agent.id, set()) | _files_named(failed, toolbox)
         if rel in named and not globs_within([rel], effective(state.envelope).paths):
-            granted, _ = self._widen_within_grant(session, task, [rel])
+            granted, _ = await self._awiden_within_grant(session, task, [rel])
             if granted:
                 await session.anote(f"{rel} was named by a failing check of this run; the "
                                     "envelope widened within the owner's grant to let "
@@ -3354,7 +3498,9 @@ class Supervisor:
                                     grant_envelope=grant_envelope)
         while response.action not in ("complete", "failed"):
             if response.action == "await_approval":
-                if not auto_approve:
+                if not auto_approve or response.detail.get("needs") == "envelope_renewal":
+                    # A stale grant is the owner's to renew, `auto_approve` or
+                    # not; approving again would only meet the same pause.
                     return response
                 response = await self.approve(
                     response.run_id,
@@ -3385,11 +3531,6 @@ class Supervisor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-
-
-
-
 
     def _check_resume_fidelity(self, session: RunSession) -> None:
         """Note when this process is not the one the run was started under.
@@ -3433,8 +3574,30 @@ class Supervisor:
         The owner's ceiling is their grant, recorded against the configured
         envelope when the run started, or the configured envelope itself.
         Returns the paths the task may now have and the paths refused
-        (`widen_within`).
+        (`widen_within`). Synchronous: for the phase machine between phases.
         """
+        granted, refused, widened = self._plan_widening(session, task, wanted)
+        if widened is not None:
+            envelope, text = widened
+            session.emit(EventType.ENVELOPE_SET, {"envelope": to_jsonable(envelope)})
+            session.note(text)
+        return granted, refused
+
+    async def _awiden_within_grant(
+        self, session: RunSession, task: ExecutionTask, wanted: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """`_widen_within_grant` for a path reachable while agents run under gather."""
+        granted, refused, widened = self._plan_widening(session, task, wanted)
+        if widened is not None:
+            envelope, text = widened
+            await session.aemit(EventType.ENVELOPE_SET, {"envelope": to_jsonable(envelope)})
+            await session.anote(text)
+        return granted, refused
+
+    def _plan_widening(
+        self, session: RunSession, task: ExecutionTask, wanted: list[str]
+    ) -> tuple[list[str], list[str], tuple[ScopeEnvelope, str] | None]:
+        """What widening would grant and refuse, and the envelope and note that record it."""
         state = session.state
         grant = state.envelope_grant
         ceiling = (Ceiling("owner's grant", list(grant.paths), list(grant.forbidden_paths))
@@ -3444,16 +3607,17 @@ class Supervisor:
         current = effective(state.envelope)
         envelope, granted, refused = widen_within(current, ceiling, wanted)
         widened = [p for p in envelope.paths if p not in current.paths]
-        if widened:
-            # Its own event, as every change to the envelope is; the grant's
-            # date is the grant's, so it is kept, not renewed.
-            suffix = ", widened within the owner's grant"
-            source = current.source if current.source.endswith(suffix) else current.source + suffix
-            session.emit(EventType.ENVELOPE_SET,
-                         {"envelope": to_jsonable(replace(envelope, source=source))})
-            session.note(f"run envelope widened within the owner's grant for "
-                         f"{task.title!r}: {render(widened)}")
-        return granted, refused
+        if not widened:
+            return granted, refused, None
+        # Its own event, as every change to the envelope is; the grant's
+        # date is the grant's, so it is kept, not renewed.
+        suffix = ", widened within the owner's grant"
+        source = current.source if current.source.endswith(suffix) else current.source + suffix
+        return granted, refused, (
+            replace(envelope, source=source),
+            f"run envelope widened within the owner's grant for {task.title!r}: "
+            f"{render(widened)}",
+        )
 
     def _configured_envelope(self) -> ScopeEnvelope:
         """The envelope the user's configuration grants, before any model speaks."""
@@ -3483,32 +3647,16 @@ class Supervisor:
             )
         )
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     async def aclose(self) -> None:
-        await self.external.aclose()
-        await self.router.aclose()
-        if self._owns_store:
-            self.store.close()
+        """Release what this supervisor holds; one failing does not strand the rest."""
+        try:
+            await self.external.aclose()
+        finally:
+            try:
+                await self.router.aclose()
+            finally:
+                if self._owns_store:
+                    self.store.close()
 
 
 # --------------------------------------------------------------------------
@@ -3700,16 +3848,38 @@ def _files_named(text: str, toolbox: Toolbox) -> set[str]:
     return named
 
 
-def _coerce_decision(raw: dict[str, Any]) -> TaskDecision:
+def _coerce_decision(raw: dict[str, Any]) -> tuple[TaskDecision | None, str]:
+    """The owner's decision as written, or why it cannot be applied.
+
+    An unrecognised or missing decision is not guessed at: the previous reading
+    of anything unknown as "approve" turned a typo for "reject" into consent.
+    """
     from ..contracts import parse_decision
 
+    decision = parse_decision(raw.get("decision"))
+    if decision is None:
+        given = raw.get("decision")
+        options = ", ".join(d.value for d in Decision)
+        if given in (None, ""):
+            return None, f"no decision given; use one of {options}"
+        return None, f"decision {given!r} is not one of {options}"
     return TaskDecision(
         task_id=str(raw.get("task_id", "")),
-        decision=parse_decision(raw.get("decision")),
+        decision=decision,
         note=str(raw.get("note", "")),
         modifications=dict(raw.get("modifications") or {}),
-    )
+    ), ""
 
+
+def _call_each(
+    toolbox: Toolbox, calls: list[tuple[str, dict[str, Any]]], agent: AgentSpec,
+    checks: frozenset[str],
+) -> list[ToolResult]:
+    """One turn's tool calls, in order (run in a worker thread)."""
+    return [toolbox.call(name, args, agent, checks=checks) for name, args in calls]
+
+
+MECHANICAL_LESSONS_NOTE = "mechanical lessons recorded"
 
 _MODIFIABLE = {"title", "action", "motivation", "effort"}
 
