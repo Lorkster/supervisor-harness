@@ -413,6 +413,12 @@ def read_decision(arguments: dict[str, Any] | None, handles: Handles, state: Run
                 for p in picks if p.get("do") in ("send_back", "move_check")}
     will_run |= {a.to_task_id if a.do == "move_check" else a.task_id for a in earlier
                  if a.do in ("send_back", "move_check")}
+    # Waits already taken, here and in earlier asks: two that name each other
+    # are each fine against the state, and together a loop that never starts.
+    waiting: dict[str, list[str]] = {}
+    for a in earlier:
+        if a.do == "wait":
+            waiting.setdefault(a.task_id, []).append(a.to_task_id)
     for pick in picks:
         do = str(pick.get("do", "")).strip()
         name = str(pick.get("task", "")).strip()
@@ -433,7 +439,8 @@ def read_decision(arguments: dict[str, Any] | None, handles: Handles, state: Run
         if do == "move_check" and check is not None and check[1] in moved:
             refused.append(f"{said}: that check is moved already")
             continue
-        problem = _problem(do, pick, task, handles, state, open_tasks, will_run, max_attempts)
+        problem = _problem(do, pick, task, handles, state, open_tasks, will_run, max_attempts,
+                           waiting)
         if problem:
             refused.append(f"{said}: {problem}")
             continue
@@ -444,6 +451,8 @@ def read_decision(arguments: dict[str, Any] | None, handles: Handles, state: Run
             moved.add(check[1])
         if do in ("move_check", "wait"):
             action.to_task_id = handles.tasks[str(pick.get("to_task", "")).strip()]
+        if do == "wait":
+            waiting.setdefault(task_id, []).append(action.to_task_id)
         if do in _DISPOSITIONS:
             disposed.add(task_id)
         actions.append(action)
@@ -452,7 +461,7 @@ def read_decision(arguments: dict[str, Any] | None, handles: Handles, state: Run
 
 def _problem(do: str, pick: dict[str, Any], task: ExecutionTask, handles: Handles,
              state: RunState, open_tasks: dict[str, str], will_run: set[str],
-             max_attempts: int) -> str:
+             max_attempts: int, waiting: dict[str, list[str]] | None = None) -> str:
     """Why the harness cannot carry out a pick, or ``""``."""
     kind = open_tasks.get(task.id)
     if do == "send_back":
@@ -465,7 +474,7 @@ def _problem(do: str, pick: dict[str, Any], task: ExecutionTask, handles: Handle
     if kind is None:
         return "it is not one of the open matters"
     if do == "wait":
-        return _cannot_wait(pick, task, handles, state, will_run)
+        return _cannot_wait(pick, task, handles, state, will_run, waiting)
     if do == "as_it_stands" and kind != "stopped":
         return "only a task that stopped is judged as it stands"
     return ""
@@ -504,7 +513,7 @@ def _cannot_move(pick: dict[str, Any], task: ExecutionTask, handles: Handles, st
 
 
 def _cannot_wait(pick: dict[str, Any], task: ExecutionTask, handles: Handles, state: RunState,
-                 will_run: set[str]) -> str:
+                 will_run: set[str], waiting: dict[str, list[str]] | None = None) -> str:
     target_id = handles.tasks.get(str(pick.get("to_task", "")).strip())
     if target_id is None or target_id == task.id:
         return "name the other task it waits for, as T1, T2, ..."
@@ -514,15 +523,20 @@ def _cannot_wait(pick: dict[str, Any], task: ExecutionTask, handles: Handles, st
     if not unsettled and target_id not in will_run:
         return (f"{handles.of(target_id)} is {target.status.value} and is not being sent "
                 "back: there is nothing to wait for")
-    if waits_on(state, target, task.id):
+    if waits_on(state, target, task.id, waiting):
         return f"{handles.of(target_id)} waits on this task, so it would wait for ever"
     return ""
 
 
-def waits_on(state: RunState, task: ExecutionTask, other_id: str) -> bool:
-    """Whether ``task`` depends on ``other_id``, directly or through other tasks."""
+def waits_on(state: RunState, task: ExecutionTask, other_id: str,
+             also: dict[str, list[str]] | None = None) -> bool:
+    """Whether ``task`` depends on ``other_id``, directly or through other tasks.
+
+    ``also`` are waits decided but not yet applied, as ``task id -> ids``.
+    """
+    also = also or {}
     seen: set[str] = set()
-    stack = list(task.depends_on)
+    stack = [*task.depends_on, *also.get(task.id, [])]
     while stack:
         current = stack.pop()
         if current == other_id:
@@ -530,6 +544,7 @@ def waits_on(state: RunState, task: ExecutionTask, other_id: str) -> bool:
         if current not in seen:
             seen.add(current)
             stack.extend(state.tasks[current].depends_on if current in state.tasks else [])
+            stack.extend(also.get(current, []))
     return False
 
 

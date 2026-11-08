@@ -401,6 +401,11 @@ def resolve_dependencies(tasks: list[ExecutionTask]) -> dict[str, list[str]]:
         resolved: list[str] = []
         for dep in task.depends_on:
             entry = str(dep).strip()
+            if entry == task.id:
+                notes.setdefault(task.id, []).append(
+                    f"dropped self-dependency: {entry!r}"
+                )
+                continue
             if entry in known_ids:
                 resolved.append(entry)
                 continue
@@ -418,7 +423,45 @@ def resolve_dependencies(tasks: list[ExecutionTask]) -> dict[str, list[str]]:
                 record_assist("dependency_by_title", entry)
                 resolved.append(match)
         task.depends_on = resolved
+    _drop_cycles(tasks, notes)
     return notes
+
+
+def _drop_cycles(tasks: list[ExecutionTask], notes: dict[str, list[str]]) -> None:
+    """Drop each dependency that would close a loop, and say which.
+
+    A task waiting on itself, through any number of others, is never runnable:
+    the plan is approved and the run ends "approved, not finished". Edges are
+    taken in plan order and an edge whose target already reaches its task is the
+    one that closes the loop.
+    """
+    titles = {t.id: t.title for t in tasks}
+    accepted: dict[str, list[str]] = {}
+
+    def reaches(start: str, goal: str) -> bool:
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            if node == goal:
+                return True
+            if node not in seen:
+                seen.add(node)
+                stack.extend(accepted.get(node, []))
+        return False
+
+    for task in tasks:
+        kept: list[str] = []
+        for dep in task.depends_on:
+            if reaches(dep, task.id):
+                notes.setdefault(task.id, []).append(
+                    f"dropped dependency on {titles.get(dep, dep)!r}: it already waits "
+                    "on this task, so the two could never start"
+                )
+                continue
+            kept.append(dep)
+            accepted.setdefault(task.id, []).append(dep)
+        task.depends_on = kept
 
 
 def unenforceable_criteria(tasks: list[ExecutionTask], policy: Policy,

@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import shutil
 import sys
 from collections.abc import Callable
@@ -29,11 +30,13 @@ from typing import Any
 
 from . import __version__
 from .config import KNOWN_STAGES, PROJECT_CONFIG, load_config, write_example
+from .contracts import parse_decision
 from .core import worktree
 from .core.supervisor import Supervisor, SupervisorResponse
 from .host.detect import detect_host
 from .install import COMPONENTS, INTEGRATIONS, MCP_FILES, uninstall
-from .models import Backend, RunMode, RunState
+from .models import Backend, Decision, RunMode, RunState
+from .providers.router import ModelRouter
 from .serde import to_jsonable
 from .store.events import (
     UNRECOGNISED_TYPE_KEY,
@@ -41,7 +44,7 @@ from .store.events import (
     EventType,
     event_to_dict,
 )
-from .store.runstore import RunStore
+from .store.runstore import DEFAULT_DIRNAME, HOME_ENV, RunStore
 
 # --------------------------------------------------------------------------
 # Output
@@ -51,13 +54,6 @@ from .store.runstore import RunStore
 def _emit(data: Any, as_json: bool) -> None:
     if as_json:
         print(json.dumps(data, indent=2, ensure_ascii=False))
-
-
-def _print_ledger(response: SupervisorResponse) -> None:
-    """Where the run is, in one line, before whatever else is being shown."""
-    if response.ledger:
-        print()
-        print(f"  {response.ledger}")
 
 
 def _print_packets(response: SupervisorResponse) -> None:
@@ -164,6 +160,27 @@ def _supervisor(args: argparse.Namespace) -> Supervisor:
     if getattr(args, "backend", None):
         config.backend = Backend(args.backend)
     return Supervisor(workspace=workspace, config=config)
+
+
+def _has_store(args: argparse.Namespace) -> bool:
+    """Whether a run store exists to read; looking must not make one.
+
+    A `Supervisor` creates `.supervisor/` where it is constructed, so a
+    read-only command run in the wrong directory left one behind.
+    """
+    env = os.environ.get(HOME_ENV)
+    root = Path(env).expanduser() if env else Path(args.workspace).resolve() / DEFAULT_DIRNAME
+    return root.is_dir()
+
+
+def _without_store(args: argparse.Namespace) -> int | None:
+    """The exit code for a read-only command with no store to read, or ``None``."""
+    if _has_store(args):
+        return None
+    if getattr(args, "run_id", ""):
+        raise FileNotFoundError(f"no such run: {args.run_id}")
+    print("No runs recorded yet.", file=sys.stderr)
+    return 2
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -431,7 +448,8 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     sup = _supervisor(args)
-    raw = sys.stdin.read() if args.input == "-" else Path(args.input).read_text(encoding="utf-8")
+    raw = (sys.stdin.read() if args.input == "-"
+           else Path(args.input).read_text(encoding="utf-8-sig")).removeprefix("﻿")
     payload = _parse_turn(raw)
     if payload is None:
         print("error: could not find a JSON object in the reported turn", file=sys.stderr)
@@ -443,8 +461,23 @@ def cmd_report(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json, sup)
-    return 0
+    response = asyncio.run(go())
+    _print_response(response, args.json, sup)
+    return _recorded_nothing(response, args.json)
+
+
+def _recorded_nothing(response: SupervisorResponse, as_json: bool) -> int:
+    """Exit 1 when the harness answered but did not take what it was given.
+
+    An unknown agent or a duplicate report leaves the run as it was and says so
+    in `detail.error`; exiting 0 let a script believe its result was recorded.
+    """
+    error = response.detail.get("error")
+    if not error:
+        return 0
+    if not as_json:
+        print(f"error: {error}: nothing was recorded", file=sys.stderr)
+    return 1
 
 
 def _parse_turn(raw: str) -> dict[str, Any] | None:
@@ -503,8 +536,9 @@ def cmd_abandon(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json, sup)
-    return 0
+    response = asyncio.run(go())
+    _print_response(response, args.json, sup)
+    return _recorded_nothing(response, args.json)
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
@@ -532,7 +566,13 @@ def cmd_approve(args: argparse.Namespace) -> int:
         wanted = {}
         for entry in args.task:
             task_id, _, decision = entry.partition(":")
-            wanted[task_id] = decision or "approve"
+            decision = decision or "approve"
+            if parse_decision(decision) is None:
+                # Never read as approval: a typo for "reject" is not consent.
+                print(f"error: --task {entry}: {decision!r} is not one of "
+                      f"{', '.join(d.value for d in Decision)}", file=sys.stderr)
+                return 2
+            wanted[task_id] = decision
         decisions = [
             {"task_id": t.id, "decision": wanted.get(t.id, "reject")} for t in proposed
         ]
@@ -549,8 +589,14 @@ def cmd_approve(args: argparse.Namespace) -> int:
         finally:
             await sup.aclose()
 
-    _print_response(asyncio.run(go()), args.json, sup)
-    return 0
+    response = asyncio.run(go())
+    _print_response(response, args.json, sup)
+    refused = response.detail.get("not_applied") or {}
+    if refused and not args.json:
+        for task_id, why in refused.items():
+            print(f"error: {task_id or '(no id)'} not applied: {why}", file=sys.stderr)
+    # Anything refused shows in the exit status too, as it does for `resolve`.
+    return 1 if refused else 0
 
 
 def cmd_resolve(args: argparse.Namespace) -> int:
@@ -587,7 +633,7 @@ def cmd_escalations(args: argparse.Namespace) -> int:
     run_id = args.run_id or sup.store.latest_run_id()
     if not run_id:
         print("No runs recorded yet.", file=sys.stderr)
-        return 1
+        return 2
     if run_id not in sup.store.list_run_ids():
         print(f"error: no such run: {run_id}", file=sys.stderr)
         return 2
@@ -738,11 +784,13 @@ def _status_footer(status: dict[str, Any]) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    if (code := _without_store(args)) is not None:
+        return code
     sup = _supervisor(args)
     run_id = args.run_id or sup.store.latest_run_id()
     if not run_id:
         print("No runs recorded yet.", file=sys.stderr)
-        return 1
+        return 2
 
     status = sup.status(run_id)
     if args.json:
@@ -762,11 +810,13 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_explain(args: argparse.Namespace) -> int:
     """Print the decision journal: why each directive was issued, and on what."""
+    if (code := _without_store(args)) is not None:
+        return code
     sup = _supervisor(args)
     run_id = args.run_id or sup.store.latest_run_id()
     if not run_id:
         print("No runs recorded yet.", file=sys.stderr)
-        return 1
+        return 2
     if run_id not in sup.store.list_run_ids():
         print(f"error: no such run: {run_id}", file=sys.stderr)
         return 2
@@ -787,11 +837,13 @@ def cmd_explain(args: argparse.Namespace) -> int:
 
 def cmd_audit(args: argparse.Namespace) -> int:
     """Ask a finished run what its agents actually did."""
+    if (code := _without_store(args)) is not None:
+        return code
     sup = _supervisor(args)
     run_id = args.run_id or sup.store.latest_run_id()
     if not run_id:
         print("No runs recorded yet.", file=sys.stderr)
-        return 1
+        return 2
     if run_id not in sup.store.list_run_ids():
         print(f"error: no such run: {run_id}", file=sys.stderr)
         return 2
@@ -825,11 +877,13 @@ def cmd_findings(args: argparse.Namespace) -> int:
     harness's internal state to get at them, which ties it to whatever that
     state looks like this release.
     """
+    if (code := _without_store(args)) is not None:
+        return code
     sup = _supervisor(args)
     run_id = args.run_id or sup.store.latest_run_id()
     if not run_id:
         print("No runs recorded yet.", file=sys.stderr)
-        return 1
+        return 2
     if run_id not in sup.store.list_run_ids():
         print(f"error: no such run: {run_id}", file=sys.stderr)
         return 2
@@ -870,11 +924,13 @@ def cmd_findings(args: argparse.Namespace) -> int:
 
 def cmd_trajectory(args: argparse.Namespace) -> int:
     """Export a run as a portable trajectory document."""
+    if (code := _without_store(args)) is not None:
+        return code
     sup = _supervisor(args)
     run_id = args.run_id or sup.store.latest_run_id()
     if not run_id:
         print("No runs recorded yet.", file=sys.stderr)
-        return 1
+        return 2
     if run_id not in sup.store.list_run_ids():
         print(f"error: no such run: {run_id}", file=sys.stderr)
         return 2
@@ -953,7 +1009,7 @@ def cmd_events(args: argparse.Namespace) -> int:
         run_id = args.run_id or store.latest_run_id()
         if not run_id:
             print("No runs recorded yet.", file=sys.stderr)
-            return 1
+            return 2
         # Membership rather than a path probe: the id comes from the command line
         # and is about to be joined onto the runs directory.
         if run_id not in store.list_run_ids():
@@ -1066,34 +1122,42 @@ def cmd_lessons(args: argparse.Namespace) -> int:
 
 
 def cmd_providers(args: argparse.Namespace) -> int:
-    sup = _supervisor(args)
+    # No `Supervisor`: it makes the run store, and this command only reads
+    # configuration and asks the providers.
+    workspace = Path(args.workspace).resolve()
+    config = load_config(workspace)
+    if getattr(args, "backend", None):
+        config.backend = Backend(args.backend)
+    host = detect_host(workspace)
+    router = ModelRouter(config, host_name=host.name)
 
     async def go() -> dict[str, Any]:
         try:
-            return await sup.router.health()
+            return await router.health()
         finally:
-            await sup.aclose()
+            await router.aclose()
 
     health = asyncio.run(go())
-    stages = sorted(set(sup.config.routing) | set(KNOWN_STAGES) | {
+    stages = sorted(set(config.routing) | set(KNOWN_STAGES) | {
         "analysis.security", "analysis.architecture"
     })
-    routing = {stage: sup.config.binding_for(stage).ref() for stage in stages}
+    routing = {stage: config.binding_for(stage).ref() for stage in stages}
 
     if args.json:
-        _emit({"host": sup.host.name, "backend": str(sup.config.backend),
-               "config_sources": sup.config.sources,
+        _emit({"host": host.name, "backend": str(config.backend),
+               "config_sources": config.sources,
                "routing": routing, "providers": health}, True)
         return 0
 
-    if sup.config.rejected_settings:
-        print("ignored (a workspace config file may not set these):")
-        for entry in sup.config.rejected_settings:
+    if config.rejected_settings:
+        print("ignored or corrected (a workspace config file may not set protected "
+              "settings; an unreadable file or an out-of-range value is listed too):")
+        for entry in config.rejected_settings:
             print(f"  {entry}")
         print()
-    print(f"host      {sup.host.name} (confidence {sup.host.confidence:.1f})")
-    print(f"backend   {sup.config.backend}")
-    print(f"config    {', '.join(sup.config.sources) or '(built-in defaults only)'}")
+    print(f"host      {host.name} (confidence {host.confidence:.1f})")
+    print(f"backend   {config.backend}")
+    print(f"config    {', '.join(config.sources) or '(built-in defaults only)'}")
     print("\nproviders")
     for name, info in health.items():
         if not info.get("enabled", True):
@@ -1115,13 +1179,19 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         return 0
 
 
-def _git_releaser(notes: dict[str, str], *, unmerged: bool) -> Callable[[RunState], None]:
-    """What `RunStore.delete_run` calls to give back a run's worktree and branch."""
+def _git_releaser(notes: dict[str, str], *, unmerged: bool,
+                  runs_dir: Path) -> Callable[[RunState], None]:
+    """What `RunStore.delete_run` calls to give back a run's worktree and branch.
+
+    ``runs_dir`` is the store's own: what a run's state says about its worktree is
+    believed only if it names the directory and branch the harness would have made.
+    """
     def release(state: RunState) -> None:
         wt = state.worktree
         if wt is None or not state.workspace:
             return
-        note = worktree.release(Path(state.workspace), wt.path, wt.branch, unmerged=unmerged)
+        note = worktree.release(Path(state.workspace), wt.path, wt.branch, unmerged=unmerged,
+                                run_id=state.id, runs_dir=runs_dir)
         if note:
             notes[state.id] = note
     return release
@@ -1138,7 +1208,8 @@ def cmd_delete(args: argparse.Namespace) -> int:
 
         if args.older_than is not None:
             gone = store.purge(older_than_days=args.older_than, keep_last=args.keep_last,
-                               release=_git_releaser(notes, unmerged=False))
+                               release=_git_releaser(notes, unmerged=False,
+                                                     runs_dir=store.runs_dir))
             if not gone:
                 print(f"No runs older than {args.older_than} day(s).")
                 return 0
@@ -1151,7 +1222,8 @@ def cmd_delete(args: argparse.Namespace) -> int:
             print("Name a run, or pass --older-than DAYS.", file=sys.stderr)
             return 2
         try:
-            deleted = store.delete_run(args.run, _git_releaser(notes, unmerged=True))
+            deleted = store.delete_run(
+                args.run, _git_releaser(notes, unmerged=True, runs_dir=store.runs_dir))
         except ValueError as exc:
             print(f"{exc}: a run id is one name, like the ones `supervisor runs` lists",
                   file=sys.stderr)
@@ -1176,6 +1248,11 @@ def cmd_prune_lessons(args: argparse.Namespace) -> int:
 def cmd_mcp(args: argparse.Namespace) -> int:
     from .mcp_server import main as serve
 
+    # The server reads its workspace from the environment, so `-w` is handed on
+    # that way. It used to be accepted and ignored, and the server supervised
+    # whatever directory it was started from.
+    if args.workspace != ".":
+        os.environ["SUPERVISOR_WORKSPACE"] = str(Path(args.workspace).resolve())
     serve()
     return 0
 
@@ -1457,7 +1534,10 @@ def _utf8_streams() -> None:
     exit 1 and no JSON for a run that had succeeded. Everything that reads this
     output -- a host, a script, an evaluation -- expects UTF-8 anyway.
     """
-    for stream in (sys.stdout, sys.stderr):
+    # stdin too: `supervisor report` reads a turn from it, and the console code
+    # page turned a UTF-8 "→ å ä ö" into mojibake and an invalid byte into a
+    # lone surrogate that no later `encode` could take.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             with contextlib.suppress(ValueError, OSError):

@@ -55,14 +55,14 @@ class BoundedProcess:
         if sys.platform == "win32":
             self.proc = subprocess.Popen(  # noqa: S603 - tokenised, no shell, allow-listed
                 argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                errors="replace", env=env,
+                encoding="utf-8", errors="replace", env=env,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED,
             )
             self._job = _enter_job(self.proc)
         else:
             self.proc = subprocess.Popen(  # noqa: S603 - tokenised, no shell, allow-listed
                 argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                errors="replace", env=env, start_new_session=True,
+                encoding="utf-8", errors="replace", env=env, start_new_session=True,
             )
 
     def stop(self) -> None:
@@ -109,7 +109,23 @@ def alive(pid: int) -> bool:
     return stat.rpartition(")")[2].split()[:1] != ["Z"]
 
 
-def stop_processes_in(tree: Path) -> list[str]:
+def too_broad_to_clear(tree: Path) -> str | None:
+    """Why stopping everything inside ``tree`` would reach further than a run's worktree.
+
+    A drive root, the user's home or any directory above it: killing what runs
+    "in" one of those is killing the user's session.
+    """
+    try:
+        resolved = tree.resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return f"{tree} cannot be resolved"
+    if resolved == Path(resolved.anchor) or resolved == home or resolved in home.parents:
+        return f"{resolved} is a drive root, or the home directory or above it"
+    return None
+
+
+def stop_processes_in(tree: Path, within: Path | None = None) -> list[str]:
     """Stop every process whose program or working directory is inside ``tree``.
 
     For a directory about to be deleted: on Windows, a running process's
@@ -117,7 +133,18 @@ def stop_processes_in(tree: Path) -> list[str]:
     Never this process or its ancestors. Returns one line per process stopped,
     ``pid N name``, so what was stopped is said rather than done quietly.
     Implemented for Windows and Linux; elsewhere it stops nothing.
+
+    Which directory is decided by the caller, and a caller reading it from a run's
+    ``state.json`` is reading a file a repository can plant: ``within``, when
+    given, is the one place ``tree`` must lie in or nothing is stopped; and a
+    ``tree`` that is a drive root, the home directory or above it is refused
+    whoever asks.
     """
+    if too_broad_to_clear(tree) is not None:
+        return []
+    if within is not None and not _inside(_normal(str(tree.resolve())),
+                                          _normal(str(within.resolve()))):
+        return []
     root = _normal(str(tree))
     spared = _ancestry()
     stopped: list[str] = []

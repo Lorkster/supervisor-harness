@@ -28,7 +28,11 @@ from supervisor_harness.store.runstore import RunStore
 
 def _session(tmp_path: Path):
     store = RunStore(tmp_path / ".supervisor")
-    return store, store.create(RunState(id="run_A", prompt="p", workspace=str(tmp_path)))
+    session = store.create(RunState(id="run_A", prompt="p", workspace=str(tmp_path)))
+    # These tests are about the snapshot write, which is now periodic; ask for
+    # one per emit so the write they observe is the one they provoke.
+    session.snapshot_every = 1
+    return store, session
 
 
 async def _ticks_during(session, patch, *, window: float = 0.15) -> int:

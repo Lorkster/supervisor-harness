@@ -8,6 +8,13 @@ findings that closing the gap produced is
 [`history/quality-assessment.md`](history/quality-assessment.md) — a closed
 record, written in the present tense of 2026-09-02 and left that way.
 
+*Last verified on 2026-11-08 against the working tree of branch
+`review/code-and-docs-2026-11` (the commit is still `8f34f4e`): the table below
+against [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and
+[`pyproject.toml`](../pyproject.toml), line for line. The suite was 1,760 tests
+that day (1,402 at `8f34f4e`; the code review added the `test_review2026_*`
+files).*
+
 ---
 
 ## The criteria
@@ -47,19 +54,42 @@ looking at a codebase produce a description of it, not a judgement of it.
 
 ## The gates
 
-Every one of these runs in CI, on ubuntu × windows. Several guarantees hold on
-only one of those, which is why the matrix is not a formality.
+Every one of these runs in CI, in one of two shapes. The **test matrix** runs the
+whole suite on ubuntu × windows, each on Python 3.11, 3.12, 3.13 and 3.14: 3.11
+is the floor `pyproject.toml` declares, and 3.14 is what the harness is
+developed on. Several guarantees hold on only one of those operating systems,
+which is why the matrix is not a formality. The **lint job** runs once, on
+ubuntu and Python 3.13. Two more workflows stand beside them: a `bedrock` job
+that installs the extra and fails if its tests were skipped, and
+[`audit.yml`](../.github/workflows/audit.yml), which runs `pip-audit` over what a
+user installs, on every change to `pyproject.toml` and weekly.
 
-| what | how | gate |
-| --- | --- | --- |
-| Coverage | `pytest --cov=supervisor_harness --cov-fail-under=92` | a **floor**; fails if it drops |
-| Types | `mypy --strict` (config in `pyproject.toml`) | **zero**, with no suppression in `src/` |
-| Lint | `ruff check` against the configured rule set | **zero** |
-| Complexity | `C901` in that rule set | **zero above 15** |
-| Architecture | [`tests/test_architecture.py`](../tests/test_architecture.py) — criteria 1 and 3, executed | zero cycles |
-| Emission | the same file — no synchronous `emit()` inside an `async def` | zero, package-wide |
-| Enforce versus observe | [`tests/test_enforce_versus_observe.py`](../tests/test_enforce_versus_observe.py) — no enforcing handler fails open; every broad `except` is on a declared observing surface | zero undeclared |
-| Doc references | `tools/check_doc_refs.py` | zero stale citations |
+| what | how | where | gate |
+| --- | --- | --- | --- |
+| Tests | `python -m pytest -q`, and `supervisor --help` before it, since nothing in the suite goes through the console script | matrix | all pass |
+| Coverage | `pytest --cov=supervisor_harness --cov-fail-under=92` | lint job | a **floor**; fails if it drops |
+| Types | `mypy` with `strict = true`, over `src/supervisor_harness` and `tools` (config in `pyproject.toml`) | lint job | **zero**, with no `type: ignore` in either |
+| Lint | `ruff check .` against the configured rule set, tests and tools included | lint job | **zero** |
+| Complexity | `C901` in that rule set, `max-complexity = 15` | lint job | **zero above 15** |
+| Architecture | [`tests/test_architecture.py`](../tests/test_architecture.py) — criteria 1 and 3, executed, and that no `Phase` is declared that nothing outside `models.py` names | matrix | zero cycles |
+| Emission | the same file — no synchronous `emit()` inside an `async def` | matrix | zero, package-wide |
+| Enforce versus observe | [`tests/test_enforce_versus_observe.py`](../tests/test_enforce_versus_observe.py) — no enforcing handler fails open; every broad `except` is on a declared observing surface | matrix | zero undeclared |
+| Doc references | `tools/check_doc_refs.py`, which also checks the README's layout listing | lint job | zero stale citations |
+| Dependencies | `pip-audit` over `.[mcp,bedrock]` as a user resolves it | `audit.yml` | no known vulnerability |
+
+`ruff` and `mypy` are pinned to a minor range in `pyproject.toml` (`ruff` 0.16.x,
+`mypy` 1.x): both gate at zero, so an unbounded pin would let a new release turn
+an unrelated pull request red. Upgrading either is a deliberate act whose new
+findings are read and dealt with.
+
+Not every criterion has a gate of its own. Criterion 6 is held by
+[`tests/test_resource_lifetime.py`](../tests/test_resource_lifetime.py), in the
+matrix; criterion 10 by the tests of the entry points (`test_mcp_server.py`,
+`test_cli.py`, `test_cli_commands.py`), also in the matrix; criterion 5 by `ruff`'s
+`RUF100` (an unused `# noqa`). Criterion 9, the sabotage check, is a practice and not a
+gate: nothing in CI disables a mechanism to see whether something goes red, and
+the batches that closed the gap ([history](history/quality-assessment.md)) did it
+by hand.
 
 A floor rather than a target, throughout. The question these answer is "has this
 change made things worse", which is answerable; "is the number high enough" is

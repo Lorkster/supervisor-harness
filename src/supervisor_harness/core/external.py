@@ -39,8 +39,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from ..config import ToolServer
+from .paths import collapse
 
 #: Effects that change something outside a server's own session.
 _CHANGES = ("mutatesTarget", "writesFilesystem", "accessesNetwork", "changesUiState",
@@ -48,7 +51,7 @@ _CHANGES = ("mutatesTarget", "writesFilesystem", "accessesNetwork", "changesUiSt
             # Not a change in itself, but in a server whose catalog predates the
             # foreign-code flag it is the only sign a tool runs something else.
             "launchesProcess")
-#: An argument named for a path, in a tool's input schema.
+#: An argument named for a path.
 _PATH_ARGUMENT = re.compile(r"(?:^|_)(?:path|paths|dir|dirs|directory|file|files|root|roots)$")
 #: How many tools one search returns.
 FIND_LIMIT = 8
@@ -64,6 +67,9 @@ class ExternalTool:
     name: str
     description: str = ""
     schema: dict[str, Any] = field(default_factory=dict)
+    #: The server marks it open-world: it reaches the network, so an address in its
+    #: arguments is what it is for.
+    network: bool = False
 
     @property
     def qualified(self) -> str:
@@ -143,47 +149,73 @@ def effects_catalog(payload: Any) -> dict[str, dict[str, Any]]:
     return found
 
 
+class _Fence:
+    """The rules of :func:`fence`, for one call."""
+
+    def __init__(self, tree: Path, roots: list[Path], network: bool) -> None:
+        self.tree, self.network = tree, network
+        self.allowed = [tree.resolve(), *(r.resolve() for r in roots)]
+
+    def locate(self, path: Path, shown: str) -> str:
+        try:
+            resolved = path.resolve()
+        except (OSError, ValueError):
+            return f"{shown!r} cannot be resolved to a path"
+        if any(resolved == r or r in resolved.parents for r in self.allowed):
+            return ""
+        return (f"{shown!r} is outside the run's workspace and the folders the owner "
+                "allowed for this tool")
+
+    def text(self, value: str, is_path: bool) -> tuple[str, str]:
+        if "\x00" in value:
+            return value, f"{value[:40]!r} holds a NUL byte"
+        if value[:5].lower() == "file:":
+            address = urlparse(value)
+            if address.netloc not in ("", "localhost"):
+                return value, f"{value[:80]!r} names a file on another machine"
+            return value, self.locate(Path(url2pathname(unquote(address.path))), value[:80])
+        candidate = Path(value)
+        rooted = bool(candidate.root or candidate.drive)  # `/etc/passwd` is rooted on Windows too
+        if not (is_path or rooted):
+            climbs = not self.network and ".." in re.split(r"[\\/]", value)
+            if climbs and collapse(value) is None:
+                return value, f"{value!r} climbs out of the run's workspace with '..'"
+            return value, ""
+        target = candidate if candidate.is_absolute() else self.tree / candidate
+        why = self.locate(target, value)
+        return (value, why) if why else (str(target.resolve()), "")
+
+    def place(self, value: Any, is_path: bool) -> tuple[Any, str]:
+        if isinstance(value, dict):
+            pairs = [(k, self.place(v, bool(_PATH_ARGUMENT.search(str(k)))))
+                     for k, v in value.items()]
+            failed = next((why for _, (_, why) in pairs if why), "")
+            return (value, failed) if failed else ({k: placed for k, (placed, _) in pairs}, "")
+        if isinstance(value, list):
+            items = [self.place(item, is_path) for item in value]
+            failed = next((why for _, why in items if why), "")
+            return (value, failed) if failed else ([placed for placed, _ in items], "")
+        if isinstance(value, str) and value.strip():
+            return self.text(value, is_path)
+        return value, ""
+
+
 def fence(arguments: dict[str, Any], schema: dict[str, Any], tree: Path,
-          roots: list[Path]) -> tuple[dict[str, Any], str]:
+          roots: list[Path], *, network: bool = False) -> tuple[dict[str, Any], str]:
     """The arguments with their paths made absolute, or why a path is refused.
 
-    A path argument -- named for one in the schema -- that is relative is
-    resolved against ``tree``; every path argument, and every other string that
-    is an absolute path, must lie in ``tree`` or one of ``roots``.
+    A path argument -- one whose key is named for a path, at any depth -- that is
+    relative is resolved against ``tree``; every path argument, and every other
+    string that is an absolute path, must lie in ``tree`` or one of ``roots``. A
+    string in an argument of any name is also refused when it is a ``file:`` address,
+    holds a NUL, or (unless the tool is a ``network`` one, for which an address
+    is the point) climbs out with ``..``: ``{"target": "../../../Windows/win.ini"}``
+    names a path as surely as ``{"path": ...}`` does, and a server that reads it does
+    not ask what the key was. ``schema`` is the tool's input schema; its keys are
+    named by the same rule.
     """
-    allowed_roots = [tree.resolve(), *(r.resolve() for r in roots)]
-    named = {k for k in (schema.get("properties") or {}) if _PATH_ARGUMENT.search(k)}
-
-    def inside(path: Path) -> bool:
-        return any(path == r or r in path.parents for r in allowed_roots)
-
-    def place(value: Any, is_path: bool) -> tuple[Any, str]:
-        if isinstance(value, list):
-            out = []
-            for item in value:
-                placed, why = place(item, is_path)
-                if why:
-                    return value, why
-                out.append(placed)
-            return out, ""
-        if not isinstance(value, str) or not value.strip():
-            return value, ""
-        candidate = Path(value)
-        if not (is_path or candidate.is_absolute()):
-            return value, ""
-        resolved = (candidate if candidate.is_absolute() else tree / candidate).resolve()
-        if not inside(resolved):
-            return value, (f"{value!r} is outside the run's workspace and the folders the "
-                           "owner allowed for this tool")
-        return str(resolved), ""
-
-    out: dict[str, Any] = {}
-    for key, value in arguments.items():
-        placed, why = place(value, key in named)
-        if why:
-            return arguments, why
-        out[key] = placed
-    return out, ""
+    placed, why = _Fence(tree, roots, network).place(arguments, False)
+    return (arguments, why) if why else (placed, "")
 
 
 def search(tools: list[ExternalTool], query: str) -> list[ExternalTool]:
@@ -334,7 +366,9 @@ class ExternalTools:
                 found += [ExternalTool(server=name, name=t["name"],
                                        description=" ".join(str(t.get("description") or
                                                                 "").split()),
-                                       schema=t.get("inputSchema") or {}) for t in listed]
+                                       schema=t.get("inputSchema") or {},
+                                       network=bool((t.get("annotations") or {})
+                                                    .get("openWorldHint"))) for t in listed]
             self._tools = found
         return self._tools
 
@@ -354,7 +388,7 @@ class ExternalTools:
                            "tools and their names.")
         server = self.servers[tool.server]
         placed, why = fence(arguments, tool.schema, tree,
-                            [Path(p) for p in server.spec.read_roots])
+                            [Path(p) for p in server.spec.read_roots], network=tool.network)
         if why:
             return False, f"Refused: {why}."
         try:

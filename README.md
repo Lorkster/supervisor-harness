@@ -16,7 +16,7 @@ and where each part of it lives in the code — is
 
 <p align="center">
   <img src="docs/images/run-lifecycle.svg" width="100%"
-       alt="The lifecycle of a run: created, analyzing, synthesizing, awaiting approval, executing, verifying, checkpoint, awaiting owner, improving, complete. A failed checkpoint reopens the tasks that fell short; report mode goes straight from synthesizing to improving.">
+       alt="The lifecycle of a run: created, analyzing, synthesizing, awaiting approval, executing, verifying, checkpoint, awaiting owner, improving, complete. A failed checkpoint reopens the tasks that fell short; a passed one goes to improving, or to awaiting owner while an escalation is open, which returns to executing on a grant; report mode, and an approval with nothing approved, go straight to improving.">
 </p>
 
 <details>
@@ -38,6 +38,29 @@ Every phase and the conditions on each arrow:
 [`docs/architecture.md`](docs/architecture.md#the-phase-machine).
 
 </details>
+
+## Contents
+
+- [What it actually does](#what-it-actually-does)
+- [Install](#install) — [updating](#updating), [uninstalling](#uninstalling),
+  [several projects](#several-projects)
+- [Using it](#using-it) — [from a host](#from-claude-code-or-cursor),
+  [from the command line](#from-the-command-line),
+  [driving the protocol yourself](#driving-the-protocol-yourself),
+  [every command](#every-command)
+- [Adding analysis lenses](#adding-analysis-lenses)
+- [Choosing models per stage](#choosing-models-per-stage) —
+  [Claude models](#current-claude-models), [Bedrock](#amazon-bedrock),
+  [trusted config files](#which-config-files-are-trusted),
+  [environment variables](#environment-variables)
+- [The two backends](#the-two-backends)
+- [Persistence and resumption](#persistence-and-resumption) —
+  [watching a run](#watching-a-run), [auditing](#auditing-a-run),
+  [exporting](#exporting-a-run)
+- [Measuring the harness](#measuring-the-harness)
+- [Policy](#policy) and [analysis tool servers](#analysis-tool-servers)
+- [MCP tools](#mcp-tools)
+- [Layout](#layout), [Development](#development), [Documentation](#documentation)
 
 ---
 
@@ -169,8 +192,18 @@ alone, and a run in a project that never learned it is not evidence about it.
 ## Install
 
 ```bash
-pip install -e .
+pip install -e ".[mcp]"        # or: pip install 'supervisor-harness[mcp]'
 ```
+
+Python 3.11 or later. The package has one runtime dependency, `httpx`; everything
+else is an extra, and the `mcp` one is what the host-facing server needs:
+
+| Extra | Adds | Needed for |
+| --- | --- | --- |
+| `mcp` | the MCP SDK | `supervisor-mcp` and `supervisor mcp`, which is how Claude Code and Cursor drive the harness. The CLI-only commands work without it |
+| `bedrock` | the Anthropic SDK with boto3 | a `bedrock` provider, see [Amazon Bedrock](#amazon-bedrock) |
+| `observe` | Playwright | rendering a page for a goal expectation that names one; without it the page is judged from code (`core/observe.py`) |
+| `dev` | pytest, coverage, ruff, mypy and `mcp` | [Development](#development) |
 
 Then, in each project you want supervised:
 
@@ -190,7 +223,10 @@ Two MCP files because the two hosts look in different places: Claude Code reads
 `.mcp.json` at the repository root, Cursor reads `.cursor/mcp.json`. Both are
 merged into rather than overwritten, so servers you already had are kept.
 
-Use `--host both` to install for both. For a worked two-host setup, see
+Use `--host both` to install for both. A host that is detected is always
+installed for, whatever `--host` says, and `.mcp.json` is written on every run;
+when no host is detected and no `--host` is given, only `.mcp.json` and
+`supervisor.config.json` are written. For a worked two-host setup, see
 [`docs/setup-examples.md`](docs/setup-examples.md).
 
 ### Updating
@@ -198,7 +234,7 @@ Use `--host both` to install for both. For a worked two-host setup, see
 `supervisor init` is also the update procedure. Run it again after upgrading:
 
 ```bash
-pip install -U -e .
+pip install -U -e ".[mcp]"
 supervisor init
 ```
 
@@ -335,31 +371,6 @@ supervisor resolve <escalation> grant --note "..."   # at await_owner
 supervisor resume                      # picks up where it stopped
 ```
 
-### Contributing checks
-
-The five CI runs, in the order they are cheapest to fix:
-
-```bash
-python -m ruff check .                                    # lint, and complexity
-python -m mypy                                            # strict, zero errors
-python tools/check_doc_refs.py                            # the docs still describe this code
-python -m pytest -q                                       # the suite, on 3.11-3.14 × two OSes
-python -m pytest -q --cov=supervisor_harness --cov-fail-under=92   # the floor
-```
-
-Each is a gate at its target rather than at a tolerated baseline: zero lint
-findings, zero type errors, zero stale documentation references, and a coverage
-floor that only ever rises. Lint was not always one — ruff went unconfigured
-until the rule set was chosen by measurement, and the 67 findings that set
-produced were tolerated by a by-(file, rule) diff until they were driven to
-zero. Widening the set later means taking the new rule to zero in the same
-change rather than reintroducing a baseline — a permanent backlog is not a
-standard.
-
-Both `ruff` and `mypy` are pinned to a minor range for that reason: when a check
-gates at zero, a new release that adds a rule turns an unrelated pull request
-red, and upgrading should be a deliberate act whose findings someone reads.
-
 ### Every command
 
 `--help` on any of them says the same as this table; nothing below is a
@@ -367,8 +378,8 @@ shorthand for something the CLI will not tell you itself.
 
 | Command | What it does | Its own arguments |
 | --- | --- | --- |
-| `init` | install host integrations and an example config, or refresh them after an upgrade | `--host claude\|cursor\|both` (default: whichever host is detected), `--force` to also replace `supervisor.config.json`, `--keep-integrations` to leave edited files alone |
-| `uninstall` | remove what `init` installed: the skill, rules, commands and the `supervisor` MCP entry, keeping every other server | `--force` to also remove copies that differ from the shipped ones, `--purge` to also delete `supervisor.config.json` and the project's own `.supervisor/`, `--dry-run` to only say what would go |
+| `init` | install host integrations and an example config, or refresh them after an upgrade | `--host claude\|cursor\|both` (default: whichever host is detected; a detected host is always included), `--force` to also replace `supervisor.config.json`, `--keep-integrations` to leave edited files alone |
+| `uninstall` | remove what `init` installed: the skill, rules, commands and the `supervisor` MCP entry, keeping every other server | `--force` to also remove copies that differ from the shipped ones, `--purge` to also delete `supervisor.config.json` and the project's own `.supervisor/` (then `git worktree prune`, so git forgets the run worktrees that went with it), `--dry-run` to only say what would go |
 | `run PROMPT` | drive a whole run to completion without a host | `--mode`, `--backend host\|autonomous`, `-y/--yes`, `--grant-envelope` to have tasks approved within the envelope and the rest sent to you |
 | `start PROMPT` | begin a host-delegated run and print its first work packets | `--mode`, `--host-agents` — the subagent types you can spawn, as a JSON array: `'["general-purpose"]'`, or `'[{"name": "general-purpose", "description": "..."}]'` when you want the description to inform role matching |
 | `report RUN AGENT` | hand back one agent's result | `-i/--input` a JSON file, or `-` for stdin (the default) |
@@ -378,7 +389,7 @@ shorthand for something the CLI will not tell you itself.
 | `escalations [RUN]` | what the run has asked you, answered or not, with each agent's own account or the harness's reason | `--open` for the unanswered ones only |
 | `resolve ESC DECISION` | answer an escalation: `grant` gives the task another attempt with your note added, `decline` defers it; the run carries on once nothing is open | `--note`, `--run RUN` |
 | `resume [RUN]` | continue an interrupted run from its event log | — |
-| `status [RUN]` | show one run in detail: phase, agents, drift, criteria | — |
+| `status [RUN]` | show one run in detail: phase, agents, drift, criteria. `--json` carries `snapshot_error`, why the derived `state.json` last failed to write, or null | — |
 | `explain [RUN]` | how the run got here: every turn, its drift signals, and the directive each one drew | `-a/--agent` one agent, `--width COLS` |
 | `drift AGENT [RUN]` | ask the drift model for a second opinion on one agent's last turn | — |
 | `events [RUN]` | print a run's event log, including its diagnostic notes | `-t/--type` one type (`note`, `unknown`, …), `--since SEQ` |
@@ -387,23 +398,39 @@ shorthand for something the CLI will not tell you itself.
 | `audit [RUN]` | what a finished run's agents actually did, as against what they were allowed to do | `-o NAME` for the evidence filename |
 | `runs` | list recent runs in this store | `-n/--limit` (default 20) |
 | `lessons` | show what previous runs taught the harness, including the ones it has retired | `-t/--target` a role id, `supervisor`, `dod` or `*`; `-n/--limit`; `--live-only` to hide retired ones |
-| `providers` | show stage routing and whether each provider answers | — |
+| `providers` | show stage routing and whether each provider answers, headed by the config settings that were ignored or corrected | — |
 | `reindex` | rebuild `index.sqlite3` from the event logs | — |
 | `delete [RUN]` | **remove runs from disk** and their rows from the index, with each run's worktree and `supervisor/` branch | a run id, or `--older-than DAYS`; `--keep-last N` never deletes the N most recent (default 5). A named run's branch goes even unmerged, and the output gives the command that restores it; `--older-than` deletes only merged branches and lists the rest |
 | `prune-lessons` | drop lessons the library has not seen for a while | `--older-than DAYS` (default 180) |
-| `mcp` | run the MCP server on stdio; `.mcp.json` starts the same server through the `supervisor-mcp` entry point | — |
-| `eval run CASES…` | measure roles (planner, reviewer, verifier) on fixed cases, several times each, and summarise how often each check passed | `--variant NAME:route=…,think=on,sampling=model` (repeatable), `--route`, `--repeat N` (default 3), `--role`, `--case`, `--out FILE` |
+| `mcp` | run the MCP server on stdio; `.mcp.json` starts the same server through the `supervisor-mcp` entry point. Needs the `mcp` extra. The server supervises the working directory, or the one `-w` names (which sets `SUPERVISOR_WORKSPACE` for it) | — |
+| `eval run CASES…` | measure roles (planner, reviewer, verifier, coordinator) on fixed cases, several times each, and summarise how often each check passed | `--variant NAME:route=…,think=on,sampling=model,planner=conversation` (repeatable), `--route`, `--repeat N` (default 3), `--role`, `--case`, `--out FILE` |
 | `eval summary FILES…` | summarise record files from earlier `eval run`s | — |
 | `eval score RUN` | a run's own record beside the project's acceptance commands, run on the tree the run left | `--accept CMD` and `--setup CMD` (repeatable), `--tree PATH` |
 
 Every command also takes `-w/--workspace`, `--json` and `--debug`, before or
-after the subcommand; `supervisor --version` prints the version.
+after the subcommand; `supervisor --version` prints the version. The read-only
+commands (`status`, `explain`, `audit`, `findings`, `trajectory`, `providers`)
+do not create a `.supervisor/` in a directory that has none.
 
 | Flag | Effect |
 | --- | --- |
 | `-w`, `--workspace` | which project to act on (default: the working directory) |
 | `--json` | machine-readable output, which is what a host driving the protocol wants |
 | `--debug` | let an unexpected failure raise with its traceback, instead of printing one line |
+
+**Exit codes.** `0` is done. `2` is a command that could not run: no such run,
+no runs recorded yet (the same on every command that reads one, `status`,
+`explain`, `audit`, `findings`, `trajectory`, `events` and `escalations` among
+them), a turn that is not JSON, or a decision word `approve` does not know. `1` is a command that ran and found something
+to look at or did not do what it was asked:
+
+- `report` and `abandon` exit 1 when the harness answered but recorded nothing (an
+  unknown agent, a duplicate report), and say so;
+- `approve` and `resolve` exit 1 if any decision was not applied, listing each one
+  and why; `approve --task ID:typo` exits 2 and sends nothing, because a typo for
+  "reject" is not consent;
+- `audit` exits 1 when it has something to report, so it can gate a pipeline;
+- `run` exits 1 if the run failed; `drift` exits 1 when there is nothing to assess.
 
 **`RUN` is optional wherever it appears in brackets.** Omitted, it means the
 most recent run in the store — the workspace's own `.supervisor/`, or the
@@ -444,9 +471,12 @@ A configured lens is chosen the way the built-ins are, by its keywords against
 the task, or on every run if `required_lenses` names it. It gets its own stage,
 `analysis.<id>`, so it can be routed to a model of its own. `title` and
 `charter` are required; `summary`, `focus_questions`, `out_of_scope`,
-`base_weight` (at most 1.0) and `host_agent_hints` are optional. Only analysis
-lenses can be configured. A lens adds a question the run asks; changing who
-does the work or who judges it is a different decision.
+`base_weight` (at most 1.0) and `host_agent_hints` are optional, and the id is
+lowercase letters, digits and hyphens. Only analysis lenses can be configured.
+A lens adds a question the run asks; changing who does the work or who judges it
+is a different decision, so the execution and verification roles (`implementer`,
+`test-engineer`, `security-engineer`, `documenter`, `verifier`, `reviewer`) are
+fixed.
 
 **A workspace file may add a lens, but never redefine an existing one**: not a
 built-in, and not one your own config defined. The workspace is usually the
@@ -477,6 +507,12 @@ drift while a strong hosted model does the architecture pass.
 A stage falls back to its parent and then to `default`, so
 `analysis.architecture` resolves through `analysis` to `default`. `|` separates
 fallbacks, tried in order when a provider fails.
+
+The stages are `planning`, `analysis` (and `analysis.<lens>`), `synthesis`,
+`execution` (and `execution.<role>`), `verification`, `drift`, `improvement`,
+`review` (the reviewer that can only veto), and `coordination` (the coordinator),
+and each falls back to `default`. `supervisor providers` lists where every one
+of them resolves.
 
 | Provider | Set up with |
 | --- | --- |
@@ -576,31 +612,69 @@ supervisor providers
 ```
 
 Environment overrides work for one-off runs:
-`SUPERVISOR_ROUTE_ANALYSIS=ollama:qwen3.8-code:latest`.
+`SUPERVISOR_ROUTE_ANALYSIS=ollama:qwen3.8-code:latest`. The full list is under
+[Environment variables](#environment-variables).
 
 ### Which config files are trusted
 
 Config layers merge with later files winning, but not every layer is trusted with
-everything. Files under your home directory (or an explicit `SUPERVISOR_HOME`)
-are trusted — you put them there. Files **inside the workspace** are not, because
-the workspace is often a repository someone else wrote and you have merely
-pointed the harness at.
+everything. In order, later over earlier:
 
-A workspace file may tune how the harness thinks — policy thresholds, routing,
-budgets. It may not set:
+1. `~/.supervisor/config.json` — trusted. It is read even when `SUPERVISOR_HOME`
+   points elsewhere.
+2. `$SUPERVISOR_HOME/config.json`, when set — trusted.
+3. `<workspace>/.supervisor/config.json` — **not** trusted.
+4. `<workspace>/supervisor.config.json` — **not** trusted. This is the one
+   `supervisor init` writes.
+5. [Environment variables](#environment-variables).
+
+Files **inside the workspace** are not trusted because the workspace is often a
+repository someone else wrote and you have merely pointed the harness at.
+
+A workspace file may choose routing, add `required_lenses` and new analysis
+lenses, narrow the scope envelope, and set the rest of the settings marked *yes*
+in the [Policy](#policy) table. It may not tune how sceptical the harness is, what
+a run may spend, or where your credentials go. It may not set:
 
 | Setting | Why |
 | --- | --- |
 | `policy.allow_command_execution` | It would grant shell execution by being checked out |
+| `policy.require_tests`, `require_security_review`, `require_code_quality`, `require_negative_test`, `require_liveness_review`, `require_fails_before`, `min_dod_criteria` | The bars a change is judged against. A repository that could lower them would be marking its own homework |
+| `policy.checkpoint_threshold`, `drift_threshold`, `drift_hard_threshold`, `model_drift_check`, `drift_check_every`, `min_scope_coverage`, `clean_check` | How far work may stray, how much of its scope an agent must read, and whether the final gates are re-run on a clean checkout, before work is corrected, stopped or sent back |
+| `policy.approval`, `veto_review`, `requirements_ledger` | Whether a person, or the harness within a grant, reviews each task; whether a reviewer reads what the gate passed; whether the request is held to its own words |
+| `policy.max_parallel_agents`, `default_max_turns`, `execution_max_turns`, `max_checkpoint_iterations`, `max_task_attempts`, `max_coordinator_decisions`, `max_unreported_dispatches`, `max_analysis_lenses`, `max_lessons_in_brief`, `envelope_max_age_days` | What a run may spend, and for how long a grant stands: each multiplies your API calls, or is a bound the workspace would set on its own consent |
+| `backend` | It decides whether the harness answers for itself or hands the run to a host agent |
+| `tool_servers` | The harness runs each one's command |
 | `providers.*.base_url` | It would redirect where your API key is sent |
-| `providers.*.api_key`, `.api_key_env`, `.type` | Same |
+| `providers.*.api_key`, `.api_key_env`, `.type`, `.params`, `.default_model` | Same; `params` is merged into the request body, so it could replace the conversation or the model, and `default_model` picks the model |
 | `providers.*.region`, `.profile` | They decide where an AWS-credentialed request goes and which identity signs it |
 | `home` | It would redirect where run history is written |
 
-Anything rejected is reported by `supervisor providers` rather than silently
-dropped. This closes a real hole: without the split, cloning a repository that
+Two things are merged rather than refused. `scope_envelope` and
+`scope_envelope_forbidden` may be set, but only to narrow: an allowed path counts
+only if it lies inside your own envelope, and the forbidden list is yours plus the
+workspace's, so an empty list from a repository widens nothing. And a workspace
+file that is not valid UTF-8, or cannot be read, is ignored whole.
+
+Anything rejected or corrected is reported by `supervisor providers` rather than
+silently dropped; that includes a `max_parallel_agents`, `default_max_turns` or
+`execution_max_turns` below 1 from any file, which is raised to 1. This closes a
+real hole: without the split, cloning a repository that
 happens to contain a `supervisor.config.json` was enough to turn on command
 execution and post your `ANTHROPIC_API_KEY` to someone else's host.
+
+### Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `SUPERVISOR_HOME` | Keep runs, lessons and the index in this one store instead of `<project>/.supervisor/`, and read `config.json` from it as a trusted file |
+| `SUPERVISOR_BACKEND` | `host` or `autonomous`, over what config says. An unrecognised value is ignored |
+| `SUPERVISOR_ROUTE_<STAGE>` | Route one stage for this run, e.g. `SUPERVISOR_ROUTE_ANALYSIS=ollama:qwen3.8-code:latest`. A dot in a stage name is written `__`: `SUPERVISOR_ROUTE_ANALYSIS__SECURITY` |
+| `SUPERVISOR_HOST` | Name the host (`claude-code`, `cursor`) instead of detecting it |
+| `SUPERVISOR_WORKSPACE` | The workspace the MCP server supervises (default: its working directory). An unexpanded `${workspaceFolder}` is treated as unset |
+| `OLLAMA_HOST` | Where the `ollama` provider connects |
+| `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` | The keys the `openrouter` and `anthropic` providers read by default (`api_key_env` changes which variable) |
+| `AWS_REGION` and the AWS credential chain | The `bedrock` provider, when `region` is not set in config |
 
 ---
 
@@ -644,7 +718,10 @@ run only the project's own check runners (`pytest`, `npm`, `make`, …), may not
 use shell metacharacters or globs, and may not hand a runner its program inline
 (`python -c`, `node -e`). Paths named on the command line must fall inside the
 agent's scope; an agent that declared none is held to the workspace, which is
-what an empty scope already meant to `write_file`.
+what an empty scope already meant to `write_file`. A command runs without your
+credentials, and on Windows an argument that `cmd.exe` would run as a second
+command is refused for `npm`, `npx` and `yarn`. [`SECURITY.md`](SECURITY.md)
+lists exactly what the fence refuses and what it does not.
 
 That last part used to work the other way round. The fence applied only to an
 agent that *had* a scope, on the reasoning that there was nothing to check a
@@ -734,14 +811,18 @@ if you set `SUPERVISOR_HOME` (see [Several projects](#several-projects)):
 
 ```
 runs/<run_id>/events.jsonl    append-only, authoritative
-runs/<run_id>/state.json      derived snapshot, for fast status reads
+runs/<run_id>/state.json      derived snapshot, for fast status reads; written every 100 events
+                              and at phase changes, so a read folds the log's tail on top of it
 runs/<run_id>/progress.ndjson derived, tailable: one short line per event
 runs/<run_id>/packets/        the briefs handed out, and the run's RULES.md
 runs/<run_id>/contracts/      the answer schemas, written once per run
-runs/<run_id>/results/        the answers agents wrote back
+runs/<run_id>/results/        the answers agents wrote back (not redacted, unlike the event log)
 runs/<run_id>/artifacts/      report.md, reconciliation.md, agent output
+runs/<run_id>/audit/          the evidence `supervisor audit` writes
+runs/<run_id>/worktree/       an execute-mode run's own checkout, until it is removed
 lessons.jsonl                 cross-run lessons library
 index.sqlite3                 derived, rebuildable with `supervisor reindex`
+tool-servers/<name>.log       an analysis tool server's own output
 ```
 
 The event log is the source of truth: every turn, directive, drift assessment,
@@ -938,7 +1019,7 @@ supervisor eval score <run_id> --setup "npm ci" \
     --accept "npm run check" --accept "npx playwright test"
 ```
 
-A case is one role, one workspace and one input, in JSON: a repository at a
+A case is one role (planner, review, verifier or coordinator), one workspace and one input, in JSON: a repository at a
 commit (`${VAR}` in its path is read from the environment), a set of files, or
 an empty directory -- a green-field project, where the request is all there
 is. Its output is judged by checks that hold for any project (a scope names
@@ -951,51 +1032,68 @@ changes how a run behaves.
 
 ## Policy
 
-Tuning lives in `supervisor.config.json` under `policy`:
+Tuning lives under `policy`, in your own `~/.supervisor/config.json` or in a
+project's `supervisor.config.json`. The last column says whether a project file
+may set it; a setting marked *no* is ignored there and only your own config can
+change it (see [Which config files are trusted](#which-config-files-are-trusted)).
 
-| Setting | Default | What it controls |
-| --- | --- | --- |
-| `max_parallel_agents` | 4 | Concurrency in autonomous mode |
-| `default_max_turns` | 6 | Analysis agent budget |
-| `drift_threshold` | 0.45 | Score at which a correction is issued |
-| `drift_hard_threshold` | 0.8 | Score at which a repeat offender is stopped |
-| `model_drift_check` | true | Escalate suspected drift to the drift model |
-| `min_scope_coverage` | 0.5 | Share of its scope an analysis agent must read before "done" is accepted; below it, sent back once; 0 disables |
-| `checkpoint_threshold` | 0.75 | Score needed to pass the quality gate |
-| `max_checkpoint_iterations` | 3 | Remediation rounds before giving up |
-| `require_tests` | true | Insert a mandatory test criterion |
-| `require_security_review` | true | Force a security lens and criterion |
-| `require_code_quality` | true | Insert a mandatory convention criterion |
-| `require_negative_test` | true | Demand the rejected case on a fence or guard task |
-| `require_liveness_review` | true | Demand a bounded-time proof on locking, retry or I/O |
-| `require_fails_before` | true | Prove a behaviour change's tests fail on the baseline commit, by running them there (git and pytest; only when `allow_command_execution` is on) |
-| `min_dod_criteria` | 2 | Reject thinner definitions of done |
-| `max_unreported_dispatches` | 3 | Packets to a silent host agent before abandoning it |
-| `agent_timeout_seconds` | 0 | Wall-clock bound on the same silence; 0 disables |
-| `allow_command_execution` | false | Let the harness run commands itself |
-| `command_timeout_seconds` | 300 | Bound on one command an agent runs |
-| `check_timeout_seconds` | 1800 | Bound on one of the harness's own checks: a criterion's command, its baseline run, the fails-before run |
-| `approval` | "task" | **Protected.** `"envelope"` lets `supervisor run --grant-envelope` approve tasks within the run's envelope by a deterministic gate, sending what it refuses to you; it needs command execution, tests, `fails_before` and `execution_worktree` |
-| `implementer_loop` | "turns" | `"conversation"`: implementers and verifiers are each one conversation with native tool calls (`core/conversation.py`), where the provider takes tools natively |
-| `planner_loop` | "conversation" | The synthesis that writes tasks reads the workspace with read-only tools before it plans, and answers through `propose_plan` (`core/planner.py`); `"one_shot"` asks for one JSON answer instead. A provider without native tools is always asked one-shot |
-| `veto_review` | true | **Protected.** Under envelope approval, a reviewer that can only veto reads each task the gate passed (`core/review.py`) |
-| `clean_check` | true | Once nothing more can run, the final gates' checks run again on a clean checkout of what the run would commit, its dependencies installed as CI would; a check that passes only on what the run's tree has by accident, such as build output, fails there and sends its task back |
-| `coordinator` | true | When reports come back -- a failed check, an implementer that stopped, a finding about another task's work -- a coordinator model picks what happens next from a fixed menu (send back, move a check, wait, judge as it stands, ask the owner, leave failed), and the harness checks each pick; it cannot pass a check, drop one or widen anything |
-| `max_coordinator_decisions` | 24 | How many times a run may consult the coordinator; past it, a failed task is followed up within its attempts and a stopped one goes to the owner |
-| `follow_up` | true | A task whose check fails goes back at once, while attempts remain, and its next attempt continues its implementer's conversation with what the check found; off, only a failing checkpoint sends it back, to a fresh agent. Read only with `coordinator` off |
-| `requirements_ledger` | true | **Protected.** Before the plan, a reader lists what the request and the documents it points to require, as quotes the harness finds where they are said to be; the plan must deliver each or set it aside, and have each tested by a task other than its builder or say why not (`core/requirements.py`) |
-| `execution_worktree` | true | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
-| `apply_lessons` | true | Inject past lessons into briefs |
-| `lesson_decay_after_runs` | 10 | Runs a lesson may go unconfirmed before its confidence falls |
-| `lesson_decay_per_run` | 0.05 | How much it falls per run past that |
-| `lesson_confidence_floor` | 0.15 | Below this a lesson is retired — kept, with the reason, but not briefed |
+| Setting | Default | Project file | What it controls |
+| --- | --- | --- | --- |
+| `max_parallel_agents` | 4 | no | Concurrency in autonomous mode; below 1 is raised to 1 and reported |
+| `default_max_turns` | 6 | no | Analysis agent budget; below 1 is raised to 1 and reported |
+| `execution_max_turns` | 10 | no | Execution agent budget; below 1 is raised to 1 and reported |
+| `min_analysis_lenses`, `max_analysis_lenses` | 2, 6 | yes, no | How many lenses a run may pick; a typo fix gets the minimum. A project file may set the minimum, not the maximum |
+| `required_lenses` | none | yes | Lenses every run includes, built-in or defined under `roles`. It only adds: the security lens is forced by `require_security_review` |
+| `drift_threshold` | 0.45 | no | Score at which a correction is issued |
+| `drift_hard_threshold` | 0.8 | no | Score at which a repeat offender is stopped |
+| `model_drift_check` | true | no | Escalate suspected drift to the drift model |
+| `drift_check_every` | 1 | no | With `model_drift_check`, also consult the drift model on every 3×N-th turn, so quiet drift does not build up unseen; 0 turns the spot-check off |
+| `min_scope_coverage` | 0.5 | no | Share of its scope an analysis agent must read before "done" is accepted; below it, sent back once; 0 disables |
+| `checkpoint_threshold` | 0.75 | no | Score needed to pass the quality gate |
+| `max_checkpoint_iterations` | 3 | no | Remediation rounds before giving up |
+| `max_task_attempts` | 3 | no | Attempts a task gets before it is left failed or put to the owner |
+| `require_tests` | true | no | Insert a mandatory test criterion |
+| `require_security_review` | true | no | Force a security lens and criterion |
+| `require_code_quality` | true | no | Insert a mandatory convention criterion |
+| `require_negative_test` | true | no | Demand the rejected case on a fence or guard task |
+| `require_liveness_review` | true | no | Demand a bounded-time proof on locking, retry or I/O |
+| `require_fails_before` | true | no | Prove a behaviour change's tests fail on the baseline commit, by running them there (git and pytest; only when `allow_command_execution` is on) |
+| `min_dod_criteria` | 2 | no | Reject thinner definitions of done |
+| `max_unreported_dispatches` | 3 | no | Packets to a silent host agent before abandoning it; 0 disables |
+| `agent_timeout_seconds` | 0 | yes | Wall-clock bound on the same silence; 0 disables |
+| `allow_command_execution` | false | no | Let the harness run commands itself |
+| `command_timeout_seconds` | 300 | yes | Bound on one command an agent runs |
+| `check_timeout_seconds` | 1800 | yes | Bound on one of the harness's own checks: a criterion's command, its baseline run, the fails-before run |
+| `approval` | "task" | no | `"envelope"` lets `supervisor run --grant-envelope` approve tasks within the run's envelope by a deterministic gate, sending what it refuses to you; it needs command execution, tests, `fails_before` and `execution_worktree` |
+| `scope_envelope`, `scope_envelope_forbidden` | none | yes, to narrow | The paths a run may modify, and the ones it may not; empty means the whole workspace. The plan may narrow the envelope further, nothing may widen it |
+| `envelope_max_age_days` | 7 | no | How long a grant stands before a resume asks you to re-grant it (`supervisor approve --renew-envelope`); 0 disables |
+| `implementer_loop` | "turns" | yes | `"conversation"`: implementers and verifiers are each one conversation with native tool calls (`core/conversation.py`), where the provider takes tools natively |
+| `planner_loop` | "conversation" | yes | The synthesis that writes tasks reads the workspace with read-only tools before it plans, and answers through `propose_plan` (`core/planner.py`); `"one_shot"` asks for one JSON answer instead. A provider without native tools is always asked one-shot |
+| `veto_review` | true | no | Under envelope approval, a reviewer that can only veto reads each task the gate passed (`core/review.py`) |
+| `clean_check` | true | no | Once nothing more can run, the final gates' checks run again on a clean checkout of what the run would commit, its dependencies installed as CI would; a check that passes only on what the run's tree has by accident, such as build output, fails there and sends its task back |
+| `coordinator` | true | yes | When reports come back -- a failed check, an implementer that stopped, a finding about another task's work -- a coordinator model picks what happens next from a fixed menu (send back, move a check, wait, judge as it stands, ask the owner, leave failed), and the harness checks each pick; it cannot pass a check, drop one or widen anything |
+| `max_coordinator_decisions` | 24 | no | How many times a run may consult the coordinator; past it, a failed task is followed up within its attempts and a stopped one goes to the owner |
+| `follow_up` | true | yes | A task whose check fails goes back at once, while attempts remain, and its next attempt continues its implementer's conversation with what the check found; off, only a failing checkpoint sends it back, to a fresh agent. Read only with `coordinator` off |
+| `requirements_ledger` | true | no | Before the plan, a reader lists what the request and the documents it points to require, as quotes the harness finds where they are said to be; the plan must deliver each or set it aside, and have each tested by a task other than its builder or say why not (`core/requirements.py`) |
+| `execution_worktree` | true | yes | An autonomous execute-mode run works on its own branch, `supervisor/<run>`, in a worktree, and leaves the branch; never your working tree, and nothing is pushed |
+| `learn_from_failures` | true | yes | Turn failures that better briefing would have prevented into lessons |
+| `apply_lessons` | true | yes | Inject past lessons into briefs |
+| `max_lessons_in_brief` | 6 | no | How many lessons one brief carries |
+| `lesson_decay_after_runs` | 10 | yes | Runs a lesson may go unconfirmed before its confidence falls |
+| `lesson_decay_per_run` | 0.05 | yes | How much it falls per run past that |
+| `lesson_confidence_floor` | 0.15 | yes | Below this a lesson is retired — kept, with the reason, but not briefed |
+| `lesson_max_age_days` | 180 | yes | A lesson older than this is not applied and is dropped the next time the library is rewritten |
 
-One setting sits beside `policy` rather than inside it, because it decides how
-a packet is carried rather than how hard the supervisor pushes back:
+Some settings sit beside `policy` rather than inside it, because they decide how
+a packet is carried or where a run goes, not how hard the supervisor pushes back
+(`providers`, `routing` and `roles` are described above):
 
-| Setting | Default | What it controls |
-| --- | --- | --- |
-| `inline_briefs` | false | Put the whole brief and schema in the packet instead of pointing at them. For a host that cannot read files. |
+| Setting | Default | Project file | What it controls |
+| --- | --- | --- | --- |
+| `inline_briefs` | false | yes | Put the whole brief and schema in the packet instead of pointing at them. For a host that cannot read files. |
+| `backend` | "host" | no | `"host"` or `"autonomous"`: who runs the agents. `SUPERVISOR_BACKEND` and `run --backend` override it |
+| `home` | none | no | Where runs and lessons are kept, in place of `<project>/.supervisor/`; the same as `SUPERVISOR_HOME` |
+| `tool_servers` | none | no | See below |
 
 ### Analysis tool servers
 
@@ -1034,13 +1132,18 @@ home, and its results reach agents marked as data, not instructions.
 
 ## MCP tools
 
+Thirteen tools. The CLI exposes the same operations (see
+[Driving the protocol yourself](#driving-the-protocol-yourself)), and
+[`docs/protocol.md`](docs/protocol.md) lists every argument.
+
 | Tool | Purpose |
 | --- | --- |
 | `supervisor_start` | Begin a run; returns the first work packets |
 | `supervisor_report` | Hand back one agent's result; returns a directive |
 | `supervisor_advance` | Move to the next phase once packets are reported |
 | `supervisor_abandon` | Give up on an agent whose sub-agent crashed or was cancelled |
-| `supervisor_approve` | Record the user's decisions on proposed tasks |
+| `supervisor_approve` | Record the user's decisions on proposed tasks (approve, modify, reject, defer), or with `renew_envelope` re-grant a stale envelope |
+| `supervisor_resolve` | Record the user's answers to escalations at `await_owner`: grant or decline each |
 | `supervisor_status` / `supervisor_runs` | Inspect runs |
 | `supervisor_resume` | Continue an interrupted run |
 | `supervisor_check_drift` | Second opinion on an agent that looks off-brief |
@@ -1120,6 +1223,38 @@ pip install -e ".[dev]"
 python -m pytest tests -q
 ```
 
+### Contributing checks
+
+The five gates CI runs on every pull request ([`ci.yml`](.github/workflows/ci.yml)),
+in the order they are cheapest to fix:
+
+```bash
+python -m ruff check .                                    # lint, and complexity
+python -m mypy                                            # strict, zero errors
+python tools/check_doc_refs.py                            # the docs still describe this code
+python -m pytest -q                                       # the suite, on 3.11-3.14 × two OSes
+python -m pytest -q --cov=supervisor_harness --cov-fail-under=92   # the floor
+```
+
+CI also runs `supervisor --help` through the installed entry point, and the suite
+once more with the `bedrock` extra installed, failing if the tests that need it
+were skipped. A separate workflow
+([`audit.yml`](.github/workflows/audit.yml)) runs `pip-audit` over `.[mcp,bedrock]`
+when `pyproject.toml` changes and every Monday.
+
+Each of the five is a gate at its target rather than at a tolerated baseline: zero lint
+findings, zero type errors, zero stale documentation references, and a coverage
+floor that only ever rises. Lint was not always one — ruff went unconfigured
+until the rule set was chosen by measurement, and the 67 findings that set
+produced were tolerated by a by-(file, rule) diff until they were driven to
+zero. Widening the set later means taking the new rule to zero in the same
+change rather than reintroducing a baseline — a permanent backlog is not a
+standard.
+
+Both `ruff` and `mypy` are pinned to a minor range for that reason: when a check
+gates at zero, a new release that adds a rule turns an unrelated pull request
+red, and upgrading should be a deliberate act whose findings someone reads.
+
 The suite covers both backends end to end against a fake provider, so
 orchestration is tested rather than a model's mood: the full lifecycle, host
 delegation, resumption from the event log, drift correction inside a live run,
@@ -1143,8 +1278,8 @@ memory.
 | [`docs/setup-examples.md`](docs/setup-examples.md) | Worked setups end to end, including two hosts on one machine with different credentials, and what to add for autonomous runs. |
 | [`docs/protocol.md`](docs/protocol.md) | The wire protocol between the harness and the host. |
 | [`docs/quality-standard.md`](docs/quality-standard.md) | **The standard this codebase is held to.** Ten criteria, the CI gates that enforce each, and when a new gate is worth adding. |
-| [`docs/development-plan.md`](docs/development-plan.md) | **The work that is scheduled.** Nine batches: three from what a real run cost in latency, context and unused local agents, and six adapted from a reading of another agent framework. Says what is verified, what is only a reading, and what was decided against. |
-| [`docs/autonomy-plan.md`](docs/autonomy-plan.md) | **The next work.** Fewer interruptions without lowering the bar: a verifier that is not a model, escalations, a run on its own branch, and approving the envelope rather than each task. Then a separate outer loop. Written from a reading of turnstone, with the constraints security-eval sets. |
+| [`docs/development-plan.md`](docs/development-plan.md) | **A live plan.** Nine batches: three from what a real run cost in latency, context and unused local agents, and six adapted from a reading of another agent framework. Batches 1–8 are merged and batch 9 was rewritten on a measurement. Says what is verified, what is only a reading, and what was decided against. |
+| [`docs/autonomy-plan.md`](docs/autonomy-plan.md) | **The plan for fewer interruptions without lowering the bar:** a verifier that is not a model, escalations, a run on its own branch, approving the envelope rather than each task, requirements held to the request, and a coordinator that holds the plan. Built batch by batch, each with what it measured; batch N (the owner's skills for a run's agents) is planned, and a separate outer loop is after it. Written from a reading of turnstone, with the constraints security-eval sets. |
 | [`docs/history/`](docs/history/) | **Closed records.** The self-review that found the defects and how they were closed, the plan the work followed, the quality assessment that set the standard, and the design pass for shared context. Kept for the reasoning; nothing in there describes the harness as it is now. |
 
 Documents that cite code by line number are checked in CI

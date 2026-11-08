@@ -18,6 +18,7 @@ contributes the tools, the repository context and the user's permission model.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ from .assists import assisting, record_assist
 from .config import KNOWN_STAGES
 from .core.supervisor import Supervisor, SupervisorResponse
 from .models import Backend, RunMode
+from .store.runstore import RunStore
 
 if TYPE_CHECKING:
     # Type-checked against the SDK this project supports. The runtime import
@@ -415,8 +417,11 @@ def _register_read_tools(server: _Server) -> None:
             limit: How many to return. Default 10.
         """
         sup = supervisor()
-        sup.store.reindex()
-        return {"runs": sup.store.index().list_runs(limit)}
+        # Only runs whose log has moved are read, and off the event loop, on a
+        # store (and SQLite connection) of the thread's own: this used to re-read
+        # and re-fold every run's whole log, synchronously, on every call.
+        await asyncio.to_thread(_refresh_index, sup.store.root)
+        return {"runs": sup.store.index().list_runs(max(1, limit))}
 
     @server.tool(
         description=(
@@ -449,6 +454,7 @@ def _register_read_tools(server: _Server) -> None:
             limit: How many to return. Default 20.
         """
         store = supervisor().store
+        limit = max(1, limit)      # a negative slice below would drop from the wrong end
         lessons = store.lessons_for([target], limit) if target else store.lessons()[-limit:]
         return {
             "lessons": [
@@ -505,6 +511,12 @@ def build_server() -> _Server:
     _register_read_tools(server)
     _register_meta_tools(server)
     return server
+
+
+def _refresh_index(root: Path) -> None:
+    """Bring the index up to date on a connection of this thread's own."""
+    with RunStore(root) as store:
+        store.refresh_index()
 
 
 def _mode(value: str) -> RunMode:

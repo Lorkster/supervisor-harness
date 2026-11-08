@@ -97,7 +97,8 @@ approval**, so check before you start.
    report again. If the agent was accepted or stopped, move on.
 
 4. **Advance.** Once every packet is reported, call `supervisor_advance` to get
-   the next phase.
+   the next phase. Pass `host_agents` again only if the sub-agent types you can
+   spawn have changed since the run started; the ones declared then are remembered.
 
 5. **Approval.** When the run returns `await_approval`, present each proposed
    task to the user showing:
@@ -107,8 +108,28 @@ approval**, so check before you start.
    - anything in `task_notes` — these are criteria the harness added or flagged
      as too weak to verify
 
-   Ask which to approve, modify or reject. **Never approve on the user's
-   behalf.** Then call `supervisor_approve` with their decisions.
+   Ask which to approve, modify, reject or defer. **Never approve on the user's
+   behalf.** Then call `supervisor_approve` with their decisions, one entry per
+   task:
+
+   ```
+   supervisor_approve(run_id="...", decisions=[
+     {"task_id": "tsk_...", "decision": "approve"},
+     {"task_id": "tsk_...", "decision": "modify", "note": "...",
+      "modifications": {"action": "..."}}])
+   ```
+
+   A decision is one of those four words exactly. Anything else, a task that is
+   no longer proposed, or a call outside `await_approval` applies nothing for
+   that task; the response lists it in `detail.not_applied`, with why. Show the
+   user that list and ask again: an unapplied decision is not an approval.
+
+   If the response is `await_approval` with `detail.needs` set to
+   `"envelope_renewal"`, there are no tasks to decide: the run was resumed after
+   its grant went stale, and it will not start writing until the user re-grants
+   it. Show the user `detail.envelope`, what the run may modify, and ask whether
+   it still stands. Only then call `supervisor_approve(run_id="...",
+   decisions=[], renew_envelope=True)`. This renews the date, never the paths.
 
 6. **Execution and verification** repeat steps 2–4. Verification agents must
    run the stated commands for real and report the actual output. A criterion
@@ -165,6 +186,9 @@ approval**, so check before you start.
   both silence, and it will keep handing you the same packet. Say so instead of
   inventing a result on the agent's behalf. The phase then settles: analysis
   moves on, an abandoned task falls to the checkpoint and is retried.
+- The user asks why the supervisor said what it said to an agent →
+  `supervisor_explain(run_id, agent_id)` returns each turn, its drift signals and
+  the directive it drew, from the log.
 - A verification command cannot run → report `status: "blocked"` with the real
   error. A blocked criterion is honest; a fabricated pass is not.
 - The user wants to stop → the run is persisted; `supervisor_status` shows

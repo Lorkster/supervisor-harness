@@ -1,6 +1,30 @@
 # The development plan: nine batches
 
-*Written 2026-09-07. This one is live — the work in it is scheduled, not done.*
+*Written 2026-09-07; status table added 2026-11-08, checked against `8f34f4e` and,
+on 2026-11-08, against the working tree of branch `review/code-and-docs-2026-11`.
+This one is still live, but only for what is left: batches 1–8 are done, batch 9
+was declined and rewritten, and of the rewrite one half is partly built and the
+other is not started.*
+
+| Batch | What | State | Where |
+| --- | --- | --- | --- |
+| 1 | Bind local agents | **done** | [#53](https://github.com/Lorkster/supervisor-harness/pull/53) |
+| 2 | Packets by reference | **done** | [#54](https://github.com/Lorkster/supervisor-harness/pull/54) |
+| 3 | The run ledger and stage timing | **done** | [#55](https://github.com/Lorkster/supervisor-harness/pull/55) |
+| 4 | Trajectory export | **done** | [#56](https://github.com/Lorkster/supervisor-harness/pull/56) |
+| 5 | Facts that know whether they are still true | **done** | [#57](https://github.com/Lorkster/supervisor-harness/pull/57) |
+| 6 | Lessons that decay and consolidate | **done** | [#58](https://github.com/Lorkster/supervisor-harness/pull/58) |
+| 7 | `supervisor audit` | **done** | [#59](https://github.com/Lorkster/supervisor-harness/pull/59) |
+| 8 | Enforce versus observe | **done** | [#60](https://github.com/Lorkster/supervisor-harness/pull/60) |
+| 9 | Reactive supervision (`race()`) | **declined** on measurement | [#62](https://github.com/Lorkster/supervisor-harness/issues/62), rewritten in `c8d90fa` |
+| 9a | Concurrency in the ledger; a note when a fan-out serialises | **partly built.** Built: overall concurrency in `supervisor status` (`core/timing.py`), and per-phase `conc` and the spread of a handout (`issued over`) in `tools/where_the_time_went.py`. Not built: `conc` in the ledger line, and the note on the log. | `e3b5664`, `b31ed30`, direct commits |
+| 9b | Decompose synthesis | **open.** Gated, by its own text, on 9a's numbers holding on a second run. | — |
+
+Batch numbers here belong to this plan. [`autonomy-plan.md`](autonomy-plan.md)
+has its own lettered batches, A–O, and a status table of its own. Its go-live
+runs used item 9a as one of their two tasks, which is why 9a appears in that
+document as a test case; no commit on `main` carries the work of those runs, and
+the two unbuilt parts of 9a are unbuilt.
 
 > **Progress.** Batches 1–8 are merged:
 > [#53](https://github.com/Lorkster/supervisor-harness/pull/53),
@@ -369,8 +393,8 @@ originates from other agents.
 *Inspired by `nooa-memory/{forgetting,reflection}.py`.*
 
 The library has `occurrences`, `confidence` and `also_seen_in`, and
-`recurring_lessons` groups by `(target, statement)` — but nothing decays,
-nothing merges, and a lesson learned once outranks nothing for ever. With
+`add_lesson` folds an identical `(target, statement)` into one row — but nothing decays,
+nothing merges what is said twice in different words, and a lesson learned once outranks nothing for ever. With
 `max_lessons_in_brief: 6`, which six an agent gets is already arbitrary and gets
 more arbitrary with every run.
 
@@ -623,7 +647,7 @@ plan should not rest on one.
 ## Woven in rather than batched
 
 Two pieces of NOOA's vocabulary, taken into docs alongside the batch that makes
-each true.
+each true. *Checked 2026-11-08: the first is in; the second is not.*
 
 **"Types validate values; Python validates the world."** Seven words for the
 thesis of [`core/dod.py`](../src/supervisor_harness/core/dod.py), and it names a

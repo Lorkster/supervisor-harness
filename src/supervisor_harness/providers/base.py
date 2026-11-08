@@ -183,6 +183,9 @@ class Provider(abc.ABC):
 # --------------------------------------------------------------------------
 
 _FENCE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.DOTALL)
+#: The longest text `extract_json` will try to parse. A model's answer is a few
+#: thousand characters; a few million is a flood.
+MAX_JSON_CHARS = 4_000_000
 
 
 def extract_json(text: str) -> dict[str, Any] | None:
@@ -201,7 +204,9 @@ def extract_json(text: str) -> dict[str, Any] | None:
         candidates.append(span)
 
     for index, candidate in enumerate(candidates):
-        if not candidate:
+        # A candidate this long is not an answer, and a parser given one nested a
+        # hundred thousand deep is what RecursionError (below) is for.
+        if not candidate or len(candidate) > MAX_JSON_CHARS:
             continue
         # strict=False permits the literal newlines and tabs models routinely
         # leave inside string values. Rejecting those lost otherwise complete
@@ -209,7 +214,7 @@ def extract_json(text: str) -> dict[str, Any] | None:
         for strict in (True, False):
             try:
                 parsed = json.loads(candidate, strict=strict)
-            except (json.JSONDecodeError, TypeError, ValueError):
+            except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
                 continue
             # Every branch below this point is the harness helping. Counted
             # rather than merely done, so a provider that needs its JSON dug

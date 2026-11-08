@@ -44,6 +44,23 @@ DEFAULT_DIRNAME = ".supervisor"
 SNAPSHOT_REPLACE_RETRIES = 10
 SNAPSHOT_REPLACE_BACKOFF = 0.02
 
+#: How many events a run may add past its snapshot before the next emit rewrites
+#: it. The snapshot used to be serialised whole, fsynced and renamed on *every*
+#: emit, which made a run quadratic in its own length -- 18 ms an emit at 200
+#: events, 112 ms at 4,000, and a state.json as large as the log. It is a cache:
+#: ``load_state`` compares its ``last_seq`` with the log and completes it from
+#: the tail, so a snapshot that is up to this many events behind costs that many
+#: events to read and nothing else. Phase edges, run creation and end, and
+#: ``sync_index`` write it regardless.
+SNAPSHOT_EVERY = 100
+
+#: Event types after which the snapshot is written whatever the count says.
+_SNAPSHOT_EDGES = frozenset({EventType.RUN_CREATED, EventType.PHASE_CHANGED, EventType.RUN_ENDED})
+
+#: A ``.state-*.tmp`` older than this was left by a writer that was killed
+#: between creating it and renaming it; a live writer needs milliseconds.
+STALE_TMP_SECONDS = 60.0
+
 #: Bounds on the shared lessons library, used when no policy is passed in. The
 #: library is deliberately cross-workspace, so it needs an edge somewhere.
 DEFAULT_LESSON_MAX_AGE_DAYS = 180
@@ -143,13 +160,22 @@ class RunStore:
 
     # -- run plumbing ------------------------------------------------------
 
-    def run_dir(self, run_id: str) -> Path:
+    def run_dir(self, run_id: str, *, create: bool = True) -> Path:
+        """The run's directory, made if need be.
+
+        ``create=False`` is for readers. Creating on every call meant a read of
+        an id that does not exist -- ``supervisor_report`` with a typo, a
+        ``read_result`` for a run that was never started -- left an empty
+        ``runs/<id>/`` behind for each one.
+        """
         path = self.runs_dir / checked_run_id(run_id)
-        path.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
         return path
 
     def log(self, run_id: str) -> EventLog:
-        return EventLog(self.run_dir(run_id) / "events.jsonl")
+        # The directory is the log's to create when it first writes.
+        return EventLog(self.run_dir(run_id, create=False) / "events.jsonl")
 
     def exists(self, run_id: str) -> bool:
         try:
@@ -165,11 +191,33 @@ class RunStore:
         return session
 
     def open(self, run_id: str) -> RunSession:
-        """Resume an existing run by replaying its log."""
-        if not self.exists(run_id):
-            raise FileNotFoundError(f"no such run: {run_id}")
-        state = self._fold_log(run_id)
-        return RunSession(self, state)
+        """Resume an existing run: its snapshot, completed from the log's tail.
+
+        This always folded the whole log, so every report, advance, approve and
+        resume paid for the run's entire history. :meth:`load_state` reads the
+        snapshot and folds only what was appended after it, and falls back to the
+        whole log whenever the snapshot is missing, unreadable or unusable.
+        """
+        state, snapshot_seq = self._load(run_id)
+        self._sweep_stale_tmp(run_id)
+        return RunSession(self, state, snapshot_seq=snapshot_seq)
+
+    def _sweep_stale_tmp(self, run_id: str) -> None:
+        """Remove snapshot temporaries a killed writer left behind.
+
+        Only ones old enough that no live writer could still own them. Best
+        effort: a file that will not go is the next open's problem.
+        """
+        cutoff = time.time() - STALE_TMP_SECONDS
+        try:
+            for tmp in self.run_dir(run_id, create=False).glob(".state-*.tmp"):
+                try:
+                    if tmp.stat().st_mtime < cutoff:
+                        tmp.unlink()
+                except OSError:
+                    continue
+        except OSError:
+            return
 
     def _fold_log(self, run_id: str) -> RunState:
         """Replay one run's log, keeping what the read itself could not recover.
@@ -217,6 +265,21 @@ class RunStore:
         was asked for rather than the random id the fold started from. Reads of
         a run that does not exist fail closed instead of inventing one.
         """
+        return self._load(run_id)[0]
+
+    def _load(self, run_id: str) -> tuple[RunState, int]:
+        """:meth:`load_state`, and the sequence the snapshot on disk was at.
+
+        The second value is what a session needs to decide when its next
+        snapshot is due: events since the *snapshot*, not since the session
+        started, or a run reported on by many short sessions would never write
+        one.
+
+        When the snapshot is behind the log but readable, only the events past
+        its ``last_seq`` are folded onto it -- the same result as folding
+        everything, because the snapshot is itself a fold of a prefix of the same
+        log. If the tail cannot be read in order, the whole log is folded.
+        """
         if not self.exists(run_id):
             raise FileNotFoundError(f"no such run: {run_id}")
         snapshot = self.runs_dir / run_id / "state.json"
@@ -229,16 +292,23 @@ class RunStore:
                 # Windows a read racing a replace is denied outright. The log is
                 # always able to answer, so a snapshot that cannot be read right
                 # now is simply not used.
-                return self._fold_log(run_id)
+                return self._fold_log(run_id), 0
 
-            tail = self.log(run_id).last_seq()
+            log = self.log(run_id)
+            tail = log.last_seq()
             # ``None`` means the log yields no sequence at all. The fold of such
             # a log is an empty state, which is strictly worse than a snapshot
             # that at least parsed, so the snapshot stands and its damage is
             # reported by the read that produced it.
             if tail is None or state.last_seq >= tail:
-                return state
-        return self._fold_log(run_id)
+                return state, state.last_seq
+            behind = state.last_seq
+            if behind > 0:
+                events = log.read_after(behind)
+                if events is not None:
+                    state.damaged_lines += log.skipped_lines
+                    return fold(events, initial=state), behind
+        return self._fold_log(run_id), 0
 
     def save_snapshot(self, state: RunState) -> bool:
         """Write the derived snapshot atomically so a crash cannot half-write it.
@@ -285,21 +355,28 @@ class RunStore:
         loop is free to mutate while it works, which is the data race that made
         "just move the emit to a thread" the wrong fix.
         """
-        path = self.run_dir(run_id) / "state.json"
-        handle, name = tempfile.mkstemp(dir=path.parent, prefix=".state-", suffix=".tmp")
-        tmp = Path(name)
+        tmp: Path | None = None
         try:
+            # Inside the try: a directory that cannot be made or a temp file that
+            # cannot be created is the same kind of failure as a rename that
+            # cannot happen, and "never raises" has to hold for all of them.
+            path = self.run_dir(run_id) / "state.json"
+            handle, name = tempfile.mkstemp(dir=path.parent, prefix=".state-", suffix=".tmp")
+            tmp = Path(name)
             with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(payload)
                 fh.flush()
                 os.fsync(fh.fileno())
             self._replace_snapshot(tmp, path)
+            _fsync_directory(path.parent)
         except OSError as exc:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
             self.snapshot_error = str(exc)
             return False
         except BaseException:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
             raise
         self.snapshot_error = None
         return True
@@ -364,7 +441,9 @@ class RunStore:
 
     def run_file(self, run_id: str, subdir: str, name: str) -> Path:
         """Where :meth:`write_run_file` would put this file. Writes nothing."""
-        return (self.run_dir(run_id) / _artifact_name(subdir) / _artifact_name(name)).resolve()
+        return (
+            self.run_dir(run_id, create=False) / _artifact_name(subdir) / _artifact_name(name)
+        ).resolve()
 
     def read_result(self, run_id: str, path: str | Path) -> str:
         """Read an agent's answer back from the run's ``results`` directory.
@@ -375,7 +454,7 @@ class RunStore:
         file the harness then opens. Absolute or relative, it has to land in
         ``runs/<id>/results`` or it is not read.
         """
-        results = (self.run_dir(run_id) / "results").resolve()
+        results = (self.run_dir(run_id, create=False) / "results").resolve()
         candidate = Path(path)
         if not candidate.is_absolute():
             candidate = results / _artifact_name(str(path))
@@ -392,7 +471,12 @@ class RunStore:
         if not self.lessons_path.exists():
             return []
         out: list[Lesson] = []
-        for line in self.lessons_path.read_text(encoding="utf-8").splitlines():
+        # Split on "\n" and nothing else. ``str.splitlines`` also breaks at
+        # U+2028, U+2029 and U+0085, which ``json.dumps(ensure_ascii=False)``
+        # writes raw: a lesson containing one was cut into two unreadable halves,
+        # and the next ``add_lesson`` rewrote the file without it -- for good.
+        text = self.lessons_path.read_text(encoding="utf-8", errors="replace")
+        for line in text.split("\n"):
             line = line.strip()
             if not line:
                 continue
@@ -451,13 +535,29 @@ class RunStore:
         return lesson
 
     def _rewrite_lessons(self, lessons: list[Lesson]) -> None:
-        """Replace the library atomically. Caller holds the lock."""
-        tmp = self.lessons_path.with_suffix(".jsonl.tmp")
-        tmp.write_text(
-            "".join(json.dumps(to_jsonable(le), ensure_ascii=False) + "\n" for le in lessons),
-            encoding="utf-8",
+        """Replace the library atomically. Caller holds the lock.
+
+        The temporary file is unique per write, is flushed to disk before the
+        rename (or the rename can outlive the contents it renames), and the
+        rename waits out a reader on Windows -- the same three things the
+        snapshot writer does, for the one file here that is not derived.
+        """
+        body = "".join(
+            json.dumps(to_jsonable(le), ensure_ascii=False) + "\n" for le in lessons
         )
-        tmp.replace(self.lessons_path)
+        handle, name = tempfile.mkstemp(
+            dir=self.lessons_path.parent, prefix=".lessons-", suffix=".tmp"
+        )
+        tmp = Path(name)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(body)
+                fh.flush()
+                os.fsync(fh.fileno())
+            self._replace_snapshot(tmp, self.lessons_path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def update_lessons(
         self, transform: Callable[[list[Lesson]], tuple[list[Lesson], T]]
@@ -584,10 +684,40 @@ class RunStore:
             events = self.log(run_id).read_all()
             state = fold(events)
             state.id = run_id
-            idx.sync_run(state, events)
+            idx.sync_run(state, events, replace_events=True)
         if run_ids is None:
             idx.prune(live)
         return len(run_ids or live)
+
+    def refresh_index(self) -> int:
+        """Bring the projection up to date, touching only runs whose log moved.
+
+        ``reindex`` re-reads and re-folds every run in full, which is what a
+        rebuild is for and far too much for a listing: ``supervisor_runs`` called
+        it on every request. A run is current when the index holds its last
+        sequence, so those are skipped without reading anything past the tail of
+        their log, and a run that moved has only its new events written.
+
+        Returns how many runs were synced. Also prunes rows for runs that are
+        gone, as a full ``reindex`` does.
+        """
+        idx = self.index()
+        live = self.list_run_ids()
+        synced = 0
+        for run_id in live:
+            log = self.log(run_id)
+            tail = log.last_seq()
+            known = idx.indexed_seq(run_id)
+            if tail is not None and known >= tail and idx.has_run(run_id):
+                continue
+            state = self.load_state(run_id)
+            tail_events = log.read_after(known) if known else None
+            replace = tail_events is None
+            events = log.read_all() if tail_events is None else tail_events
+            idx.sync_run(state, events, replace_events=replace)
+            synced += 1
+        idx.prune(live)
+        return synced
 
     # -- retention ---------------------------------------------------------
 
@@ -666,7 +796,29 @@ def snapshot_payload(state: RunState) -> str:
     else, and keeping it separate is what lets a caller serialise on the event
     loop and write from a thread.
     """
-    return json.dumps(to_jsonable(state), indent=2, ensure_ascii=False)
+    # Compact. ``indent=2`` roughly doubled a file that is rewritten, parsed and
+    # fsynced; nobody reads the cache by eye, the log is the readable record.
+    return json.dumps(to_jsonable(state), ensure_ascii=False, separators=(",", ":"))
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Make a rename in ``directory`` durable, where the platform lets us.
+
+    POSIX only: Windows cannot open a directory like a file, and its rename is
+    journalled by the file system. Failure is ignored -- the snapshot is a cache.
+    """
+    if os.name != "posix":
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 class RunSession:
@@ -698,7 +850,13 @@ class RunSession:
     coroutines cannot interleave halfway through one emit.
     """
 
-    def __init__(self, store: RunStore, state: RunState) -> None:
+    #: Events past the snapshot on disk that make the next emit rewrite it.
+    #: An attribute so a test that wants a snapshot per emit can ask for one.
+    snapshot_every = SNAPSHOT_EVERY
+
+    def __init__(
+        self, store: RunStore, state: RunState, *, snapshot_seq: int | None = None
+    ) -> None:
         self.store = store
         self.state = state
         self._log = store.log(state.id)
@@ -708,6 +866,9 @@ class RunSession:
         self.progress_path = store.run_dir(state.id) / "progress.ndjson"
         self._pending_index = False
         self._index_error: str | None = None
+        #: The sequence the snapshot on disk is at, as far as this session knows.
+        #: ``None`` means "as current as the state I was handed".
+        self._snapshot_seq = state.last_seq if snapshot_seq is None else snapshot_seq
         # Created lazily: a session is constructed in synchronous code, and an
         # asyncio.Lock built outside a running loop binds to the wrong one.
         self._alock: asyncio.Lock | None = None
@@ -719,34 +880,61 @@ class RunSession:
 
     # -- emission ----------------------------------------------------------
 
+    def _build(self, type: EventType, payload: dict[str, Any] | None, actor: str) -> Event:
+        return Event(run_id=self.state.id, type=type, actor=actor, payload=redact(payload or {}))
+
+    def _absorb(self, built: list[Event], prior: int, missed: list[Event] | None) -> None:
+        """Fold appended events into the state, including any another writer added.
+
+        ``prior`` is the sequence this state had folded before the append. The
+        log assigns the next number under its lock, so if the new events do not
+        start at ``prior + 1`` somebody else wrote in between -- and a state that
+        folds only its own events would then claim, through ``last_seq``, to have
+        seen theirs. The snapshot written from it would be trusted by
+        ``load_state`` and hide them. ``missed`` is everything on disk past
+        ``prior`` (theirs and ours, in order), read by the caller when it saw the
+        gap; folding that keeps the state, and the snapshot, honest.
+        """
+        todo = built
+        if missed is not None and {e.id for e in built} <= {e.id for e in missed}:
+            todo = missed
+        for event in todo:
+            self.state = _apply_contained(self.state, event)
+        self._pending_index = True
+
+    def _gap(self, built: list[Event], prior: int) -> bool:
+        return built[0].seq != prior + 1
+
+    def _snapshot_due(self, built: list[Event]) -> bool:
+        if any(event.type in _SNAPSHOT_EDGES for event in built):
+            return True
+        return self.state.last_seq - self._snapshot_seq >= self.snapshot_every
+
     def emit(
         self,
         type: EventType,
         payload: dict[str, Any] | None = None,
         actor: str = "supervisor",
     ) -> Event:
-        """Append an event, apply it to in-memory state, and snapshot."""
-        event = Event(
-            run_id=self.state.id, type=type, actor=actor, payload=redact(payload or {})
-        )
-        self._log.append(event)
-        progress.append(self.progress_path, [event])
-        self.state = _apply_contained(self.state, event)
-        self._pending_index = True
-        self.store.save_snapshot(self.state)
-        return event
+        """Append an event and apply it to in-memory state.
+
+        The snapshot is written on an interval and at phase edges, not on every
+        call; see :data:`SNAPSHOT_EVERY`.
+        """
+        return self.emit_many([(type, payload or {}, actor)])[0]
 
     def emit_many(self, events: list[tuple[EventType, dict[str, Any], str]]) -> list[Event]:
         """Append a batch under a single lock acquisition."""
-        built = [
-            Event(run_id=self.state.id, type=t, actor=actor, payload=redact(payload or {}))
-            for t, payload, actor in events
-        ]
+        if not events:
+            return []
+        built = [self._build(t, payload, actor) for t, payload, actor in events]
+        prior = self.state.last_seq
         self._log.append_many(built)
-        for event in built:
-            self.state = _apply_contained(self.state, event)
-        self._pending_index = True
-        self.store.save_snapshot(self.state)
+        progress.append(self.progress_path, built)
+        missed = self._log.read_after(prior) if self._gap(built, prior) else None
+        self._absorb(built, prior, missed)
+        if self._snapshot_due(built):
+            self._write_snapshot()
         return built
 
     def note(self, text: str, actor: str = "supervisor", **fields: Any) -> Event:
@@ -774,24 +962,57 @@ class RunSession:
         if not events:
             return []
         async with self._lock():
-            built = [
-                Event(run_id=self.state.id, type=t, actor=actor, payload=redact(payload or {}))
-                for t, payload, actor in events
-            ]
+            built = [self._build(t, payload, actor) for t, payload, actor in events]
+            prior = self.state.last_seq
             await asyncio.to_thread(self._log.append_many, built)
             await asyncio.to_thread(progress.append, self.progress_path, built)
-            for event in built:
-                self.state = _apply_contained(self.state, event)
-            self._pending_index = True
-            payload_text = snapshot_payload(self.state)
-            run_id = self.state.id
-            await asyncio.to_thread(self.store.write_snapshot, run_id, payload_text)
+            missed = (
+                await asyncio.to_thread(self._log.read_after, prior)
+                if self._gap(built, prior) else None
+            )
+            self._absorb(built, prior, missed)
+            if self._snapshot_due(built):
+                payload_text = snapshot_payload(self.state)
+                seq = self.state.last_seq
+                written = await asyncio.to_thread(
+                    self.store.write_snapshot, self.state.id, payload_text
+                )
+                if written:
+                    self._snapshot_seq = seq
             return built
 
     async def anote(self, text: str, actor: str = "supervisor", **fields: Any) -> Event:
         return await self.aemit(EventType.NOTE, {"text": text, **fields}, actor=actor)
 
     # -- persistence -------------------------------------------------------
+
+    def _write_snapshot(self) -> bool:
+        """Write the snapshot now. A failure is recorded on the store, and retried.
+
+        ``_snapshot_seq`` only advances when the file landed, so a write that
+        failed leaves the next emit still owing one rather than waiting out
+        another interval.
+        """
+        seq = self.state.last_seq
+        if self.store.save_snapshot(self.state):
+            self._snapshot_seq = seq
+            return True
+        return False
+
+    def flush_snapshot(self) -> bool:
+        """Bring the snapshot up to this session's state if it is behind.
+
+        Called at the end of a phase (through :meth:`sync_index`) and available
+        to anything that is about to let go of a session. Cheap when there is
+        nothing to write.
+        """
+        if self.state.last_seq <= self._snapshot_seq:
+            return True
+        return self._write_snapshot()
+
+    def close(self) -> None:
+        """Flush the snapshot. The session stays usable; this is a tidy-up."""
+        self.flush_snapshot()
 
     def events(self) -> list[Event]:
         return self._log.read_all()
@@ -802,9 +1023,20 @@ class RunSession:
         The index is derived, so losing it must never take the run down: a
         failure is noted, the projection stays pending, and ``supervisor
         reindex`` rebuilds it from the log afterwards.
+
+        Only events the index does not hold yet are read and written. The whole
+        log was re-read and every event row rewritten at each phase edge.
         """
+        self.flush_snapshot()
         try:
-            self.store.index().sync_run(self.state, self.events())
+            index = self.store.index()
+            known = _indexed_seq(index, self.state.id)
+            if known and known >= self.state.last_seq and known >= (self._log.last_seq() or 0):
+                events: list[Event] = []
+            else:
+                tail = self._log.read_after(known) if known else None
+                events = tail if tail is not None else self._log.read_all()
+            index.sync_run(self.state, events)
         except Exception as exc:  # noqa: BLE001 - the index is derived; never fail a run over it
             reason = str(exc)
             if reason != self._index_error:
@@ -815,3 +1047,10 @@ class RunSession:
         self._index_error = None
         self._pending_index = False
 
+
+def _indexed_seq(index: Any, run_id: str) -> int:
+    """The highest event sequence the index holds for a run, or 0 if it cannot say."""
+    try:
+        return int(index.indexed_seq(run_id))
+    except Exception:  # noqa: BLE001 - not knowing means writing everything, which is correct
+        return 0

@@ -30,16 +30,30 @@ So there is no provider to configure, no key to copy, and nothing that has to
 know Bedrock is involved. `supervisor providers` says as much:
 
 ```
-routing   every stage -> host
-host      available: yes   delegated: yes   host: claude-code
+host      claude-code (confidence 1.0)
+backend   host
+config    (built-in defaults only)
+
+providers
+  host         ok
+  ...
+
+routing
+  analysis                 host
+  ...
+  default                  host
+  drift                    host
+  ...
 ```
+
+Every stage routes to `host`. The other providers listed are declared, not used.
 
 Everything below is about the two hosts finding the harness, not about auth.
 
 ### 1. Install, once per project
 
 ```bash
-pip install -e .          # or: pip install supervisor-harness
+pip install -e ".[mcp]"   # or: pip install 'supervisor-harness[mcp]'
 cd ~/code/your-project
 supervisor init --host both
 ```
@@ -61,6 +75,9 @@ places: Claude Code reads `.mcp.json` at the repository root, and Cursor's
 documented project location is `.cursor/mcp.json`. The Cursor CLI picks up the
 same MCP servers as the Cursor editor, and reads `.cursor/rules` as well, so one
 `init` covers both of them.
+
+The `mcp` extra is what the registered `supervisor-mcp` server needs; without it
+the host starts the server and it fails to import the MCP SDK.
 
 Restart each host afterwards; neither rescans for MCP servers while running.
 
@@ -99,8 +116,8 @@ their own environment variables. From a plain terminal it is not:
 | inside the Cursor CLI | `cursor` | 0.7 |
 | a plain terminal, both directories present | `claude-code` | **0.2** |
 
-That 0.2 is the harness saying it is guessing, and the tie is broken
-alphabetically rather than meaningfully. It matters only for commands that
+That 0.2 is the harness saying it is guessing, and the tie goes to Claude Code
+whichever host you are actually in. It matters only for commands that
 record or report the host — `start`, `run`, and the resume-fidelity note that
 fires when a run continues under a different one. Set it explicitly where it
 matters:
@@ -150,10 +167,13 @@ The configuration goes in your **trusted** config, not the project's:
 }
 ```
 
-`providers.*.type`, `region`, `profile`, `base_url` and the API-key settings are
-refused from a workspace file on purpose: a repository you have merely pointed
-the harness at could otherwise decide where a credentialed request goes. Put
-them under your home directory, where you own the file. See
+`providers.*.type`, `region`, `profile`, `base_url`, `params`, `default_model`
+and the API-key settings are refused from a workspace file on purpose: a
+repository you have merely pointed the harness at could otherwise decide where a
+credentialed request goes, or which model answers it. So are `backend` and the
+settings that spend your API budget (parallelism, turn counts, attempts). Put
+them under your home directory, where you own the file; `supervisor providers`
+lists whatever a workspace file tried to set and was ignored or corrected. See
 [Which config files are trusted](../README.md#which-config-files-are-trusted).
 
 **Your existing environment is the credential.** The Anthropic SDK's Bedrock
@@ -183,8 +203,13 @@ supervisor providers
 ```
 
 ```
-bedrock   available: yes   region: eu-west-1   dependency_installed: yes
+providers
+  ...
+  bedrock      ok           us.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
+
+`unavailable` means the extra is missing or no region resolved;
+`supervisor providers --json` shows which, as `dependency_installed` and `region`.
 
 **A cheap local model is the better fit for the `drift` stage** if you have one,
 because it is called after every turn. `"drift": "ollama:qwen3.8-code:latest|host"`
@@ -235,7 +260,8 @@ truncates briefs silently. If it is not set, make a variant with a two-line
 
 A separate `SUPERVISOR_HOME` keeps the runs, and the permissions they need, out
 of your everyday configuration. The file under it is *trusted*: it is the only
-place `approval` and `allow_command_execution` can be set.
+place `approval`, `allow_command_execution`, `backend` and the spend limits
+(`max_parallel_agents`, `execution_max_turns` and the like) can be set.
 
 ```json
 {
@@ -252,7 +278,9 @@ supervisor providers --json -w C:\path\to\repo
 ```
 
 Every stage should show `ollama:qwen3.8-code:latest`, and `config_sources`
-should name only your trial home.
+should name your trial home. It will also name `~/.supervisor/config.json` if you
+have one: that file is read even when `SUPERVISOR_HOME` points elsewhere, and
+anything in it applies underneath the trial's own.
 
 ### 3. The repository
 

@@ -20,9 +20,14 @@ from .cases import Case, CaseError
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
-    done = subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
-        ["git", *args], cwd=cwd, capture_output=True, text=True,  # noqa: S607 - on PATH
-        timeout=600, check=False)
+    try:
+        done = subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
+            ["git", *args], cwd=cwd, capture_output=True, text=True,  # noqa: S607 - on PATH
+            timeout=600, check=False)
+    except subprocess.TimeoutExpired as exc:
+        # One slow clone is one failed case, not an evaluation that ends with a
+        # traceback and loses the records of everything after it.
+        raise CaseError(f"git {' '.join(args)}: timed out after {exc.timeout:.0f}s") from exc
     if done.returncode != 0:
         raise CaseError(f"git {' '.join(args)}: {done.stderr.strip() or done.stdout.strip()}")
     return done.stdout
@@ -38,7 +43,8 @@ def _repository(repo: str, cache: Path) -> Path:
     clone = cache / hashlib.sha256(resolved.encode()).hexdigest()[:16]
     if not clone.is_dir():
         clone.parent.mkdir(parents=True, exist_ok=True)
-        _git("clone", "--quiet", resolved, str(clone))
+        # `--` so a repository string that begins with a dash is a repository.
+        _git("clone", "--quiet", "--", resolved, str(clone))
     return clone
 
 
@@ -51,6 +57,8 @@ def materialise(case: Case, cache: Path) -> Iterator[Path]:
     repo: Path | None = None
     try:
         if fx.kind == "git":
+            if fx.commit.startswith("-"):
+                raise CaseError(f"commit {fx.commit!r} looks like an option")
             repo = _repository(fx.repo, cache)
             # The tree as committed: a clone that converts line endings on
             # checkout would leave files a patch made by `git diff` cannot apply to.
@@ -61,8 +69,13 @@ def materialise(case: Case, cache: Path) -> Iterator[Path]:
             shutil.copytree(base / fx.path, workspace)
         else:
             workspace.mkdir()
+            inside = workspace.resolve()
             for rel, content in fx.files.items():
-                target = workspace / rel
+                target = (workspace / rel).resolve()
+                # A case file names its fixture's files; a key of `../x` or an
+                # absolute path wrote outside the workspace it was building.
+                if inside not in target.parents:
+                    raise CaseError(f"fixture file {rel!r} is outside the workspace")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8")
         if fx.patch:

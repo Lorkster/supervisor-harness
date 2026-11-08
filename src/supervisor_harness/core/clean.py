@@ -16,14 +16,13 @@ branch nor its index moves, its dependencies installed the way CI would
 
 from __future__ import annotations
 
-import os
 import subprocess
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 
 from ..models import DoDCriterion
-from .baseline import _git
+from .baseline import _git, git_argv, git_environment
 from .dod import VerificationOutcome, verify_command
 from .fails_before import _remove_worktree
 from .worktree import prepare
@@ -35,11 +34,13 @@ _AUTHOR = {"GIT_AUTHOR_NAME": "supervisor", "GIT_AUTHOR_EMAIL": "supervisor@loca
 
 def _git_with(tree: Path, env: dict[str, str], *args: str, timeout: float) -> str | None:
     """One git command with extra environment, or ``None`` if git could not answer it."""
+    argv = git_argv(*args, workspace=tree)
+    if argv is None:
+        return None
     try:
         done = subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
-            ["git", "-C", str(tree), *args],  # noqa: S607 - resolved on PATH
-            capture_output=True, text=True, timeout=timeout, check=False,
-            env={**os.environ, **env})
+            argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, check=False, env={**git_environment(), **env})
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout.strip() if done.returncode == 0 else None

@@ -48,7 +48,7 @@ from ..models import (
 )
 from ..providers.base import ChatMessage, CompletionRequest
 from ..providers.router import ModelRouter
-from ..serde import from_jsonable, to_jsonable
+from ..serde import from_jsonable
 from ..store.runstore import RunStore
 from .cases import Case
 
@@ -209,9 +209,3 @@ async def _coordinator(sup: Supervisor, case: Case) -> RoleOutput:
     return RoleOutput(picks=picks, refused=list(record.refused),
                       error="" if any(p["by"] != "harness" for p in picks) or not picks
                       else f"the coordinator made no pick: {record.summary}")
-
-
-def task_json(task: ExecutionTask) -> dict[str, Any]:
-    """A task as a case carries it."""
-    data = to_jsonable(task)
-    return data if isinstance(data, dict) else {}

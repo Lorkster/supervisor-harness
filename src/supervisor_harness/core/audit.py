@@ -368,18 +368,22 @@ def scan_unclaimed_changes(
     that is missing, because it reads as a clean result.
     """
     from ..models import BASELINE_FACT
-    from .baseline import commit_from_fact
+    from .baseline import commit_from_fact, git_argv, git_environment
 
     # The recorded fact is a sentence written for an agent to read; git needs
     # the commit out of it.
     baseline = commit_from_fact(state.facts.get(BASELINE_FACT, ""))
     if not baseline:
         return [], "the run recorded no baseline commit"
+    # Through the same hardened git every other lookup uses: this one reads a repository
+    # the agents have been writing into, whose config can name a program for git to run.
+    argv = git_argv("diff", "--name-only", baseline)
+    if argv is None:
+        return [], "git is not on PATH"
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
-            ["git", "diff", "--name-only", baseline],  # noqa: S607
-            cwd=workspace, capture_output=True, text=True,
-            timeout=GIT_TIMEOUT_SECONDS, check=False,
+            argv, cwd=workspace, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=GIT_TIMEOUT_SECONDS, check=False, env=git_environment(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return [], f"git could not be run: {exc}"

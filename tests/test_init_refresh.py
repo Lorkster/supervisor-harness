@@ -126,7 +126,7 @@ def test_the_users_settings_are_never_rewritten_by_a_refresh(
     """
     assert init(project) == 0
     (project / CONFIG).write_text(
-        json.dumps({"policy": {"default_max_turns": 99}}), encoding="utf-8"
+        json.dumps({"policy": {"lesson_max_age_days": 99}}), encoding="utf-8"
     )
     (project / SKILL).write_text(STALE, encoding="utf-8")
     capsys.readouterr()
@@ -134,7 +134,7 @@ def test_the_users_settings_are_never_rewritten_by_a_refresh(
     assert init(project) == 0
 
     settings = json.loads((project / CONFIG).read_text(encoding="utf-8"))
-    assert settings["policy"]["default_max_turns"] == 99, (
+    assert settings["policy"]["lesson_max_age_days"] == 99, (
         "the refresh that fixed the skill also discarded the user's policy"
     )
 
@@ -142,7 +142,7 @@ def test_the_users_settings_are_never_rewritten_by_a_refresh(
     # and it is not implied by wanting a current skill.
     assert init(project, "--force") == 0
     replaced = json.loads((project / CONFIG).read_text(encoding="utf-8"))
-    assert replaced["policy"]["default_max_turns"] != 99
+    assert replaced["policy"]["lesson_max_age_days"] != 99
 
 
 def test_a_stale_server_registration_is_refreshed_and_the_others_survive(

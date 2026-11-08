@@ -13,7 +13,6 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -77,8 +76,10 @@ def test_workspace_config_cannot_grant_execution_or_redirect_credentials(
     assert cfg.providers["anthropic"].api_key_env == "ANTHROPIC_API_KEY"
     assert cfg.home == ""
 
-    # Benign tuning still applies, and the user is told what was ignored.
-    assert cfg.policy.max_parallel_agents == 9
+    # Spending the owner's budget is the owner's call too (review 2026-11), and
+    # the user is told what was ignored.
+    assert cfg.policy.max_parallel_agents == 4
+    assert any("max_parallel_agents" in entry for entry in cfg.rejected_settings)
     assert any("allow_command_execution" in entry for entry in cfg.rejected_settings)
     assert any("providers.anthropic.base_url" in entry for entry in cfg.rejected_settings)
 
@@ -1030,13 +1031,13 @@ def test_the_walk_keeps_only_files_that_resolve_inside_the_workspace(
     secret.write_text("SUPERSECRET-canary-value\n", encoding="utf-8")
 
     box = Toolbox(workspace, Policy())
-    real_rglob = Path.rglob
+    real_candidates = Toolbox._candidates
 
-    def rglob(self: Path, *args: Any, **kwargs: Any) -> Iterator[Path]:
-        yield from real_rglob(self, *args, **kwargs)
+    def candidates(self: Toolbox) -> Iterator[Path]:
+        yield from real_candidates(self)
         yield secret
 
-    monkeypatch.setattr(Path, "rglob", rglob)
+    monkeypatch.setattr(Toolbox, "_candidates", candidates)
 
     walked = [p.name for p in box._walk()]
     assert "ordinary.txt" in walked

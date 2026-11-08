@@ -140,8 +140,29 @@ class RunIndex:
 
     # -- projection --------------------------------------------------------
 
-    def sync_run(self, state: RunState, events: list[Event]) -> None:
+    def indexed_seq(self, run_id: str) -> int:
+        """The highest event sequence this run has a row for; 0 when it has none."""
+        row = self._conn.execute(
+            "SELECT MAX(seq) AS top FROM events WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return int(row["top"] or 0)
+
+    def has_run(self, run_id: str) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM runs WHERE id = ?", (run_id,)
+        ).fetchone() is not None
+
+    def sync_run(
+        self, state: RunState, events: list[Event], *, replace_events: bool = False
+    ) -> None:
         """Rewrite every row belonging to this run. Idempotent by construction.
+
+        ``events`` are the event rows to write, and by default they are *added*
+        to the ones already there (by event id). Event rows are append-only, so a
+        caller that holds only what is new -- which is every phase edge of a long
+        run -- no longer re-reads and rewrites the whole log to say so. A caller
+        that is rebuilding passes ``replace_events=True`` and the run's event
+        rows are deleted first, which is what ``reindex`` means.
 
         The whole projection is one transaction: a failure part-way rolls the
         deletions back instead of leaving them pending for the next caller to
@@ -160,6 +181,8 @@ class RunIndex:
             cur = self._conn.cursor()
             cur.execute("DELETE FROM runs WHERE id = ?", (state.id,))
             for table in _RUN_TABLES:
+                if table == "events" and not replace_events:
+                    continue
                 cur.execute(f"DELETE FROM {table} WHERE run_id = ?", (state.id,))  # noqa: S608 - fixed table names
 
             verified = sum(1 for t in state.tasks.values() if t.dod_satisfied())
@@ -298,14 +321,6 @@ class RunIndex:
             (limit,),
         )
 
-    def drift_by_role(self) -> list[dict[str, Any]]:
-        """Roles ranked by mean drift, for the improvement loop."""
-        return self.query(
-            "SELECT role, COUNT(*) AS agents, ROUND(AVG(drift_score), 3) AS mean_drift, "
-            "SUM(CASE WHEN status = 'stopped' THEN 1 ELSE 0 END) AS stopped "
-            "FROM agents GROUP BY role HAVING agents > 0 ORDER BY mean_drift DESC"
-        )
-
     def criteria_failure_rate(self) -> list[dict[str, Any]]:
         """Which verification methods actually prove things, and which stall."""
         return self.query(
@@ -314,12 +329,4 @@ class RunIndex:
             "SUM(CASE WHEN status = 'fail' THEN 1 ELSE 0 END) AS failed, "
             "SUM(CASE WHEN status = 'unverified' THEN 1 ELSE 0 END) AS unverified "
             "FROM criteria GROUP BY method ORDER BY total DESC"
-        )
-
-    def recurring_lessons(self, min_occurrences: int = 1, limit: int = 50) -> list[dict[str, Any]]:
-        return self.query(
-            "SELECT target, category, statement, how_to_apply, SUM(occurrences) AS hits, "
-            "MAX(confidence) AS confidence FROM lessons GROUP BY target, statement "
-            "HAVING hits >= ? ORDER BY hits DESC, confidence DESC LIMIT ?",
-            (min_occurrences, limit),
         )

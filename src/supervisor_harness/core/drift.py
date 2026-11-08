@@ -535,6 +535,17 @@ def decide_directive(
     exhausted = agent.budget.exhausted(
         turns_used, spent.total_tokens, spent.seconds, spent.tool_calls
     )
+    if exhausted and exhausted.startswith("turn budget") and (
+        turn.claimed_status is AgentStatus.DONE
+        and not assessment.signals
+        and assessment.score < policy.drift_threshold
+        and agent.budget.exhausted(0, spent.total_tokens, spent.seconds, spent.tool_calls)
+        is None
+    ):
+        # The last allowed turn said "done" and nothing in it drifts: that is
+        # the agent finishing, not the budget cutting it off. Falls through to
+        # the ordinary acceptance below instead of ending it STOPPED.
+        exhausted = None
     if exhausted:
         return Directive(
             agent_id=agent.id,

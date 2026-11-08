@@ -692,6 +692,27 @@ def _enum(value: Any, enum_cls: type[EnumT], default: EnumT) -> EnumT:
         return default
 
 
+_TRUE_WORDS = frozenset({"true", "yes", "1"})
+_FALSE_WORDS = frozenset({"false", "no", "0"})
+
+
+def _bool(value: Any, default: bool) -> bool:
+    """A flag a model wrote. ``bool("false")`` is True, which would let a checkpoint that
+    said it had not passed, or a drift judge that said an agent was off task, read the
+    other way; only recognisable spellings are taken, and anything else is `default`."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return bool(value)
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    return default
+
+
 def _num(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -887,7 +908,7 @@ def parse_dod(items: Any) -> list[DoDCriterion]:
                 command=str(raw.get("command", "")).strip(),
                 expect=str(raw.get("expect", "")).strip(),
                 rubric=str(raw.get("rubric", "")).strip(),
-                mandatory=bool(raw.get("mandatory", True)),
+                mandatory=_bool(raw.get("mandatory"), True),
             )
         )
     return out
@@ -951,7 +972,7 @@ def parse_drift(data: dict[str, Any], checked_by: str) -> DriftAssessment:
         if isinstance(raw, dict)
     ]
     return DriftAssessment(
-        on_task=bool(data.get("on_task", True)),
+        on_task=_bool(data.get("on_task"), True),
         score=min(1.0, max(0.0, _num(data.get("drift_score"), 0.0))),
         signals=signals,
         summary=str(data.get("summary", "")),
@@ -966,7 +987,7 @@ def parse_checkpoint(data: dict[str, Any], run_id: str, iteration: int) -> Check
         quality=min(1.0, max(0.0, _num(data.get("quality")))),
         scope_fidelity=min(1.0, max(0.0, _num(data.get("scope_fidelity")))),
         completeness=min(1.0, max(0.0, _num(data.get("completeness")))),
-        passed=bool(data.get("passed", False)),
+        passed=_bool(data.get("passed"), False),
         gaps=_strs(data.get("gaps")),
         remediation=_strs(data.get("remediation")),
         avoidable_causes=_strs(data.get("avoidable_causes")),
@@ -1037,5 +1058,14 @@ def parse_mode(value: Any, default: RunMode = RunMode.REPORT) -> RunMode:
     return _enum(value, RunMode, default)
 
 
-def parse_decision(value: Any) -> Decision:
-    return _enum(value, Decision, Decision.APPROVE)
+def parse_decision(value: Any) -> Decision | None:
+    """The owner's decision, or ``None`` when the text is not one.
+
+    Never a default: this reads what a person typed, and "rejct" or "deny" read
+    as an approval would start work the owner meant to refuse. The caller says
+    the decision was not applied instead.
+    """
+    try:
+        return Decision(str(value).strip().lower()) if value is not None else None
+    except ValueError:
+        return None

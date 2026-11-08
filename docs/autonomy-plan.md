@@ -1,6 +1,9 @@
 # The autonomy plan: fewer interruptions, the same bar
 
-*Written 2026-10-05. Live: the work in it is scheduled, not done.*
+*Written 2026-10-05; status table added 2026-11-08, checked against `8f34f4e` and,
+on 2026-11-08, against the working tree of branch `review/code-and-docs-2026-11`.
+Live, and mostly built: the table below says which batches are done, which are
+open, and which were never built.*
 
 A working document in the same shape as [`development-plan.md`](development-plan.md):
 what each piece of work is, what has been *verified* about it, what is still only
@@ -8,8 +11,39 @@ a reading of the source, and what has been decided. It stays in the present tens
 of the day it was written. Where a batch finds that the plan was wrong, the
 finding goes beneath the batch and the plan's text stays as it was.
 
-It does not replace the nine-batch plan. That plan's batch 9 is still open, and
-nothing here depends on it except where noted under [batch G](#batch-g--a-reviewer-that-can-only-veto-conditional).
+It does not replace the nine-batch plan. That plan's batch 9 was declined and
+rewritten, its half 9b is still open, and nothing here depends on it except where
+noted under [batch G](#batch-g--a-reviewer-that-can-only-veto-conditional).
+
+**Where each batch stands**
+
+| Batch | What | State | Where |
+| --- | --- | --- | --- |
+| A | The consumer contract | **done** | [#80](https://github.com/Lorkster/supervisor-harness/pull/80) |
+| B | A verifier that is not a model (`fails_before`) | **done** | [#81](https://github.com/Lorkster/supervisor-harness/pull/81) |
+| C | Escalations, and `awaiting_owner` | **done** | [#82](https://github.com/Lorkster/supervisor-harness/pull/82) |
+| D | A run on its own branch | **done**, autonomous backend only | [#83](https://github.com/Lorkster/supervisor-harness/pull/83) |
+| E | Approve the envelope, not each task | **built, go-live condition open.** The #67 log is gone; "three envelope-mode runs ending in PRs the owner would merge" is the owner's to declare, and nothing here declares it. Runs 1–24 are recorded below. | [#84](https://github.com/Lorkster/supervisor-harness/pull/84), then #85–#89 |
+| F | Does the model do what the harness asks? (`supervisor eval`) | **built.** Roles: planner, reviewer, verifier, and the coordinator since batch O; the checkpoint is not covered. | [#92](https://github.com/Lorkster/supervisor-harness/pull/92) |
+| G | A reviewer that can only veto | **built**; the condition was met | [#90](https://github.com/Lorkster/supervisor-harness/pull/90) |
+| H | A stuck signal | **not built.** Conditional; the existing signals now catch repeated turns. | — |
+| I | An implementer loop a local model can work in | **built.** Opt-in: `policy.implementer_loop` defaults to `"turns"`; `"conversation"` is what the go-live runs use. Verifiers followed in #91. | [#90](https://github.com/Lorkster/supervisor-harness/pull/90), [#91](https://github.com/Lorkster/supervisor-harness/pull/91) |
+| J | The goal, held by the supervisor | **built** | [#103](https://github.com/Lorkster/supervisor-harness/pull/103) |
+| K | Agents talk to the supervisor again | **built** | [#104](https://github.com/Lorkster/supervisor-harness/pull/104) |
+| L | Every requirement of the brief, accounted for and tested | **built**, then corrected by #109, #110, #122, #128, #129, #135 | [#107](https://github.com/Lorkster/supervisor-harness/pull/107) |
+| M | The tester is not shown the code it tests | **built** (#119), narrowed to behaviour-only requirements (#124) | [#119](https://github.com/Lorkster/supervisor-harness/pull/119) |
+| N | The owner's skills, for the run's agents | **planned, not built.** #123 is the plan, as text; no `skills.dirs`, `find_skill`, `get_skill` or `load_skill` exists in the code. Read-only tool servers (rea) landed earlier, in #111. | [#123](https://github.com/Lorkster/supervisor-harness/pull/123) |
+| O | The coordinator holds the plan | **built**, behind `policy.coordinator` (on by default); wording fixes in #134, #136, #137 | [#133](https://github.com/Lorkster/supervisor-harness/pull/133) |
+| Part 2 | The outer loop (L1, L2, L3) | **not started.** A separate repository, gated on batches B–E being trusted. Not to be confused with batch L above. | — |
+
+From "After runs 5-7" on, the "After run N" sections hold one run of numbered
+rules, 1 to 26. Batch O replaced the rules that decided *whose failure a failure is*: items 5, 7 and
+11–15, and the title-matching half of 4, no longer exist as such, and the names
+they cite (`_hand_check`, `_blocked_by_others`, `_reported_to`, `_titled`,
+`_latest_writes`, `MAX_FINDING_REOPENS`, the holds and charges, `waits_for`) are
+gone from the code. What they read stayed and goes to the coordinator. Item 3's
+`policy.follow_up` is read only with the coordinator off. The text of each item
+is left as it was written, which is the rule of this document.
 
 - [Why this plan exists](#why-this-plan-exists)
 - [What was taken from turnstone, and what was not](#what-was-taken-from-turnstone-and-what-was-not)
@@ -193,7 +227,7 @@ start every run yourself, so you are already there.
   be draft PRs and issue comments, which reaches a phone without hosting anything.
 
 Recommendation: no UI work until the outer loop exists. Then its first screen is
-the escalation inbox, generated offline. Batch L2 below.
+the escalation inbox, generated offline. [L2](#l2--the-owners-inbox), below (Part 2's, not batch L's).
 
 ---
 
@@ -327,6 +361,12 @@ before; the escalation is recorded beside it.
 >   deferred task with its definition of done as work to carry forward.
 > - **Report mode is untouched.** An analysis agent that blocks raises nothing
 >   and ends as before, so security-eval's harness condition does not change.
+>
+> *As of 2026-11-08* `EscalationReason` holds six values, not one: `agent_blocked`,
+> the four the envelope gate raises (`needs_wider_scope`,
+> `unenforceable_definition_of_done`, `unrunnable_criterion`, `high_risk`), and
+> `review_veto` from batch G. The plan's other four (`needs_command_execution`,
+> `irreversible_action`, `attempts_exhausted`, `envelope_stale`) were never added.
 >
 > Found on the way: `Supervisor.run` would have looped forever on the new
 > action, since it advanced on anything it did not recognise. And both paths
@@ -1018,6 +1058,12 @@ test and an opened-from-disk test, which measure the benchmark, not the harness.
 J first: on its own it would have failed run 1's page task on its first
 attempt, before sound, animation and browser tests were built on top of it.
 
+> *As of 2026-11-08*, against the code: there is no `goal_refined` event. The goal
+> is held by `goal_set`, re-emitted whenever it changes, and each expectation
+> carries its `source` (`plan`, or `coordinator`). Since batch O a finding is
+> routed by the coordinator, and a goal expectation is added only through a
+> `send_back` that carries a `check` ("A finding's check", under batch O's "As built").
+
 ### After run 4: verified against the plan, short of the brief
 
 *Written 2026-10-13.* Three runs on batches J and K, the same brief, the same
@@ -1410,7 +1456,9 @@ run 10. Two structural things went wrong:
     committed with a scratch index so the run's branch does not move, with its
     dependencies installed as CI would. A check that fails there fails its task,
     which is followed up. Once per attempt. No git or no dependencies means
-    nothing is judged, and that is noted.
+    nothing is judged, and that is noted. *As of 2026-11-08* it is skipped, with a
+    note, when `policy.allow_command_execution` is off (it installed and ran
+    project code without asking), and `clean_check` is a protected setting.
 19. **Objective coverage does not judge implementers.** The drift signal that
     counts how many objectives' words a turn repeats was already off for an
     implementer's "done". Now it is off throughout an implementer's work. Its
@@ -1617,6 +1665,13 @@ capabilities on top of this.
   the evidence keeps only the tail (`Supervisor._naming`); a file this run's
   agents wrote counts as named even if it is gone.
 - *`follow_up`* is read only with the coordinator off.
+
+- *`belongs_to` stays.* Item 4 lists the verifier's `belongs_to` among what was
+  removed. The field is still in the verifier's answer: a review criterion that
+  fails only because a later task builds that part names it, and the harness
+  adds a line to the criterion's evidence saying so. It is a hint to the
+  coordinator, which decides whether the check moves; it no longer moves it.
+  `_awaits_owner` stays too, as the test for a task held for the owner.
 
 **Measured** with `qwen3.8-code`, three runs a case:
 
@@ -1961,6 +2016,11 @@ is one person on one machine, and some runs' data may not leave it.
 ## Questions for the owner
 
 Each has a recommendation; none blocks batches A or B.
+
+*State on 2026-11-08: 1 and 2 were built as recommended (`approval` is in
+`PROTECTED_SETTINGS`; envelope mode refuses to start without command execution,
+a baseline commit, the run's branch, `require_tests` and `require_fails_before`).
+3 and 4 are open, because Part 2 is not started. 5 is the group's to answer.*
 
 1. **Approval mode is a protected setting** (batch E). Recommended: yes. A
    workspace that could set `approval: envelope` would be choosing to skip review

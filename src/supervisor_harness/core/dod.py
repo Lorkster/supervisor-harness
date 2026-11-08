@@ -35,14 +35,19 @@ while an agent's account of proving one is marked as a model's claim.
 
 from __future__ import annotations
 
+import collections
 import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import threading
+import time
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from ..config import Policy
 from ..ids import now_iso
@@ -54,6 +59,7 @@ from ..models import (
     VerifyMethod,
 )
 from .baseline import _git, git_baseline
+from .paths import iter_files
 from .processes import BoundedProcess
 
 # Statements that assert a feeling rather than a fact. A criterion phrased this
@@ -1314,6 +1320,38 @@ def unquoted_metacharacter(command: str, characters: str = _METACHARACTERS) -> s
     return None
 
 
+#: What cmd.exe reads inside the quotes Python puts around an argument. A `.cmd` or
+#: `.bat` file -- `npm`, `npx`, `yarn`, `node_modules/.bin/*` on Windows -- is run
+#: by cmd.exe, which parses the whole command line itself: `list2cmdline` quotes
+#: only an argument with a space in it, `shlex` has already dropped the quotes
+#: that kept `&` an ordinary character, and so `npm --version "&echo>marker.txt"`
+#: ran a second command. Neither the quote-aware scan above nor a token scan
+#: sees it, because the quotes that matter are cmd.exe's, not the shell's.
+_CMD_SPECIAL = frozenset('&|<>^%!"()\r\n')
+
+
+def is_cmd_shim(program: str) -> bool:
+    """Whether ``program`` is a batch file, which Windows runs through cmd.exe."""
+    return program.lower().endswith((".cmd", ".bat"))
+
+
+def shim_refusal(program: str, args: Iterable[str]) -> str | None:
+    """Why these arguments may not go to a batch file ``program``, or ``None``.
+
+    Applied to the resolved program, so ``npm`` is judged as the ``npm.cmd`` it
+    runs. Not applied to the program's own path, which cmd.exe is handed quoted.
+    """
+    if not is_cmd_shim(program):
+        return None
+    for arg in args:
+        bad = next((c for c in arg if c in _CMD_SPECIAL), None)
+        if bad is not None:
+            return (f"{Path(program).name} is a batch file, which Windows runs through "
+                    f"cmd.exe, and the argument {arg!r} holds {bad!r}, which cmd.exe "
+                    "reads even inside quotes; pass that text in a file instead")
+    return None
+
+
 # Interpreters on the check-runner list that will also run a program handed to
 # them in the command line itself, and the flags by which they do it. They earn
 # their place on that list by running the project's tests -- ``python -m pytest``
@@ -1380,23 +1418,44 @@ def powershell_refusal(tokens: list[str]) -> str | None:
     return "it names no .ps1 script for PowerShell to run"
 
 
+#: Python modules that run source they are handed, or code they fetch, as `-c` does.
+_PYTHON_SOURCE_MODULES = frozenset({"timeit", "runpy", "code", "pdb"})
+#: Node options that load a module before the script. A specifier with a URL scheme
+#: (`data:text/javascript,...`, `https://...`) is source in the command line itself.
+_NODE_PRELOAD = frozenset({"--import", "--require", "-r", "--loader", "--experimental-loader"})
+_URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")
+
+
+def _preloaded_url(tokens: list[str], index: int) -> str | None:
+    """``--import=data:...`` or ``-r data:...`` at ``tokens[index]``: the flag, else ``None``."""
+    name, sep, value = tokens[index].partition("=")
+    if name not in _NODE_PRELOAD:
+        return None
+    if not sep:
+        value = tokens[index + 1] if index + 1 < len(tokens) else ""
+    return name if _URL_SCHEME.match(value) else None
+
+
 def inline_source_flag(tokens: list[str]) -> str | None:
     """The flag by which this command carries its own source, or ``None``.
 
     Only the interpreter's own leading options are read. After ``-m module`` or
     a script path the arguments belong to the program being run, where ``-c`` is
     pytest's config file rather than Python's source, and refusing it there would
-    fence a legitimate check.
+    fence a legitimate check. A few modules run source themselves -- ``-m timeit``
+    takes it as an argument -- and a Node preload with a URL specifier is source
+    in the command line, so both are refused too.
     """
     if not tokens:
         return None
-    entry = _INLINE_SOURCE.get(executable_name(tokens[0]))
+    program = executable_name(tokens[0])
+    entry = _INLINE_SOURCE.get(program)
     if entry is None:
         return None
     source, long_source, takes_value, terminal = entry
 
     skip = False
-    for token in tokens[1:]:
+    for position, token in enumerate(tokens[1:], 1):
         if skip:  # the value of the flag before it, not a flag itself.
             skip = False
             continue
@@ -1406,6 +1465,8 @@ def inline_source_flag(tokens: list[str]) -> str | None:
             return "-"  # the program is read from standard input.
         if token == "--" or not token.startswith("-"):  # noqa: S105 - as above
             return None  # the interpreter's own options have ended.
+        if program == "node" and (flag := _preloaded_url(tokens, position)) is not None:
+            return flag
         if token.startswith("--"):
             name = token.partition("=")[0]
             if name in long_source:
@@ -1415,6 +1476,9 @@ def inline_source_flag(tokens: list[str]) -> str | None:
             if char in source:
                 return f"-{char}"
             if char in terminal:
+                module = token[index + 2:] or (tokens[position + 1:position + 2] or [""])[0]
+                if module.split(".")[0] in _PYTHON_SOURCE_MODULES:
+                    return f"-m {module}"
                 return None
             if char in takes_value:
                 # ``-W ignore`` and ``-Wignore`` are the same flag.
@@ -1430,11 +1494,22 @@ def inline_source_flag(tokens: list[str]) -> str | None:
 #: user has not read. Matched by name, so a project whose own tests need a
 #: secret has to be given it deliberately, outside the harness.
 _CREDENTIAL_NAME = re.compile(
-    r"(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)$"
-    r"|^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)$"
-    r"|^(ANTHROPIC|OPENROUTER|OPENAI)_",
+    r"(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|_KEY|_PAT|_PASS|_AUTH|_DSN)$"
+    r"|API_?KEY"  # API_KEY_FILE: a file that holds the key is the key
+    r"|^(AWS_|GOOGLE_APPLICATION|ANTHROPIC_|OPENROUTER_|OPENAI_)"
+    r"|^(DATABASE_URL|SSH_AUTH_SOCK)$",
     re.IGNORECASE,
 )
+
+#: Names the caller registered (`register_secret_env`): a configured provider's
+#: ``api_key_env`` can be called anything, and no pattern can know it.
+_EXTRA_SECRET_NAMES: set[str] = set()
+
+
+def register_secret_env(*names: str) -> None:
+    """Never hand the variables ``names`` (case-insensitively) to a command."""
+    _EXTRA_SECRET_NAMES.update(name.upper() for name in names if name)
+
 
 #: Nor the harness's own settings. ``SUPERVISOR_HOME`` names the store and the
 #: one configuration that may set protected policy; a check runner has no use
@@ -1445,14 +1520,71 @@ _CREDENTIAL_NAME = re.compile(
 _HARNESS_SETTING = re.compile(r"^SUPERVISOR_", re.IGNORECASE)
 
 
-def child_environment() -> dict[str, str]:
-    """This process's environment without the credentials or the harness's settings."""
+def child_environment(extra: Iterable[str] = ()) -> dict[str, str]:
+    """This process's environment without the credentials or the harness's settings.
+
+    ``extra`` names more variables to drop, on top of those registered with
+    :func:`register_secret_env` -- a configured provider's ``api_key_env``.
+    """
+    named = {name.upper() for name in extra} | _EXTRA_SECRET_NAMES
     return {k: v for k, v in os.environ.items()
-            if not _CREDENTIAL_NAME.search(k) and not _HARNESS_SETTING.search(k)}
+            if not _CREDENTIAL_NAME.search(k) and not _HARNESS_SETTING.search(k)
+            and k.upper() not in named}
+
+
+#: How much of a command's output is kept, from each end of each stream. A
+#: runaway command can print gigabytes inside its timeout; what is kept is the
+#: start (what it was doing) and the end (how it finished).
+OUTPUT_KEEP_CHARS = 1_000_000
+_READ_CHUNK = 65_536
+
+
+class _Capture:
+    """A stream read to its end, of which only the head and the tail are kept."""
+
+    def __init__(self, keep: int) -> None:
+        self.keep = keep
+        self.head: list[str] = []
+        self.head_size = 0
+        self.tail: collections.deque[str] = collections.deque()
+        self.tail_size = 0
+        self.cut = 0
+
+    def add(self, chunk: str) -> None:
+        if self.head_size < self.keep:
+            taken = chunk[: self.keep - self.head_size]
+            self.head.append(taken)
+            self.head_size += len(taken)
+            chunk = chunk[len(taken):]
+        if not chunk:
+            return
+        self.tail.append(chunk)
+        self.tail_size += len(chunk)
+        while self.tail_size - len(self.tail[0]) >= self.keep:
+            dropped = self.tail.popleft()
+            self.tail_size -= len(dropped)
+            self.cut += len(dropped)
+
+    def text(self) -> str:
+        tail = "".join(self.tail)
+        if len(tail) > self.keep:
+            self.cut += len(tail) - self.keep
+            tail = tail[len(tail) - self.keep:]
+        note = f"\n[supervisor: {self.cut} characters of output cut here]\n" if self.cut else ""
+        return "".join(self.head) + note + tail
+
+
+def _drain(stream: Any, capture: _Capture) -> None:
+    try:
+        while chunk := stream.read(_READ_CHUNK):
+            capture.add(chunk)
+    except (OSError, ValueError):
+        pass  # the pipe closed under us: the process was stopped
 
 
 def run_bounded(argv: list[str], cwd: Path | str, timeout: float,
                 extra_env: dict[str, str] | None = None,
+                scrub: Collection[str] = (),
                 ) -> subprocess.CompletedProcess[str]:
     """Run ``argv`` without a shell, and stop it -- all of it -- at ``timeout``.
 
@@ -1467,24 +1599,47 @@ def run_bounded(argv: list[str], cwd: Path | str, timeout: float,
     "The whole tree" is everything the command started, whether or not its
     parent is still alive, and it is killed when the command returns as well:
     `processes.BoundedProcess` says how, and what run 5 left running without it.
-    The command also runs without the user's credentials (`child_environment`),
-    plus ``extra_env``: the harness's own additions, never a model's.
+    The command also runs without the user's credentials (`child_environment`,
+    and the names in ``scrub``), plus ``extra_env``: the harness's own additions,
+    never a model's.
+
+    Output is read as it is written and only its ends are kept
+    (:data:`OUTPUT_KEEP_CHARS`), so a command cannot fill the harness's memory.
     """
-    env = {**child_environment(), **(extra_env or {})}
+    shim = shim_refusal(argv[0], argv[1:]) if argv else None
+    if shim is not None:
+        raise OSError(f"refused to run {argv[0]!r}: {shim}")
+    env = {**child_environment(scrub), **(extra_env or {})}
     bounded = BoundedProcess(argv, cwd, env)
     proc = bounded.proc
+    captures = (_Capture(OUTPUT_KEEP_CHARS), _Capture(OUTPUT_KEEP_CHARS))
+    readers = [threading.Thread(target=_drain, args=(stream, capture), daemon=True)
+               for stream, capture in zip((proc.stdout, proc.stderr), captures, strict=True)]
+    for reader in readers:
+        reader.start()
+    deadline = time.monotonic() + timeout
     try:
-        out, err = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
+        for reader in readers:  # a grandchild may hold the pipe open past its parent
+            reader.join(max(0.0, deadline - time.monotonic()))
+        if any(reader.is_alive() for reader in readers):
+            raise subprocess.TimeoutExpired(argv, timeout)
     except subprocess.TimeoutExpired:
         bounded.stop()
-        try:
-            out, err = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            out, err = "", ""
-        raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err) from None
+        for reader in readers:
+            reader.join(10)
+        raise subprocess.TimeoutExpired(
+            argv, timeout, output=captures[0].text(), stderr=captures[1].text()) from None
     finally:
         bounded.stop()
-    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass  # a reader still holds it: the process is already stopped
+    return subprocess.CompletedProcess(argv, proc.returncode, captures[0].text(),
+                                       captures[1].text())
 
 
 def resolve_runner(name: str) -> tuple[str | None, str]:
@@ -1515,6 +1670,24 @@ def executable_name(token: str) -> str:
     return Path(token.replace("\\", "/")).name.lower().removesuffix(".exe")
 
 
+def _foreign_program(token: str) -> str | None:
+    """Why a program named by a path is not one this fence can vouch for, or ``None``.
+
+    The allow-list reads the program's *name*; a path in front of it decides which
+    file of that name runs. ``//evil/share/python.exe`` is a program on someone
+    else's machine, and ``..`` leaves the tree it was written for. Whether an
+    absolute path is inside the workspace is for the caller that has a workspace.
+    """
+    if "/" not in token and "\\" not in token:
+        return None
+    normal = token.replace("\\", "/")
+    if normal.startswith("//"):
+        return f"{token!r} is a program on a network share"
+    if ".." in normal.split("/"):
+        return f"{token!r} climbs out of the directory it starts from"
+    return None
+
+
 def unsafe_command(command: str) -> str | None:
     """Why this command must not be run here, or ``None`` if it may be.
 
@@ -1541,6 +1714,12 @@ def unsafe_command(command: str) -> str | None:
             f"({', '.join(sorted(VERIFY_EXECUTABLES))}). Verify this by review, or by "
             "a command the user chooses to run themselves"
         )
+    foreign = _foreign_program(tokens[0])
+    if foreign is not None:
+        return foreign
+    shim = shim_refusal(resolve_runner(tokens[0])[0] or tokens[0], tokens[1:])
+    if shim is not None:
+        return shim
     if executable in _POWERSHELL:
         return powershell_refusal(tokens)
     # The rule an agent's shell already had. Without it here, a criterion --
@@ -1742,6 +1921,11 @@ def verify_inspection(criterion: DoDCriterion, workspace: Path) -> VerificationO
         return VerificationOutcome(CriterionStatus.FAIL, f"{raw_path.strip()} does not exist")
 
     try:
+        if path.stat().st_size > MAX_INSPECT_BYTES:
+            return VerificationOutcome(
+                CriterionStatus.BLOCKED,
+                f"{raw_path.strip()} is over {MAX_INSPECT_BYTES // 1_000_000} MB; "
+                "it is not read whole")
         content = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return VerificationOutcome(CriterionStatus.BLOCKED, f"could not read {raw_path}: {exc}")
@@ -1766,16 +1950,25 @@ _NOT_INSPECTED = frozenset({"node_modules", ".git", "dist", "build", ".venv", "v
                             "__pycache__", ".supervisor", ".pytest_cache", ".mypy_cache"})
 #: How many files, and how much of each, an inspection of a directory reads.
 _DIRECTORY_FILES, _DIRECTORY_FILE_BYTES = 400, 400_000
+#: The most an inspection of one named file reads (the toolbox's own bound).
+MAX_INSPECT_BYTES = 5_000_000
 
 
 def _directory_files(directory: Path) -> list[Path]:
+    """The first files under ``directory`` an inspection reads.
+
+    Pruned as it walks, and never through a link: a junction ``docs/j`` pointing
+    outside the workspace used to be read as if it were part of it.
+    """
     found: list[Path] = []
-    for path in sorted(directory.rglob("*")):
+    for path in iter_files(directory, _NOT_INSPECTED):
         if len(found) >= _DIRECTORY_FILES:
             break
-        if (path.is_file() and not _NOT_INSPECTED & set(path.relative_to(directory).parts)
-                and path.stat().st_size <= _DIRECTORY_FILE_BYTES):
-            found.append(path)
+        try:
+            if path.stat().st_size <= _DIRECTORY_FILE_BYTES:
+                found.append(path)
+        except OSError:
+            continue
     return found
 
 
@@ -1793,7 +1986,10 @@ def _inspect_directory(directory: Path, shown: str, needle: str,
     if not needle:
         return VerificationOutcome(CriterionStatus.PASS, f"{shown} holds {len(files)} file(s)")
     for path in files:
-        content = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
         if needle in content:
             rel = path.relative_to(workspace.resolve()).as_posix()
             line_no = content[: content.index(needle)].count("\n") + 1
@@ -1823,7 +2019,8 @@ def quotes_the_file(criterion: DoDCriterion, evidence: str, workspace: Path) -> 
     path = (workspace / raw_path.strip()).resolve()
     try:
         path.relative_to(workspace.resolve())
-        files = _directory_files(path) if path.is_dir() else [path]
+        files = (_directory_files(path) if path.is_dir()
+                 else [path] if path.stat().st_size <= MAX_INSPECT_BYTES else [])
         content = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in files)
     except (ValueError, OSError):
         return False

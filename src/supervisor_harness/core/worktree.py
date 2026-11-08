@@ -33,7 +33,9 @@ model.
 from __future__ import annotations
 
 import shutil
+import stat
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,7 +131,9 @@ def close(workspace: Path, tree: Path, base: str, message: str) -> Closed:
         removed, stopped = _remove(workspace, tree)
         return Closed(removed=removed, note=_joined("the run changed nothing; the branch is "
                                                     "at its starting commit", stopped))
-    if _git(tree, "commit", "-q", "-m", message, timeout=TIMEOUT) is None:
+    # --no-verify as well as the empty hooks path every harness git runs with: the
+    # run's work is committed whatever a hook in the owner's repository thinks of it.
+    if _git(tree, "commit", "-q", "--no-verify", "-m", message, timeout=TIMEOUT) is None:
         return Closed(diffstat=staged, note=(
             "git could not commit the run's changes (is user.name and user.email "
             f"set?); they are uncommitted in the worktree at {tree}, which is kept"))
@@ -138,7 +142,48 @@ def close(workspace: Path, tree: Path, base: str, message: str) -> Closed:
     return Closed(commit=commit, diffstat=staged, removed=removed, note=stopped)
 
 
-def release(workspace: Path, path: str, branch: str, *, unmerged: bool) -> str:
+def _is_link(path: Path) -> bool:
+    """A symlink, or on Windows a junction."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    reparse = getattr(info, "st_file_attributes", 0) & 0x400 if sys.platform == "win32" else 0
+    return stat.S_ISLNK(info.st_mode) or bool(reparse)
+
+
+def release_refusal(path: str, branch: str, run_id: str, runs_dir: Path | None) -> str | None:
+    """Why a run's recorded worktree and branch are not to be believed, or ``None``.
+
+    What a deleted run held in git is read from its ``state.json``, which sits in
+    the owner's repository (``.supervisor/runs/<id>/``) where a repository can plant
+    one that names any directory and any branch. So nothing in it is acted on unless it
+    is what the harness itself would have made for this run: the worktree is exactly
+    ``<runs_dir>/<run id>/worktree`` and the branch exactly ``supervisor/<run id>``.
+    """
+    if not run_id or Path(run_id).name != run_id or run_id in (".", "..") or "\\" in run_id:
+        return "the run's id is missing, or is not a single name"
+    if runs_dir is None:
+        return "the store's runs directory was not given, so there is nothing to compare with"
+    # A branch that is not under supervisor/ is not one the harness made, and is left
+    # alone further down; one that is must be this run's own, not another run's.
+    if branch.startswith(BRANCH_PREFIX) and branch != branch_for(run_id):
+        return f"the branch {branch!r} is not the one this run made ({branch_for(run_id)!r})"
+    if path:
+        expected = Path(runs_dir) / run_id / "worktree"
+        if _is_link(expected) or _is_link(expected.parent):
+            return f"{expected} is a link"
+        try:
+            same = Path(path).resolve() == expected.resolve()
+        except OSError:
+            same = False
+        if not same:
+            return f"{path!r} is not this run's worktree ({expected})"
+    return None
+
+
+def release(workspace: Path, path: str, branch: str, *, unmerged: bool,
+            run_id: str = "", runs_dir: Path | None = None) -> str:
     """Give back what a deleted run held in git; what was done, as a note.
 
     The worktree sits in the run's own directory, so deleting the run took the
@@ -150,7 +195,14 @@ def release(workspace: Path, path: str, branch: str, *, unmerged: bool) -> str:
     only when ``unmerged`` says the owner named this run: a cutoff sweep keeps
     the work it was not asked about. The note gives the commit, so a branch
     deleted by mistake can be put back.
+
+    ``path`` and ``branch`` come from the run's state, so they are checked against
+    ``run_id`` and the store's ``runs_dir`` first (:func:`release_refusal`), and
+    with neither given nothing is touched.
     """
+    why = release_refusal(path, branch, run_id, runs_dir)
+    if why is not None:
+        return f"refused to release this run's worktree and branch: {why}"
     notes: list[str] = []
     if path and Path(path).exists():
         _, stopped = _remove(workspace, Path(path))

@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import enum
+import functools
 import types
 import typing
 from typing import Any, TypeVar, Union, cast, get_args, get_origin, get_type_hints
@@ -53,7 +54,7 @@ def _strip_optional(tp: Any) -> Any:
 
 
 def _coerce(value: Any, tp: Any) -> Any:
-    if tp is Any or tp is None:
+    if tp is Any or tp is None or tp is str or tp is int or tp is float or tp is bool:
         return value
 
     if _is_optional(tp):
@@ -95,14 +96,26 @@ def _coerce(value: Any, tp: Any) -> Any:
     return value
 
 
+@functools.cache
+def _field_plan(cls: type) -> tuple[tuple[str, Any], ...]:
+    """A dataclass's field names and resolved annotations, worked out once.
+
+    ``get_type_hints`` re-evaluates every string annotation of the class and its
+    bases on each call, and accounted for ~112 of the ~115 microseconds a
+    ``from_jsonable`` took -- once per instance, tens of thousands of times in a
+    fold. The answer depends only on the class.
+    """
+    hints = get_type_hints(cls, include_extras=False)
+    return tuple((f.name, hints.get(f.name, Any)) for f in dataclasses.fields(cls))
+
+
 def from_jsonable(data: dict[str, Any], cls: type[T]) -> T:
     """Rebuild ``cls`` from a plain dict, ignoring unknown keys."""
     if not dataclasses.is_dataclass(cls):
         raise TypeError(f"{cls!r} is not a dataclass")
-    hints = get_type_hints(cls, include_extras=False)
     kwargs: dict[str, Any] = {}
-    for field in dataclasses.fields(cls):
-        if field.name not in data:
+    for name, tp in _field_plan(cls):
+        if name not in data:
             continue
-        kwargs[field.name] = _coerce(data[field.name], hints.get(field.name, Any))
+        kwargs[name] = _coerce(data[name], tp)
     return typing.cast(T, cls(**kwargs))

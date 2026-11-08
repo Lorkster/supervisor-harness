@@ -39,6 +39,7 @@ form for a host that cannot read files -- it costs context, not correctness.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -147,7 +148,8 @@ class Packets:
         self.host = host
 
     def _agent_packet(
-        self, session: RunSession, agent: AgentSpec, directive: Directive | None = None
+        self, session: RunSession, agent: AgentSpec, directive: Directive | None = None,
+        defer_brief: list[dict[str, Any]] | None = None,
     ) -> WorkPacket:
         state = session.state
         peers = [a for a in state.agents.values() if a.kind is agent.kind]
@@ -214,6 +216,17 @@ class Packets:
         stored = state.briefs.get(agent.id)
         if stored:
             brief = stored
+            if handoff is not None:
+                # The stored text names the first turn's result file; this
+                # turn's answer goes to its own, or it overwrites the last.
+                brief = re.sub(
+                    rf"{re.escape(agent.id)}\.t\d+\.json",
+                    f"{agent.id}.t{turns_used}.json", brief,
+                )
+        elif defer_brief is not None:
+            # For a caller running while other agents are: it emits the record
+            # with `aemit`, which this synchronous method cannot.
+            defer_brief.append({"agent_id": agent.id, "brief": brief})
         else:
             session.emit(EventType.BRIEF_RENDERED, {"agent_id": agent.id, "brief": brief})
 
@@ -464,12 +477,18 @@ class Packets:
             turn for turn in session.state.turns
             if turn.agent_id == agent_id and not (before and turn.id == before)
         ]
-    def _schema_for(self, agent: AgentSpec) -> dict[str, Any]:
-        return {
-            AgentKind.ANALYSIS: ANALYSIS_TURN_SCHEMA,
-            AgentKind.EXECUTION: EXECUTION_TURN_SCHEMA,
-            AgentKind.VERIFICATION: VERIFICATION_SCHEMA,
-        }.get(agent.kind, ANALYSIS_TURN_SCHEMA)
+    def declare_host_agents(
+        self, session: RunSession, host_agents: list[dict[str, Any]] | None
+    ) -> None:
+        """Record a host's declaration, when there is one.
+
+        The entry points that only wanted the declaration used to call
+        `_registry_for` and drop the registry, which rescans the agent
+        directories of the workspace and the user's home for nothing.
+        """
+        if host_agents is not None:
+            session.emit(EventType.HOST_AGENTS_DECLARED, {"agents": list(host_agents)})
+
     def _registry_for(
         self, session: RunSession, host_agents: list[dict[str, Any]] | None
     ) -> AgentRegistry:
@@ -487,7 +506,6 @@ class Packets:
         way to tell them apart afterwards -- which is exactly the question you
         ask when no local agent was used.
         """
-        if host_agents is not None:
-            session.emit(EventType.HOST_AGENTS_DECLARED, {"agents": list(host_agents)})
+        self.declare_host_agents(session, host_agents)
         declared = host_agents or session.state.host_agents
         return AgentRegistry(self.workspace, self.host, declared)

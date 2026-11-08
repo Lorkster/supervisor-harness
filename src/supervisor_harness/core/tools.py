@@ -69,10 +69,15 @@ the host, so the agent judging the work cannot change it.
 from __future__ import annotations
 
 import fnmatch
+import json
+import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,9 +93,10 @@ from .dod import (
     resolve_runner,
     run_bounded,
     shell_split,
+    shim_refusal,
     unquoted_metacharacter,
 )
-from .paths import matches_any, scope_relative
+from .paths import collapse, iter_files, matches_any, scope_relative
 
 # Directories never worth reading and expensive to walk.
 SKIP_DIRS = {
@@ -201,9 +207,98 @@ TRUNCATION_KEEP = 0.5
 MAX_PATTERN_CHARS = 300
 MAX_SEARCH_LINE_CHARS = 2_000
 SEARCH_SECONDS = 15.0
-# A group containing a quantifier, itself quantified: the shape of
-# catastrophic backtracking. A heuristic, so it errs towards refusing.
-_NESTED_REPETITION = re.compile(r"\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)\s*[+*{]")
+_BRACE_QUANTIFIER = re.compile(r"\{(?:\d+(?:,\d*)?|,\d+)\}")
+
+
+def _class_end(pattern: str, start: int) -> int:
+    """The index after the character class that opens at ``pattern[start]``."""
+    i = start + 1
+    if pattern.startswith("^", i):
+        i += 1
+    if pattern.startswith("]", i):
+        i += 1  # a leading `]` is a member, not the end
+    while i < len(pattern) and pattern[i] != "]":
+        i += 2 if pattern[i] == "\\" else 1
+    return i + 1
+
+
+def risky_repetition(pattern: str) -> bool:
+    """Whether ``pattern`` repeats a group in a way that can take exponential time.
+
+    A group is risky when it is repeated with ``*``, ``+`` or any ``{n,m}`` and
+    holds an alternation or another repetition: ``(a+)+``, ``(a|aa)+$``,
+    ``(a?){34}a{34}``. A bounded repeat of a group is refused outright -- it is
+    exponential as soon as what it repeats can match in two ways. A heuristic over
+    the pattern's text, so it errs towards refusing; what it lets through
+    (``a*a*a*a*b``, polynomial) is bounded by the search's time limit instead.
+    """
+    groups: list[list[bool]] = []  # per open group: [holds an alternation, holds a repetition]
+    closed: list[bool] | None = None
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\":
+            i, closed = i + 2, None
+        elif char == "[":
+            i, closed = _class_end(pattern, i), None
+        elif char == "(":
+            groups.append([False, False])
+            i, closed = i + (2 if pattern.startswith("?", i + 1) else 1), None
+        elif char == ")":
+            inner = groups.pop() if groups else [False, False]
+            if groups:  # what a group holds, its parent holds
+                groups[-1][0] = groups[-1][0] or inner[0]
+                groups[-1][1] = groups[-1][1] or inner[1]
+            i, closed = i + 1, inner
+        elif char == "|":
+            if groups:
+                groups[-1][0] = True
+            i, closed = i + 1, None
+        else:
+            width = 1 if char in "*+?" else 0
+            brace = _BRACE_QUANTIFIER.match(pattern, i) if char == "{" else None
+            if brace is not None:
+                width = brace.end() - i
+            if not width:
+                i, closed = i + 1, None
+                continue
+            if closed is not None and (
+                    brace is not None or (char in "*+" and (closed[0] or closed[1]))):
+                return True
+            if groups:
+                groups[-1][1] = True
+            i += width
+            if pattern[i:i + 1] in ("?", "+") and char != "?":
+                i += 1  # lazy or possessive
+            closed = None
+    return False
+
+
+#: What runs a search's regex: a separate process, so that a pattern that takes
+#: forever can be killed. Python's `re` never releases the GIL, so no thread can
+#: be abandoned and no deadline checked between matches. Standard library only,
+#: started with `-I -S`, handed its job on stdin.
+_SEARCH_WORKER = (
+    "import json, re, sys\n"
+    "sys.stdin.reconfigure(encoding='utf-8')\n"
+    "sys.stdout.reconfigure(encoding='utf-8')\n"
+    "job = json.load(sys.stdin)\n"
+    "regex = re.compile(job['pattern'], re.IGNORECASE)\n"
+    "found = 0\n"
+    "for path, rel in job['files']:\n"
+    "    try:\n"
+    "        with open(path, encoding='utf-8', errors='replace') as handle:\n"
+    "            text = handle.read()\n"
+    "    except OSError:\n"
+    "        continue\n"
+    "    for number, line in enumerate(text.splitlines(), 1):\n"
+    "        if regex.search(line[:job['line_chars']]):\n"
+    "            sys.stdout.write(json.dumps([rel, number, line.strip()[:180]]) + '\\n')\n"
+    "            sys.stdout.flush()\n"
+    "            found += 1\n"
+    "            if found >= job['limit']:\n"
+    "                sys.exit(0)\n"
+)
 
 
 @dataclass
@@ -219,6 +314,64 @@ class ToolResult:
     def render(self) -> str:
         status = "" if self.ok else " (failed)"
         return f"### {self.tool}{status}\n{self.output}"
+
+
+def _grep(pattern: str, files: list[tuple[str, str]],
+          budget: float) -> tuple[list[str], bool]:
+    """The matching lines of ``files`` and whether the time ran out, within ``budget`` seconds.
+
+    The regex runs in `_SEARCH_WORKER`, which is killed when the time is up.
+    """
+    if not files:
+        return [], False
+    if budget <= 0:
+        return [], True
+    job = json.dumps({"pattern": pattern, "files": files, "limit": MAX_MATCHES,
+                      "line_chars": MAX_SEARCH_LINE_CHARS})
+    worker = subprocess.Popen(  # noqa: S603 - our own interpreter and our own script
+        [sys.executable, "-I", "-S", "-c", _SEARCH_WORKER],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    stopped = False
+    try:
+        out, _ = worker.communicate(job, timeout=budget)
+    except subprocess.TimeoutExpired:
+        worker.kill()
+        out, _ = worker.communicate()
+        stopped = True
+    hits = []
+    for line in out.splitlines():
+        try:
+            rel, number, text = json.loads(line)
+        except ValueError:
+            continue  # a line cut short by the kill
+        hits.append(f"{rel}:{number}: {text}")
+    return hits[:MAX_MATCHES], stopped
+
+
+def _whole_number(value: Any, default: int, name: str, notes: list[str]) -> int:
+    """A model-supplied number as an int, or ``default`` -- and a note saying so.
+
+    A model writes ``start: "1-20"``, ``limit: "all"`` or ``start: [1]`` often
+    enough, and an exception from here ended the agent's whole turn over it.
+    """
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        number = None
+    elif isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and value.is_integer():
+        number = int(value)
+    elif isinstance(value, str) and value.strip().lstrip("+-").isdigit():
+        number = int(value.strip())
+    else:
+        number = None
+    if number is None:
+        notes.append(f"{name}={str(value)[:40]!r} is not a whole number; used {default}")
+        return default
+    return number
 
 
 def _git_subcommand(rest: list[str]) -> str:
@@ -318,6 +471,52 @@ def match_ignoring_indent(text: str, old: str, new: str) -> tuple[int, str] | No
     return at + 1, edited.replace("\n", "\r\n") if crlf else edited
 
 
+def _replace_atomically(target: Path, text: str) -> None:
+    """Write ``text`` to ``target`` so that a reader sees the old file or the new, never half.
+
+    A temporary file in the same directory, flushed to disk, then renamed over it:
+    an interrupted edit leaves the file as it was, not truncated.
+    """
+    descriptor, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp",
+                                        dir=target.parent)
+    swapped = False
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        shutil.copymode(target, name)
+        os.replace(name, target)
+        swapped = True
+    finally:
+        if not swapped:
+            Path(name).unlink(missing_ok=True)
+
+
+_WINDOWS_DEVICES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{name}{n}" for name in ("COM", "LPT") for n in "123456789¹²³"})
+
+
+def windows_name_refusal(rel: str) -> str | None:
+    """Why Windows would not make ``rel`` the file it names, or ``None``.
+
+    A device name (``CON``, ``aux.txt``) opens the device, not a file; ``a.txt:ads``
+    writes an alternate data stream that no listing shows; a name ending in a dot or a
+    space is silently another name. None of them is a file where an agent thinks it
+    is writing one. Judged by name, on every platform, so it is testable anywhere;
+    :meth:`Toolbox._write_refusal` applies it on Windows only.
+    """
+    for part in rel.split("/"):
+        if ":" in part:
+            return f"{part!r} has a ':' in it, which on Windows names a stream, not a file"
+        if part != part.rstrip(". ") and part not in (".", ".."):
+            return f"{part!r} ends in a dot or a space, which Windows drops"
+        if part.split(".")[0].rstrip(" ").upper() in _WINDOWS_DEVICES:
+            return f"{part!r} is a Windows device name, not a file"
+    return None
+
+
 class Toolbox:
     """The tools an autonomous agent may use, sandboxed to one workspace."""
 
@@ -363,21 +562,28 @@ class Toolbox:
         neighbouring one.
         """
         for part in rel.split("/"):
-            if part in VCS_DIRS:
+            # Case-insensitively on every platform, and without the trailing dots
+            # and spaces Windows drops: `.GIT` and `.git.` are `.git` on NTFS (and
+            # on a case-insensitive volume anywhere), and a new `.GIT/` made on a
+            # case-sensitive one is a directory git will not read but a checkout
+            # on Windows will.
+            name = part.rstrip(". ").lower()
+            if name in VCS_DIRS:
                 return (
                     f"{rel} is inside {part!r}, which no agent may write whatever "
                     f"its scope says: {part}/hooks and {part}/config are run by the "
                     "tool itself, so writing there executes code rather than "
                     "changing the project. Change a file in the project instead"
                 )
-            if part in STORE_DIRS:
+            if name in STORE_DIRS:
                 return (
                     f"{rel} is inside the harness's own store ({part!r}), which no "
                     "agent may write: it holds the event log this run is judged "
                     "against. Report what you found instead of writing it there"
                 )
         if self._store_prefix is not None and (
-            rel == self._store_prefix or rel.startswith(self._store_prefix + "/")
+            rel.lower() == self._store_prefix.lower()
+            or rel.lower().startswith(self._store_prefix.lower() + "/")
         ):
             return (
                 f"{rel} is inside the harness's own store "
@@ -406,6 +612,16 @@ class Toolbox:
         rel = target.relative_to(self.workspace).as_posix()
         return None if self._floor_refusal(rel) is not None else rel
 
+    def _candidates(self) -> Iterator[Path]:
+        """The files under the workspace, without ever entering a skipped directory.
+
+        Pruned while it walks: filtering ``rglob`` afterwards still listed and
+        stat-ed every file in ``node_modules`` first, which cost a second and a
+        half per call on a project with twenty thousand of them. Links are not
+        followed (`paths.iter_files`).
+        """
+        return iter_files(self.workspace, SKIP_DIRS)
+
     def _walk(self) -> list[Path]:
         """Every readable file genuinely inside the workspace.
 
@@ -426,11 +642,7 @@ class Toolbox:
         """
         root = self.workspace.resolve()
         out: list[Path] = []
-        for path in self.workspace.rglob("*"):
-            if path.is_symlink():
-                continue
-            if not path.is_file():
-                continue
+        for path in self._candidates():
             # The parts *inside* the workspace: a workspace that itself sits under
             # a directory called ``build`` or ``target`` used to show no files.
             try:
@@ -526,41 +738,34 @@ class Toolbox:
                unread: Collection[str] = ()) -> ToolResult:
         if len(pattern) > MAX_PATTERN_CHARS:
             return ToolResult("search", False, f"pattern is over {MAX_PATTERN_CHARS} characters")
-        if _NESTED_REPETITION.search(pattern):
+        if risky_repetition(pattern):
             return ToolResult("search", False,
-                              "the pattern repeats a group that itself repeats, which can "
-                              "take exponential time; search for something simpler")
+                              "the pattern repeats a group that itself repeats, holds an "
+                              "alternation, or is repeated by {n,m}, which can take "
+                              "exponential time; search for something simpler")
         try:
-            regex = re.compile(pattern, re.IGNORECASE)
+            re.compile(pattern, re.IGNORECASE)
         except re.error as exc:
             return ToolResult("search", False, f"invalid pattern: {exc}")
 
-        hits: list[str] = []
         deadline = time.monotonic() + SEARCH_SECONDS
-        stopped = False
+        files: list[tuple[str, str]] = []
         for path in self._walk():
             rel = self._rel(path)
             if glob not in ("", "**/*") and not fnmatch.fnmatch(rel, glob):
                 continue
             if unread and matches_any(rel, list(unread)):
                 continue
-            if time.monotonic() > deadline:
-                stopped = True
-                break
             try:
                 if path.stat().st_size > MAX_FILE_BYTES:
                     continue
-                for number, line in enumerate(
-                    path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
-                ):
-                    if regex.search(line[:MAX_SEARCH_LINE_CHARS]):
-                        hits.append(f"{rel}:{number}: {line.strip()[:180]}")
-                        if len(hits) >= MAX_MATCHES:
-                            break
             except OSError:
                 continue
-            if len(hits) >= MAX_MATCHES:
-                break
+            files.append((str(path), rel))
+        try:
+            hits, stopped = _grep(pattern, files, deadline - time.monotonic())
+        except OSError as exc:
+            return ToolResult("search", False, f"could not start the search: {exc}")
         body = "\n".join(hits) or "(no matches)"
         if stopped:
             body += (f"\n(search stopped after {SEARCH_SECONDS:.0f} s; narrow it with a glob "
@@ -604,6 +809,9 @@ class Toolbox:
         floor = self._floor_refusal(rel)
         if floor is not None:
             return floor
+        name = windows_name_refusal(rel) if sys.platform == "win32" else None
+        if name is not None:
+            return f"{rel} cannot be written: {name}"
         if scope is not None:
             if matches_any(rel, scope.forbidden_paths):
                 return f"{rel} is a forbidden path for this agent"
@@ -622,7 +830,9 @@ class Toolbox:
             return ToolResult("write_file", False, refusal)
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            # Bytes: write_text would turn each "\n" into "\r\n" on Windows, and a
+            # "\r\n" the agent wrote into "\r\r\n".
+            target.write_bytes(content.encode("utf-8"))
         except OSError as exc:
             return ToolResult("write_file", False, f"could not write {rel}: {exc}")
         return ToolResult("write_file", True, f"wrote {rel} ({len(content)} bytes)")
@@ -721,8 +931,7 @@ class Toolbox:
                 f"`old` occurs {count} times in {rel}; include enough of the "
                 "surrounding lines to pick out one"))
         try:
-            with target.open("w", encoding="utf-8", newline="") as handle:
-                handle.write(edited)
+            _replace_atomically(target, edited)
         except OSError as exc:
             return ToolResult("edit_file", False, f"could not write {rel}: {exc}")
         return ToolResult("edit_file", True, f"edited {rel} at line {line}{matched}")
@@ -746,9 +955,18 @@ class Toolbox:
         candidates: list[str] = []
         for token in tokens[1:]:
             if token.startswith("-"):
-                # A flag names a file only in its --flag=path form.
+                # A flag names a file in its --flag=path form, or as -Cpath, which
+                # make, pytest and most tools read as `-C path`. Only a value with
+                # a separator in it (or a leading dot) is taken for a path there:
+                # `-ktest_login` is not one.
                 _, sep, value = token.partition("=")
-                if not sep or not value:
+                if token.startswith("--") or len(token) < 3:
+                    if not sep or not value:
+                        continue
+                elif not sep:
+                    value = token[2:]
+                    if "/" in value or "\\" in value or value.startswith("."):
+                        candidates.append(value)  # `-C.hg` names it, though nothing is there yet
                     continue
                 token = value
             if not token:
@@ -779,11 +997,27 @@ class Toolbox:
         """
         for token in self._path_candidates(shell_split(command)):
             rel = scope_relative(token, self.workspace.as_posix())
-            if rel is None or rel.startswith("../"):
-                continue
+            rel = collapse(rel) if rel is not None else None
+            if rel is None:
+                continue  # outside the workspace: `_scope_refusal` says so
             refusal = self._floor_refusal(rel)
             if refusal is not None:
                 return refusal
+        return None
+
+    def _program_refusal(self, token: str) -> str | None:
+        """Why the program named by a path in the command's first token is not the project's.
+
+        The allow-list reads the program's name; a path in front of it chooses which
+        file of that name runs, so it must be one in the workspace (a share
+        like ``//evil/share/python.exe`` and ``../python`` are not).
+        """
+        if "/" not in token and "\\" not in token:
+            return None
+        rel = scope_relative(token, self.workspace.as_posix())
+        rel = collapse(rel) if rel is not None else None
+        if rel is None or token.replace("\\", "/").startswith("//"):
+            return f"the program {token!r} is outside the workspace"
         return None
 
     def _scope_refusal(self, command: str, scope: Scope, *,
@@ -863,6 +1097,10 @@ class Toolbox:
                 "a file in your scope, or report the command for the host to run"
             )
 
+        foreign = None if a_check else self._program_refusal(tokens[0])
+        if foreign is not None:
+            return foreign
+
         powershell = powershell_refusal(tokens) if executable in ("pwsh", "powershell") else None
         if powershell is not None:
             return f"an agent may not run this: {powershell}"
@@ -877,13 +1115,20 @@ class Toolbox:
                 "write_file to change a file"
             )
 
+        shim = shim_refusal(resolve_runner(tokens[0])[0] or tokens[0], tokens[1:])
+        if shim is not None:
+            return f"an agent may not run this: {shim}"
+
         # One of the run's own checks, as the plan wrote it, may name what it
         # checks wherever that is: the harness runs it anyway, and baseline 2's
         # implementer was refused `python tools/check_doc_refs.py` for the path
         # of the script, then could not learn which document its edit had broken.
+        # Where a path lands is judged after its `..` are resolved: `src/../../x`
+        # starts with `src/` and does not stay in it.
         for token in [] if a_check else self._path_candidates(tokens):
             rel = scope_relative(token, self.workspace.as_posix())
-            if rel is None or rel.startswith("../"):
+            rel = collapse(rel) if rel is not None else None
+            if rel is None:
                 return f"{token} is outside the workspace"
             if matches_any(rel, scope.forbidden_paths):
                 return f"{rel} is a forbidden path for this agent"
@@ -979,12 +1224,16 @@ class Toolbox:
                 return ToolResult("read_file", False, unread)
             lines, chars = ((WHOLE_FILE_LINES, WHOLE_FILE_CHARS) if whole_files
                             else (MAX_READ_LINES, MAX_READ_CHARS))
-            return self.read_file(
+            notes: list[str] = []
+            result = self.read_file(
                 str(args.get("path", "")),
-                int(args.get("start", 1) or 1),
-                int(args.get("limit", lines) or lines),
+                _whole_number(args.get("start"), 1, "start", notes),
+                _whole_number(args.get("limit"), lines, "limit", notes),
                 max_lines=lines, max_chars=chars,
             )
+            if notes:  # said, not done quietly: the agent should know what it was given
+                result.output += "\n(" + "; ".join(notes) + ")"
+            return result
         if name == "search":
             return self.search(str(args.get("pattern", "")), str(args.get("glob", "**/*")),
                                agent.scope.unread_paths)

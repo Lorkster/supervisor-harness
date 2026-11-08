@@ -823,9 +823,11 @@ def test_config_layers_merge(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("SUPERVISOR_HOME", raising=False)
     cfg = load_config(tmp_path)
 
-    # A workspace may tune how much work the harness does.
-    assert cfg.policy.max_parallel_agents == 9
-    assert cfg.policy.default_max_turns == 4
+    # A workspace may choose routing; what the run spends is the owner's
+    # (review 2026-11: budgets joined PROTECTED_SETTINGS).
+    assert cfg.policy.max_parallel_agents == 4
+    assert cfg.policy.default_max_turns == 6
+    assert any(r.startswith("policy.max_parallel_agents") for r in cfg.rejected_settings)
     assert cfg.binding_for("drift").ref() == "ollama:qwen3.5:9b"
     assert cfg.policy.max_task_attempts == 3              # untouched default survives
 

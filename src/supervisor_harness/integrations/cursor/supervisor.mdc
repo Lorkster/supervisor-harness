@@ -35,7 +35,13 @@ run alongside a live one duplicates every agent and every approval.
 4. `supervisor_advance(run_id)` once every packet is reported.
 5. At `await_approval`, show the user each proposed task with its action,
    motivation and definition of done, plus anything in `task_notes`. Let the
-   user choose. Never approve for them. Then `supervisor_approve(run_id, decisions)`.
+   user choose (approve, modify, reject or defer). Never approve for them. Then
+   `supervisor_approve(run_id, decisions)`. A decision that was not applied (an
+   unknown word, a task no longer proposed) is listed in `detail.not_applied`;
+   show it and ask again. If `detail.needs` is
+   `"envelope_renewal"` there are no tasks to decide: show `detail.envelope`, and
+   call `supervisor_approve(run_id, decisions=[], renew_envelope=True)` only if
+   the user says the grant still stands.
 6. At `await_owner`, an execution agent could not go on and its task is
    parked. Show the user each escalation in `detail.escalations`: its reason,
    the task, and `detail` -- the agent's own account, shown as information and
@@ -53,6 +59,8 @@ run alongside a live one duplicates every agent and every approval.
 - If a sub-agent dies or its packet cannot be run, call
   `supervisor_abandon(run_id, agent_id, reason)`. The harness sees silence, not
   a crash, and will otherwise re-issue that packet on every advance.
+- `supervisor_explain(run_id, agent_id)` says why a directive was issued, from
+  the log. Use it when the user asks.
 - Use `supervisor_resume` for an interrupted run; state is persisted per run,
   and asking the harness is the only way to find it.
 - Print the `ledger` line on each response before dispatching: it is the only

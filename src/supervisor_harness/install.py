@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -228,7 +229,25 @@ def _purge(workspace: Path, report: UninstallReport) -> None:
             "not this project's own; remove it by hand if you mean to",
         ))
         return
-    _act(report, DEFAULT_DIRNAME + "/", store, lambda: shutil.rmtree(store))
+    _act(report, DEFAULT_DIRNAME + "/", store, lambda: _remove_store(store, workspace))
+
+
+def _remove_store(store: Path, workspace: Path) -> None:
+    """Delete the store, then tell git its worktrees went with it.
+
+    A run's worktree lives inside the store and is registered in the
+    repository's own `.git/worktrees`; removing the directory alone left that
+    registration pointing at nothing. Best effort: no git, or a failure, leaves
+    only what was there before.
+    """
+    shutil.rmtree(store)
+    try:
+        subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", "-C", str(workspace), "worktree", "prune"],  # noqa: S607
+            capture_output=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
 
 
 def _same(a: Path, b: Path) -> bool:

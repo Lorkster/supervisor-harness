@@ -128,7 +128,9 @@ def read_log(path: pathlib.Path) -> list[dict[str, object]]:
     may be copied while a run is still writing to it.
     """
     events: list[dict[str, object]] = []
-    with path.open(encoding="utf-8") as handle:
+    # errors="replace": one torn multi-byte character must not end the report on a
+    # log that is otherwise readable (`where_the_turns_went` already did this).
+    with path.open(encoding="utf-8", errors="replace") as handle:
         for line in handle:
             if not line.strip():
                 continue
