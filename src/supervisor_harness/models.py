@@ -159,6 +159,10 @@ class VerifyMethod(StrEnum):
     # Harness-owned: added as a quality bar, proven by `core/fails_before.py`,
     # and not offered to models as a method they may propose.
     FAILS_BEFORE = "fails_before"
+    # Batch P: the tests marked with a requirement catch a break of each of its
+    # clauses. Harness-owned like ``fails_before``: a model proposes the breaks,
+    # `core/sabotage.py` applies them and runs the tests.
+    CATCHES_BREAKS = "catches_breaks"
 
 
 class CriterionStatus(StrEnum):
@@ -684,6 +688,25 @@ class DriftAssessment:
 
 
 @dataclass
+class Break:
+    """One way to break a requirement's clause, proposed by the saboteur (batch P).
+
+    The form the owner's own ``sabotage.py`` uses: in ``file``, the text
+    ``find`` -- found there exactly once -- becomes ``replace``. Only the
+    harness applies it, in place and restored after (`core/sabotage.py`).
+    """
+
+    requirement: str = ""
+    clause: int = 0
+    file: str = ""
+    find: str = ""
+    replace: str = ""
+    # The attempt of the testing task it was proposed for: every later attempt
+    # is run against it too.
+    attempt: int = 0
+
+
+@dataclass
 class DoDCriterion:
     """A single, individually verifiable completion condition."""
 
@@ -705,10 +728,18 @@ class DoDCriterion:
     # The goal expectation this criterion checks (`GoalExpectation.id`), when it
     # is one: set by the harness from the plan's goal, never from a criterion.
     goal_id: str = ""
+    # ``catches_breaks`` only: the requirement whose marked tests are broken
+    # against, and the breaks the saboteur proposed for it, kept once proposed
+    # so each later attempt is run against the same ones. Set by the harness.
+    requirement: str = ""
+    breaks: list[Break] = field(default_factory=list)
+    # The attempt the saboteur was last asked on, so it is asked once per attempt.
+    breaks_asked: int = 0
+
     @property
     def machine_checkable(self) -> bool:
         return self.method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.INSPECTION,
-                               VerifyMethod.FAILS_BEFORE)
+                               VerifyMethod.FAILS_BEFORE, VerifyMethod.CATCHES_BREAKS)
 
 
 @dataclass

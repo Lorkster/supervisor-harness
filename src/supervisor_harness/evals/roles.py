@@ -31,7 +31,7 @@ from typing import Any
 from ..agents.brief import build_verifier_brief
 from ..config import HarnessConfig, load_config
 from ..contracts import SYNTHESIS_SCHEMA, parse_tasks
-from ..core import phases
+from ..core import phases, sabotage
 from ..core.supervisor import Supervisor
 from ..host.detect import HostInfo
 from ..models import (
@@ -41,6 +41,7 @@ from ..models import (
     Backend,
     ExecutionTask,
     Finding,
+    Requirement,
     RunMode,
     RunState,
     Scope,
@@ -48,7 +49,7 @@ from ..models import (
 )
 from ..providers.base import ChatMessage, CompletionRequest
 from ..providers.router import ModelRouter
-from ..serde import from_jsonable
+from ..serde import from_jsonable, to_jsonable
 from ..store.runstore import RunStore
 from .cases import Case
 
@@ -77,6 +78,8 @@ class RoleOutput:
     #: coordinator: each pick, with task titles: {do, task, to_task, criterion, message, by}
     picks: list[dict[str, str]] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
+    #: saboteur: the breaks it proposed that the harness kept, as dicts
+    breaks: list[dict[str, Any]] = field(default_factory=list)
     error: str = ""
     seconds: float = 0.0
 
@@ -89,7 +92,7 @@ class RoleOutput:
                                      "command": c.command} for c in t.dod]}
                       for t in self.tasks],
             "ruling": self.ruling, "why": self.why[:600], "criteria": self.criteria,
-            "picks": self.picks, "refused": self.refused,
+            "picks": self.picks, "refused": self.refused, "breaks": self.breaks,
             "error": self.error, "seconds": round(self.seconds, 1),
         }
 
@@ -122,6 +125,8 @@ async def run_role(case: Case, workspace: Path, store: Path, variant: Variant,
             out = await _review(sup, case)
         elif case.role == "coordinator":
             out = await _coordinator(sup, case)
+        elif case.role == "saboteur":
+            out = await _saboteur(sup, case)
         else:
             out = await _verifier(sup, case)
     except Exception as exc:  # noqa: BLE001 - one bad call is a result, not a crash
@@ -209,3 +214,28 @@ async def _coordinator(sup: Supervisor, case: Case) -> RoleOutput:
     return RoleOutput(picks=picks, refused=list(record.refused),
                       error="" if any(p["by"] != "harness" for p in picks) or not picks
                       else f"the coordinator made no pick: {record.summary}")
+
+
+async def _saboteur(sup: Supervisor, case: Case) -> RoleOutput:
+    """Batch P's saboteur, asked as a run asks it; what it proposes is checked, not run.
+
+    The case gives the requirement, the paths of the work that delivers it and of
+    its tests, and the testing task's command. Running the breaks is the checks'
+    job (`breaks_turn_red`), against whatever oracle the case names.
+    """
+    session = sup.store.create(RunState(prompt=case.request, workspace=str(sup.workspace)))
+    req = from_jsonable(case.input["requirement"], Requirement)
+    session.state.requirements = [req]
+    builder = ExecutionTask(title="The work", requirements=[req.id], status=TaskStatus.VERIFIED,
+                            scope=Scope(paths=list(case.input.get("builder_paths", []))))
+    crit = sabotage.criterion(req.id, str(case.input.get("command", "npm test")))
+    tester = ExecutionTask(title="The tests", status=TaskStatus.AWAITING_VERIFICATION,
+                           attempts=1, dod=[crit],
+                           scope=Scope(paths=list(case.input.get("tester_paths", []))))
+    for task in (builder, tester):
+        session.state.tasks[task.id] = task
+    await sup._ask_saboteur(session, tester, crit, req, sup.workspace)
+    said = next((n.text for n in reversed(session.state.notes)
+                 if n.text.startswith("saboteur on")), "")
+    return RoleOutput(breaks=[to_jsonable(b) for b in crit.breaks], why=said,
+                      error="" if crit.breaks else f"no break kept: {crit.evidence or said}")

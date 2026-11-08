@@ -639,7 +639,7 @@ a run may spend, or where your credentials go. It may not set:
 | Setting | Why |
 | --- | --- |
 | `policy.allow_command_execution` | It would grant shell execution by being checked out |
-| `policy.require_tests`, `require_security_review`, `require_code_quality`, `require_negative_test`, `require_liveness_review`, `require_fails_before`, `min_dod_criteria` | The bars a change is judged against. A repository that could lower them would be marking its own homework |
+| `policy.require_tests`, `require_security_review`, `require_code_quality`, `require_negative_test`, `require_liveness_review`, `require_fails_before`, `require_catches_breaks`, `min_dod_criteria` | The bars a change is judged against. A repository that could lower them would be marking its own homework |
 | `policy.checkpoint_threshold`, `drift_threshold`, `drift_hard_threshold`, `model_drift_check`, `drift_check_every`, `min_scope_coverage`, `clean_check` | How far work may stray, how much of its scope an agent must read, and whether the final gates are re-run on a clean checkout, before work is corrected, stopped or sent back |
 | `policy.approval`, `veto_review`, `requirements_ledger` | Whether a person, or the harness within a grant, reviews each task; whether a reviewer reads what the gate passed; whether the request is held to its own words |
 | `policy.max_parallel_agents`, `default_max_turns`, `execution_max_turns`, `max_checkpoint_iterations`, `max_task_attempts`, `max_coordinator_decisions`, `max_unreported_dispatches`, `max_analysis_lenses`, `max_lessons_in_brief`, `envelope_max_age_days` | What a run may spend, and for how long a grant stands: each multiplies your API calls, or is a bound the workspace would set on its own consent |
@@ -1058,6 +1058,7 @@ change it (see [Which config files are trusted](#which-config-files-are-trusted)
 | `require_negative_test` | true | no | Demand the rejected case on a fence or guard task |
 | `require_liveness_review` | true | no | Demand a bounded-time proof on locking, retry or I/O |
 | `require_fails_before` | true | no | Prove a behaviour change's tests fail on the baseline commit, by running them there (git and pytest; only when `allow_command_execution` is on) |
+| `require_catches_breaks` | true | no | Hold a testing task's tests to each requirement they test: a model proposes a break of each clause, the harness applies it in place, runs the tests marked with the requirement and restores the file; a break the tests do not notice fails the task (`core/sabotage.py`; vitest and Playwright; only when `allow_command_execution` is on) |
 | `min_dod_criteria` | 2 | no | Reject thinner definitions of done |
 | `max_unreported_dispatches` | 3 | no | Packets to a silent host agent before abandoning it; 0 disables |
 | `agent_timeout_seconds` | 0 | yes | Wall-clock bound on the same silence; 0 disables |
@@ -1180,6 +1181,7 @@ src/supervisor_harness/
     dod.py         criteria validation, quality bars, verification
     fails_before.py a task's tests run on the baseline commit: they must fail there
     attribution.py whether a failed check also fails on the baseline commit
+    sabotage.py    batch P: a run's tests must catch a break of each requirement they test
     envelope.py    the run's scope grant, and attenuation down the delegation chain
     facts.py       whether a fact one agent established is still true when another reads it
     blackboard.py  shared context, message routing, contradiction detection

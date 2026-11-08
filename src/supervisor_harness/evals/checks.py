@@ -17,16 +17,25 @@ reads prose is reporting, not deciding anything.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from ..config import Policy
-from ..core import phases
-from ..core.dod import fill_what_the_harness_can, inspectable
+from ..core import phases, sabotage
+from ..core.dod import (
+    fill_what_the_harness_can,
+    inspectable,
+    resolve_runner,
+    run_bounded,
+    shell_split,
+)
 from ..core.paths import _META
-from ..models import CriterionStatus, ExecutionTask, VerifyMethod
+from ..models import Break, CriterionStatus, ExecutionTask, VerifyMethod
+from ..serde import from_jsonable
 from .cases import Case
 from .roles import RoleOutput
 
@@ -39,6 +48,7 @@ GENERIC: dict[str, tuple[str, ...]] = {
     "review": ("answered", "ruled", "veto_cites_file"),
     "verifier": ("answered", "all_ruled", "evidence_cites_file"),
     "coordinator": ("answered", "picked_for_each"),
+    "saboteur": ("answered", "breaks_kept"),
 }
 
 #: A file named in prose: `ci.yml`, `src/app/x.tsx:31`.
@@ -171,6 +181,77 @@ def statuses(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result
     return not wrong, "; ".join(wrong)
 
 
+def failed_naming(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result:
+    """Labelled: criteria whose statement contains ``key`` fail, saying each of ``names``.
+
+    A review over many requirements can fail for one the case is not about;
+    ``names`` (regexes) is what its evidence must say for the fail to count.
+    """
+    key = str(p.get("key", "")).lower()
+    names = [re.compile(str(n), re.IGNORECASE) for n in p.get("names", [])]
+    held = [c for c in out.criteria if key and key in c["statement"].lower()]
+    if not held:
+        return False, f"{key!r}: absent"
+    wrong = [f"{c['statement'][:50]!r}: {c['status']}" for c in held
+             if c["status"] != str(CriterionStatus.FAIL)]
+    unsaid = [n.pattern for c in held for n in names if not n.search(c["evidence"])]
+    if wrong or unsaid:
+        return False, "; ".join([*wrong, *(f"evidence does not say {n!r}" for n in unsaid)])
+    return True, ""
+
+
+def breaks_kept(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result:
+    """The saboteur proposed at least one break the harness could apply."""
+    return bool(out.breaks), out.why[:300]
+
+
+def _run_oracle(argv: list[str], ws: Path, report: Path, runner: str,
+                timeout: float) -> dict[str, bool]:
+    """The oracle's per-test results; none when it wrote no report, ran or not."""
+    report.unlink(missing_ok=True)
+    try:
+        run_bounded(argv, ws, timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    return dict(sabotage.results(runner, report) or [])
+
+
+def breaks_turn_red(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result:
+    """Labelled: each kept break turns a test of the case's oracle red that passed before.
+
+    The oracle is a command and the per-test report it writes (``command``,
+    ``report``, ``runner``: vitest or playwright), ``${VAR}`` expanded -- for
+    Minesweeper, the owner's hidden suite. Here and only here: a run never sees
+    it. A break that leaves the whole oracle green is the saboteur's error.
+    """
+    argv = shell_split(os.path.expandvars(str(p.get("command", ""))))
+    report = Path(os.path.expandvars(str(p.get("report", ""))))
+    runner = str(p.get("runner", sabotage.VITEST))
+    timeout = float(p.get("timeout", 900))
+    if not argv or not out.breaks:
+        return False, "no oracle command" if not argv else "no break to run"
+    exe, _ = resolve_runner(argv[0])
+    argv[0] = exe or argv[0]
+    before = _run_oracle(argv, ws, report, runner, timeout)
+    if not any(before.values()):
+        return False, "the oracle passed nothing with nothing broken"
+    lines, green = [], 0
+    for raw in out.breaks:
+        brk = from_jsonable(raw, Break)
+        path = ws / brk.file
+        original = path.read_bytes()
+        try:
+            path.write_bytes(original.decode("utf-8").replace(brk.find, brk.replace, 1)
+                             .encode("utf-8"))
+            after = _run_oracle(argv, ws, report, runner, timeout)
+        finally:
+            path.write_bytes(original)
+        red = [n for n, ok in before.items() if ok and not after.get(n, False)]
+        green += not red
+        lines.append(f"clause {brk.clause}: {len(red)} red" + (f" ({red[0][:60]})" if red else ""))
+    return green == 0, "; ".join(lines)
+
+
 def no_task_matches(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result:
     """Labelled: no task's action or criteria match ``pattern`` (a regex)."""
     pattern = re.compile(str(p.get("pattern", "")), re.IGNORECASE)
@@ -241,7 +322,8 @@ def picks(case: Case, out: RoleOutput, ws: Path, p: dict[str, Any]) -> Result:
 CHECKS: dict[str, Check] = {f.__name__: f for f in (
     answered, criteria_enforceable, mechanical_criterion, scopes_specific, scopes_grounded,
     inspections_grounded, ruled, veto_cites_file, verdict_in, all_ruled, evidence_cites_file,
-    statuses, no_task_matches, some_scope_covers, task_count, picked_for_each, picks)}
+    statuses, failed_naming, no_task_matches, some_scope_covers, task_count, picked_for_each,
+    picks, breaks_kept, breaks_turn_red)}
 
 
 def judge(case: Case, out: RoleOutput, workspace: Path) -> dict[str, dict[str, Any]]:

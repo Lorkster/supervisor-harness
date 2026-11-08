@@ -1976,6 +1976,72 @@ replace.
    are checked by running them, so a weak proposal costs a discarded break, not
    a wrong verdict.
 
+> **Built** on 2026-11-08 (`core/sabotage.py`, policy `require_catches_breaks`),
+> not yet measured with a model. Five departures from the plan, each for a
+> reason found while building it:
+>
+> - **In place, not in a temporary worktree.** A fresh git worktree has none of
+>   the project's installed dependencies, so a JavaScript project's tests do not
+>   run there. The break is applied to the task's tree and the file is put back
+>   byte for byte however the run ends, as the owner's `sabotage.py` does. It
+>   runs only where no agent is active, inside the mechanical verification.
+> - **Waived, not blocked, when no break can be made.** A blocked mandatory
+>   criterion fails its task. Waived by the harness, with the reason, leaves the
+>   faithfulness review standing alone for that requirement, which is what the
+>   plan meant.
+> - **A run with nothing broken comes first.** A marked test counts as catching
+>   a break only if it passed before the break, so a test that already fails is
+>   not credited with a catch. Validity is read against the same run: some test
+>   not marked with the requirement that passed before must still pass.
+> - **A tester's scope bars only what the builder's does not hold.** Run 11's
+>   tester had the engine in its scope, from before batch M. Barring the
+>   tester's files would have refused every break of the engine. Test files are
+>   refused by name either way.
+> - **vitest and Playwright only.** pytest marks a requirement in a docstring or
+>   a comment, which its report does not carry, so the marked tests cannot be
+>   told apart there. For such a command the criterion is waived, and says so.
+>
+> A model never rules on it. Its verifier verdicts are not applied, and the
+> verifier brief leaves it out. A tester answers a break it disputes by
+> reporting blocked, which goes to the owner.
+>
+> **Measured with no model**, against each run's own unit tests on its final
+> commit:
+>
+> | run | break | the run's own tests |
+> |---|---|---|
+> | 11 | every chord flood distance one more | let it through |
+> | 11 | a chord that ignores flags | caught it |
+> | 11 | the mine count off by one | caught it |
+> | 23 | every chord distance 1 | let it through |
+> | 23 | a chord that ignores flags | caught it |
+> | 23 | the mine count off by one | caught it |
+> | 24 | every chord flood distance one more | let it through |
+> | 24 | every chord distance 1 | let it through |
+> | 24 | a chord that ignores flags | caught it |
+> | 24 | the mine count off by one | caught it |
+>
+> One correction to "What it would not": **run 23 would be caught too.** Its
+> chord test checks one neighbour's distance, so a constant distance gets
+> through it. What stays out of reach is only its misreading, the chorded cell
+> listed at 0, which the engine shares.
+>
+> Its own tests were held to the same bar: each of 14 mechanisms broken in turn
+> -- the restore, the validity check, the run with nothing broken, the verdict,
+> the waiver, the refusals, the cap, the tester's follow-up, once per attempt,
+> the verifier's verdict, the verifier's brief, the requirements it applies to,
+> the eval oracle's baseline -- and each turned a test red. One did not at
+> first: the test of "once per attempt" asserted on a criterion already closed,
+> and a second test now shows it.
+>
+> **Not yet run:** the saboteur by replay. Three cases --
+> `ms-run11-saboteur-chord`, `ms-run23-saboteur-chord`, `ms-run24-saboteur-chord`
+> -- ask it for breaks of each run's chord requirement, and the
+> `breaks_turn_red` check runs the owner's hidden suite with each break applied.
+> They wait for the owner's go-ahead to use the local model. Run 24's plan gave
+> no task R8 to deliver, so its saboteur is pointed at the whole workspace, as
+> the run would point it.
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed

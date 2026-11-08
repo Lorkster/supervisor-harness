@@ -34,6 +34,7 @@ from typing import Any
 
 from ..contracts import REQUIREMENTS_SCHEMA, parse_quoted, parse_reasoned
 from ..models import DoDCriterion, ExecutionTask, Requirement, VerifyMethod
+from . import sabotage
 from .dod import TESTS_BAR
 from .paths import globs_may_overlap, globs_within
 
@@ -468,14 +469,54 @@ def builder_criterion(ledger: dict[str, Requirement], ids: list[str]) -> DoDCrit
     )
 
 
+def clauses(quote: str) -> list[str]:
+    """A quote's sentences and semicolon parts, each one thing a test can be held to.
+
+    What batch P's saboteur breaks one at a time (`core/sabotage.py`). Not split
+    inside backticks or brackets, braces included, nor after a word or two (a
+    rule's number, an "e.g."): `` `a; b` `` and "10. **Chord.**" stay whole. A
+    table row's bars and a code fence's lines are dropped.
+    """
+    lines = [line.replace("|", " ") if line.lstrip().startswith("|") else line
+             for line in quote.splitlines() if not line.lstrip().startswith("```")]
+    text = " ".join(" ".join(lines).split())
+    out: list[str] = []
+    start, depth, code = 0, 0, False
+    for i, ch in enumerate(text):
+        if ch == "`":
+            code = not code
+        elif not code and ch in "([{":
+            depth += 1
+        elif not code and ch in ")]}":
+            depth = max(0, depth - 1)
+        elif (not code and not depth and ch in ".;" and text[i + 1:i + 2] == " "
+              and len(text[start:i].split()) > 2):
+            out.append(text[start:i + 1].strip())
+            start = i + 1
+    rest = text[start:].strip()
+    if rest:
+        out.append(rest)
+    return [c for c in (c.lstrip("- ").strip() for c in out) if c]
+
+
 def tester_criteria(ledger: dict[str, Requirement], ids: list[str],
-                    root: str) -> list[DoDCriterion]:
-    """A testing task's checks: each id marked in its tests, and each test faithful."""
+                    root: str, commands: dict[str, str] | None = None) -> list[DoDCriterion]:
+    """A testing task's checks: each id marked in its tests, and each test faithful.
+
+    With ``commands`` -- each requirement's acceptance command, given when the
+    harness may run them -- batch P's bar too: the tests marked with each
+    requirement checked by running must catch a break of it (`core/sabotage.py`).
+    Whether the command's runner reports each test by name is read when the
+    breaks run: a project built from nothing has no runner when it is planned.
+    """
     marked = [DoDCriterion(statement=f"A test is marked [{rid}]",
                            method=VerifyMethod.INSPECTION, expect=f"{root}: [{rid}]",
                            mandatory=True)
               for rid in ids]
-    return [*marked, DoDCriterion(
+    breaks = [sabotage.criterion(rid, command) for rid in ids
+              if rid in ledger and ledger[rid].checked_by == "running"
+              and (command := (commands or {}).get(rid, "").strip())]
+    return [*marked, *breaks, DoDCriterion(
         statement=f"The tests marked {_listed(ids)} check what each requirement says",
         method=VerifyMethod.REVIEW,
         rubric=("Pass only if each test marked with an id drives the result as a person "
@@ -488,6 +529,7 @@ def tester_criteria(ledger: dict[str, Requirement], ids: list[str],
 
 def attach_requirements(
     tasks: list[ExecutionTask], ledger: list[Requirement], data: dict[str, Any],
+    catches_breaks: bool = False,
 ) -> tuple[list[Requirement], dict[str, list[str]]]:
     """The plan's account of the ledger, turned into checks; the ledger as accounted.
 
@@ -519,7 +561,9 @@ def attach_requirements(
                                  if rid in by_id and rid not in tester.requirements))
         if not ids:
             continue
-        tester.dod += tester_criteria(by_id, ids, _tests_root(tester.scope.paths))
+        commands = ({rid: g.command for g in tester.acceptance for rid in g.requirements}
+                    if catches_breaks else None)
+        tester.dod += tester_criteria(by_id, ids, _tests_root(tester.scope.paths), commands)
         for builder in tasks:
             if builder is tester or not set(ids) & set(builder.requirements):
                 continue

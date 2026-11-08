@@ -71,6 +71,7 @@ from ..models import (
     AgentStatus,
     AgentTurn,
     Backend,
+    Break,
     Checkpoint,
     Coordination,
     CriterionStatus,
@@ -101,7 +102,7 @@ from ..providers.router import ModelRouter
 from ..serde import to_jsonable
 from ..store.events import EventType
 from ..store.runstore import RunSession, RunStore
-from . import autonomy, coordinator, observe, phases, requirements, worktree
+from . import autonomy, coordinator, observe, phases, requirements, sabotage, worktree
 from .attribution import baseline_verdict
 from .baseline import commit_from_fact, git_baseline
 from .clean import check_clean
@@ -940,7 +941,10 @@ class Supervisor:
         # report marks each requirement still unaccounted for.
         for line in requirements.coverage_problems(state.requirements, data, tasks):
             session.note(f"requirements: {line}")
-        ledger, req_notes = requirements.attach_requirements(tasks, state.requirements, data)
+        policy = self.config.policy
+        ledger, req_notes = requirements.attach_requirements(
+            tasks, state.requirements, data,
+            catches_breaks=policy.require_catches_breaks and policy.allow_command_execution)
         if ledger:
             session.emit(EventType.REQUIREMENTS_SET, {"requirements": to_jsonable(ledger)})
         for extra in (dep_notes, ref_notes, scope_notes, req_notes):
@@ -1236,7 +1240,121 @@ class Supervisor:
         is running for this run (no agent is active at either call site), so the
         thread is the only one touching its state while the loop waits.
         """
+        await self._propose_breaks(session)
         await asyncio.to_thread(self._verify_mechanically, session)
+
+    async def _propose_breaks(self, session: RunSession) -> None:
+        """Batch P: the saboteur's breaks of each requirement a finished task's tests hold.
+
+        See `core/sabotage.py`. Asked once per attempt of the testing task, for
+        each of its ``catches_breaks`` criteria still open: a reader with
+        read-only tools, the requirement's clauses and the builder's files. What
+        it proposes is checked before it is kept -- a file of the builder's, not
+        a test, the text found once -- and run later, in `_verify_mechanically`.
+        When nothing it proposes can be kept, or it cannot be asked, the
+        criterion is waived and the faithfulness review alone stands for that
+        requirement, as before this batch.
+        """
+        state = session.state
+        if not self.config.policy.allow_command_execution:
+            return
+        tree = self._tree(state)
+        ledger = {r.id: r for r in state.requirements}
+        for task in list(state.tasks.values()):
+            if task.status is not TaskStatus.AWAITING_VERIFICATION:
+                continue
+            for crit in task.dod:
+                if (crit.method is not VerifyMethod.CATCHES_BREAKS
+                        or crit.status is not CriterionStatus.UNVERIFIED
+                        or crit.breaks_asked >= max(task.attempts, 1)):
+                    continue
+                await self._ask_saboteur(session, task, crit, ledger.get(crit.requirement),
+                                         tree)
+
+    async def _ask_saboteur(self, session: RunSession, task: ExecutionTask,
+                            crit: DoDCriterion, req: Requirement | None, tree: Path) -> None:
+        """One requirement's breaks for this attempt, kept on its criterion."""
+        rid = crit.requirement
+        crit.breaks_asked = max(task.attempts, 1)
+        builders, testers = self._break_scopes(session.state, task, rid)
+        runner = sabotage.runner_of(crit.command, tree)
+        browser = runner == sabotage.PLAYWRIGHT
+        taken = sum(len(c.breaks) for c in task.dod
+                    if c is not crit and c.method is VerifyMethod.CATCHES_BREAKS
+                    and sabotage.runner_of(c.command, tree) == sabotage.PLAYWRIGHT)
+        why = ""
+        if req is None:
+            why = f"{rid} is not in the run's requirements"
+        elif not runner:
+            why = (f"`{crit.command}` does not run a test runner that reports each test by "
+                   "name (vitest or Playwright)")
+        elif browser and taken >= sabotage.BROWSER_PER_TASK and not crit.breaks:
+            why = f"the task's {sabotage.BROWSER_PER_TASK} browser breaks are used up"
+        new: list[Break] = []
+        refused: list[str] = []
+        if not why and req is not None:
+            reader = AgentSpec(id=f"saboteur_{task.id}_{rid}", kind=AgentKind.ANALYSIS,
+                               role="saboteur", title=f"Breaks of {rid}", scope=Scope(),
+                               binding=self.config.binding_for("saboteur"))
+            if not self.router.native_tools(reader.binding):
+                why = "the saboteur's model takes no tools natively"
+            else:
+                clauses = requirements.clauses(req.quote)
+                messages = [ChatMessage("user", sabotage.brief(req, clauses, builders, testers))]
+                tools = [t for t in native_tool_specs(reader, self.config.policy)
+                         if t["name"] != "report"] + [sabotage.BREAKS_TOOL]
+                stint = Stint()
+                result = await self._read_then_finish(
+                    session, reader, messages, tools, stint, finish="breaks",
+                    now=sabotage.NOW, role=sabotage.ROLE, stage="saboteur")
+                kept = {(b.file, b.find, b.replace) for b in crit.breaks}
+                for brk in sabotage.parse_breaks(result, rid):
+                    reason = sabotage.refusal(brk, tree, builders, testers)
+                    if reason is not None:
+                        refused.append(f"clause {brk.clause}: {reason}")
+                    elif (brk.file, brk.find, brk.replace) not in kept:
+                        brk.attempt = max(task.attempts, 1)
+                        new.append(brk)
+                new = sabotage.capped(new, browser, taken)
+                if result is None:
+                    why = "the saboteur proposed nothing"
+        crit.breaks += new
+        task.updated_at = now_iso()
+        await session.aemit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        said = "; ".join(refused) or "none"
+        await session.anote(f"saboteur on {rid} for {task.title!r}: {len(new)} new break(s), "
+                            f"{len(crit.breaks)} to run; not kept: {said}"
+                            + (f"; {why}" if why else ""), task_id=task.id)
+        if not crit.breaks:
+            reason = why or f"none of its proposals could be applied: {said}"
+            await session.aemit(
+                EventType.CRITERION_VERIFIED,
+                {"task_id": task.id, "criterion_id": crit.id,
+                 "status": str(CriterionStatus.WAIVED),
+                 "evidence": (f"No break of {rid} could be made ({reason}), so its "
+                              "faithfulness review alone stands for it.")},
+                actor="harness")
+
+    def _break_scopes(self, state: RunState, tester: ExecutionTask,
+                      rid: str) -> tuple[list[str], list[str]]:
+        """Where a break of ``rid`` may go -- the work delivering it -- and where it may not."""
+        builders = sorted({p for t in state.tasks.values()
+                           if t.id != tester.id and rid in t.requirements
+                           for p in t.scope.paths})
+        return builders, list(tester.scope.paths)
+
+    def _verify_catches_breaks(self, session: RunSession, task: ExecutionTask,
+                               crit: DoDCriterion, tree: Path) -> VerificationOutcome:
+        """Batch P: the breaks run against the tests; the tester told of any that got through."""
+        builders, testers = self._break_scopes(session.state, task, crit.requirement)
+        outcome, tried = sabotage.verify(crit, tree, self.config.policy.check_timeout_seconds,
+                                         builders, testers)
+        req = next((r for r in session.state.requirements if r.id == crit.requirement), None)
+        if outcome.status is CriterionStatus.FAIL and req is not None:
+            task.told.append(sabotage.told(tried, req, requirements.clauses(req.quote)))
+            task.updated_at = now_iso()
+            session.emit(EventType.TASK_UPDATED, {"task": to_jsonable(task)})
+        return outcome
 
     def _verify_mechanically(self, session: RunSession) -> None:
         """Close the criteria the harness can prove without asking anyone."""
@@ -1259,7 +1377,14 @@ class Supervisor:
                     # reopens the task -- an attempt spent on a runner not yet written.
                     continue
                 outcome: VerificationOutcome | None
-                if crit.method is VerifyMethod.FAILS_BEFORE:
+                if crit.method is VerifyMethod.CATCHES_BREAKS:
+                    # Its breaks come from `_propose_breaks`, run on the loop before
+                    # this; none yet, and not waived, means it waits.
+                    if (not allow or task.status is not TaskStatus.AWAITING_VERIFICATION
+                            or not crit.breaks):
+                        continue
+                    outcome = self._verify_catches_breaks(session, task, crit, tree)
+                elif crit.method is VerifyMethod.FAILS_BEFORE:
                     # Needs the task's whole change in place, so not while an
                     # agent is still writing it; and it runs the project's
                     # tests, so only where commands are permitted. Otherwise
@@ -2322,6 +2447,16 @@ class Supervisor:
                     status, actor = CriterionStatus.FAIL, "harness"
                     evidence = (f"{found.evidence}, and the verifier's pass quotes nothing "
                                 f"that is in that file: {evidence[:300]}")
+
+            # Batch P's bar is the harness's alone: whether the tests caught a
+            # break is read from their run, and a model's verdict on it is the
+            # judgement the bar exists to replace (`core/sabotage.py`).
+            if crit.method is VerifyMethod.CATCHES_BREAKS:
+                await session.anote("a verifier's verdict on a break criterion was not "
+                                    "applied: only the harness's run of the tests settles it",
+                                    task_id=task.id, criterion_id=crit.id,
+                                    claimed=str(status), actor=agent.id)
+                continue
 
             # A verdict the harness proved by running the real check outranks an
             # agent's account of it. Only a criterion the harness could not

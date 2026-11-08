@@ -5,6 +5,7 @@ Cases are JSON files, so a person can read, label and add them without code:
     {
       "id": "p3-18-review-plantdetail",
       "role": "review",                      # planner | review | verifier | coordinator
+                                             # | saboteur
       "fixture": {"kind": "git", "repo": "${PLANTSANDCLIMATE}", "commit": "cfdb95c"},
       "request": "Do task P3-18 ...",
       "input": {...},                        # what the role is given; see roles.py
@@ -34,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-ROLES = ("planner", "review", "verifier", "coordinator")
+ROLES = ("planner", "review", "verifier", "coordinator", "saboteur")
 FIXTURE_KINDS = ("git", "files", "dir")
 
 
