@@ -1843,6 +1843,139 @@ Turnstone keeps judges apart from the case argued to them. So does this now.
     strong. This keeps the coordinator's verdict out of the review; it does not
     make the review see that a spy records the call.
 
+### After runs 11, 23 and 24: three chord bugs, one gap
+
+*Written 2026-11-08.* The owner's hidden suite failed rule 10's chord test in
+runs 11, 23 and 24. Each time the engine had a different bug, and each time
+the run's own tests passed it:
+
+| run | the engine | the run's own [Rn] chord test |
+|---|---|---|
+| 11 | the win check flagged every mine it passed while scanning, so a chord saw a flag the player had removed | a board chosen, its comment says, so that nothing floods; the chorded cell asserted as listed at distance 0 |
+| 23 | the chorded cell listed at 0; numbered cells past the first ring given distance 1 by a fallback | the chorded cell asserted as listed at 0; one neighbour's distance |
+| 24 | the first flood's distance kept, not the fewest steps | every distance an integer of at least 1 |
+
+The ledger is not the cause: each run quoted rule 10 whole. Nor is the reading
+fence: runs 23 and 24's testers could not read the engine (batch M). In each, a
+clause of the requirement -- "`lastRevealed` measures `distance` from the
+chorded cell" -- had no assertion that could fail, and the faithfulness review
+(`requirements.tester_criteria`) passed it.
+
+What could fix the review was tried on `qwen3.8-code`, as replay cases from the
+two runs. Each case was replayed six times, and a fail counted only when its
+evidence named the chord requirement:
+
+| the review | run 24, R8 | run 23, R17 | controls (R9, R18: exact counts) |
+|---|---|---|---|
+| as the runs had it: one over every requirement | 0 of 3 | 0 of 3 | -- |
+| one per requirement, its clauses numbered, all in one conversation | 1 of 3 | 0 of 3 | -- |
+| one requirement alone, the old rubric | 3 of 6 | 1 of 6 | 12 of 12 passed |
+| one requirement alone, clause by clause | 1 of 6 | 6 of 6 | 12 of 12 passed |
+
+Where a review passed run 24's test, it read "an integer of at least 1" as
+measuring from the chorded cell. Rewording and isolating the review changes
+which test a model happens to see through, not whether it does. #136 found the
+same of wording. The rubric change is not taken.
+
+Turnstone's primer names the failure -- a loop until the tests pass "works
+beautifully right up until the tests weren't checking the thing that mattered"
+-- and its rule says where the gap is: an unverified judge may only tighten.
+The faithfulness review is a model whose *pass* makes a test count. Batch B
+made the owner's own bar mechanical for a change: its tests must fail without
+it. The owner's hidden suite is held to the same bar another way: it is
+"proven to discriminate" by breaking a reference engine one way at a time
+(`sabotage.py`), and one of those breaks is depth-first distances -- run 24's
+bug. A run's tests are never held to either. A tester writes tests for work
+that already exists, so `fails_before` does not apply to them, and nothing else
+runs them against anything but the code they pass on.
+
+### Batch P -- A test must catch a break
+
+*Planned 2026-11-08, not built.* The owner's sabotage bar, applied to a run's
+tests by the harness. A model proposes how to break a requirement; the harness
+breaks the code that way and runs the tests. Whether they notice is a fact,
+not a model's verdict.
+
+1. **A saboteur proposes breaks.** For each requirement a testing task tests
+   and that is checked by running (`checked_by: running`), a model reads the
+   builder's code and the requirement's clauses, and proposes at most one break
+   per clause, three per requirement: a file in the builder's scope, a string
+   found there exactly once, and what replaces it -- the form `sabotage.py`
+   uses. It is not fenced from the code, as the tester is (`requirements._blind`):
+   it must read what it breaks, and it writes nothing into the tester's brief
+   but the diff. It does not judge the tests.
+
+2. **The harness applies each break and runs the marked tests.** In a
+   temporary worktree of the task's tree -- the machinery `core/fails_before.py`
+   and `core/attribution.py` already use -- with the break applied, the
+   acceptance command runs restricted to the tests marked with that
+   requirement, and per-test results are read from the runner's report (JSON
+   for vitest and Playwright, JUnit for pytest). A test of the same task marked
+   with another requirement runs too, as the control below.
+
+3. **A break is valid only if the project still runs.** "A bad sabotage looks
+   exactly like a bad test" -- four times in this harness's own development.
+   A break that
+   stops the code compiling, or the test file loading, makes every test red and
+   proves nothing, so it is discarded and said. Valid means: the runner
+   reported results, and the control tests ran.
+
+4. **The verdict.** A new harness-owned criterion on the testing task, per
+   requirement: *the tests marked [Rn] catch a break of each clause*. It passes
+   when every valid break turns at least one marked test red. It fails when a
+   valid break leaves every marked test green, and the evidence is the diff and
+   the green tests' names, written by the harness. It is blocked when no valid
+   break could be made, and the faithfulness review alone stands for that
+   requirement, as today. The faithfulness review stays, and may still fail a
+   test. Its pass is no longer the only thing between a test and "verified".
+
+5. **What a failed break does.** The tester gets the diff as its follow-up:
+   this change breaks clause 2, and your tests pass on it. On the next attempt
+   the same breaks run again, and new ones are proposed. A tester that answers
+   the break does not violate the clause -- the saboteur can be wrong -- does
+   not get to decide that. It goes to the owner (`ask_owner`). Only the owner
+   widens.
+
+**What it would have caught.** Run 24's distance test: a break that adds one to
+every flood distance leaves "an integer of at least 1" green. Run 11's: a break
+in the flood's distances, against a board where nothing floods. **What it would
+not.** Run 23's test asserts a misreading of the spec -- the chorded cell listed
+at 0 -- and the engine has the same misreading. Breaking the code cannot show a
+test wrong that agrees with the code. That stays the review's to see, and the
+tester's.
+
+**Cost.** One model call per requirement tested, and one run of the marked
+tests per break. Unit tests take seconds. A browser test needs the production
+build for each break, so browser breaks are capped (owner question below).
+
+**Measured before it is built.** As batch B was:
+
+- **The bar on its own, with no model.** Hand-written breaks on the run
+  branches of runs 11, 23 and 24 -- depth-first distances, a constant distance,
+  a chord that ignores flags -- against each run's own tests. Run 24's [R8]
+  tests should let the distance breaks through, and its [R9] tests should catch
+  a miscount.
+- **The saboteur, by replay.** An eval role over the same three runs. The owner's
+  hidden suite is the oracle here, and only here: a valid break should turn a
+  hidden test red. A break that leaves the whole hidden suite green is the
+  saboteur's error, and is counted as one.
+
+The replay cases from the chord diagnosis -- `ms-run24-chord-tests-each-clause`,
+`ms-run23-chord-tests-each-clause`, their R9 and R18 controls, and a
+`failed_naming` check that counts a fail only when its evidence names the
+requirement -- go in with the batch, as the measure of the review it does not
+replace.
+
+**Decided by the owner, 2026-11-08.** All three as recommended:
+
+1. A tester who disputes a break goes to the owner, not to a model. A model
+   ruling on the dispute is the judge this batch removes.
+2. Browser breaks: at most one per requirement, and at most five per task, at
+   first. Each one costs a production build and a browser run.
+3. The saboteur runs on the local model, like every other role. Its proposals
+   are checked by running them, so a weak proposal costs a discarded break, not
+   a wrong verdict.
+
 ### Batch N -- The owner's skills, for the run's agents
 
 *Written 2026-10-14, at the owner's request.* The replica skills were installed
