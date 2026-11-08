@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from itertools import pairwise
 from pathlib import Path
 from types import TracebackType
 from typing import BinaryIO
@@ -43,6 +44,15 @@ BLANK_TOKEN_GRACE = 1.0
 
 class LockTimeout(RuntimeError):
     """Raised when the log lock could not be acquired in time."""
+
+
+def _line_seq(line: bytes) -> int | None:
+    """The sequence number on one log line, or ``None`` if it carries no real one."""
+    try:
+        seq = json.loads(line)["seq"]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+    return seq if type(seq) is int else None
 
 
 class CorruptLog(RuntimeError):
@@ -119,8 +129,25 @@ class FileLock:
         except OSError:
             return None
 
+    def _read_stamped(self) -> tuple[os.stat_result, str] | None:
+        """The lock file's identity, age and token, all read from ONE file.
+
+        ``stat`` by path and ``read`` by path are two lookups, and a holder that
+        released and a contender that re-acquired between them made the age come
+        from the dead lock and the token from the live one -- the breaker then
+        saw a token that agreed with itself and unlinked a lock that was in use.
+        Opening it once and asking the handle for both closes that gap.
+        """
+        try:
+            with self.path.open("rb") as handle:
+                stamp = os.fstat(handle.fileno())
+                token = handle.read(256).decode("utf-8", "replace").strip()
+        except OSError:
+            return None
+        return stamp, token
+
     def _break_if_stale(self) -> bool:
-        # Stat before reading: ``stat`` does not block the holder's own unlink,
+        # Stat before opening: ``stat`` does not block the holder's own unlink,
         # while an open read handle does on Windows, and this runs on every
         # poll of a contended lock.
         try:
@@ -135,17 +162,36 @@ class FileLock:
         if age <= self.stale_after:
             return False
         # Only remove the very file that was found stale: a holder that
-        # released and re-acquired in the meantime carries a different token.
-        holder = self._owner_token()
-        if holder is None:
+        # released and re-acquired in the meantime is a different file, with a
+        # fresh mtime and its own token.
+        found = self._read_stamped()
+        if found is None:
             return False
-        if not holder:
-            # Created but not yet stamped -- the microseconds between os.open
-            # and os.write. Two reads of an empty file agree, so the token
-            # comparison cannot see it; wait the file out instead, which only
-            # a holder that died in that window ever reaches.
-            return age > self.stale_after + BLANK_TOKEN_GRACE and self._unlink_stale()
-        if self._owner_token() != holder:
+        stamp, holder = found
+        age = time.time() - stamp.st_mtime
+        if age <= self.stale_after:
+            return False        # the file we statted is gone; this one is alive
+        # A blank token is a lock created but not yet stamped -- the microseconds
+        # between os.open and os.write. Wait it out instead; only a holder that
+        # died in that window is ever still blank past the grace.
+        if not holder and age <= self.stale_after + BLANK_TOKEN_GRACE:
+            return False
+        return self._unlink_if_unchanged(stamp)
+
+    def _unlink_if_unchanged(self, stamp: os.stat_result) -> bool:
+        """Unlink the lock only if it is still the file ``stamp`` described.
+
+        The handle is closed by now (Windows will not unlink an open file), so
+        this is the last look before the unlink: same file, same mtime. It
+        narrows the window to the gap between this stat and the unlink.
+        """
+        try:
+            now = self.path.stat()
+        except OSError:
+            return False
+        if (now.st_ino, now.st_dev, now.st_mtime_ns) != (
+            stamp.st_ino, stamp.st_dev, stamp.st_mtime_ns
+        ):
             return False
         return self._unlink_stale()
 
@@ -216,7 +262,9 @@ class EventLog:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # No directory is created here: a log object is made to *read* a run as
+        # often as to write one, and reading an id that does not exist must not
+        # leave an empty ``runs/<id>/`` behind. Writers create it under the lock.
         self._lock = FileLock(self.path.with_suffix(".lock"))
         #: Lines the most recent :meth:`read` could not parse. A line that is not
         #: an event cannot describe itself, so it can never reach the fold; this
@@ -255,6 +303,7 @@ class EventLog:
         The event is worth more than the wait, so a timeout is retried with a
         widening pause and only propagates once the retries are spent.
         """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         delay = APPEND_RETRY_BACKOFF
         for attempt in range(APPEND_RETRIES + 1):
             try:
@@ -333,10 +382,9 @@ class EventLog:
                 # it is probably truncated by the seek.
                 candidates = lines if window >= size else lines[1:]
                 for line in reversed(candidates):
-                    try:
-                        return int(json.loads(line)["seq"])
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                    seq = _line_seq(line)
+                    if seq is not None:
+                        return seq
                 if window >= size:
                     # The whole file has been read and nothing in it carries a
                     # sequence. A file of blank lines has no history to lose, so
@@ -358,6 +406,35 @@ class EventLog:
 
     # -- reading -----------------------------------------------------------
 
+    def _parse(self, raw: bytes) -> Event | None:
+        """One log line to an event, counting it in :attr:`skipped_lines` if it is not one.
+
+        Decoded here, per line, rather than by a text-mode file object: that
+        decoded the whole file strictly, so a single torn multi-byte character
+        raised ``UnicodeDecodeError`` out of the iteration and made the run
+        unreadable -- for good, since the next append lands after the damage. A
+        line that needed replacement characters is counted as damaged even when
+        it still parses, because what it says is no longer what was written.
+        """
+        line = raw.strip()
+        if not line:
+            return None
+        damaged = False
+        try:
+            text = line.decode("utf-8")
+        except UnicodeDecodeError:
+            damaged = True
+            text = line.decode("utf-8", "replace")
+        try:
+            event = event_from_dict(json.loads(text))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError):
+            # AttributeError: valid JSON that is not an object (``[1, 2]``, ``5``).
+            self.skipped_lines += 1
+            return None
+        if damaged:
+            self.skipped_lines += 1
+        return event
+
     def read(self) -> Iterator[Event]:
         """Yield every well-formed event, counting any line that is not one.
 
@@ -370,16 +447,81 @@ class EventLog:
         self.skipped_lines = 0
         if not self.path.exists():
             return
-        with self.path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield event_from_dict(json.loads(line))
-                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                    self.skipped_lines += 1
-                    continue
+        with self.path.open("rb") as handle:
+            for raw in handle:
+                event = self._parse(raw)
+                if event is not None:
+                    yield event
+
+    def size(self) -> int:
+        """The log's length in bytes; zero when there is no file."""
+        try:
+            return self.path.stat().st_size
+        except OSError:
+            return 0
+
+    def read_from(self, offset: int) -> tuple[list[Event], int]:
+        """The events after byte ``offset``, and the offset to ask from next time.
+
+        Only whole lines are consumed. A final line with no newline yet is either
+        being written right now or was torn, and in both cases it is left for the
+        next call -- an append finishes or terminates it first. Lets a reader keep
+        a running projection of a log that only ever grows, parsing each line once
+        however many times it is asked.
+        """
+        self.skipped_lines = 0
+        try:
+            with self.path.open("rb") as handle:
+                handle.seek(offset)
+                data = handle.read()
+        except FileNotFoundError:
+            return [], offset
+        cut = data.rfind(b"\n")
+        if cut < 0:
+            return [], offset
+        events = [e for raw in data[:cut].split(b"\n") if (e := self._parse(raw)) is not None]
+        return events, offset + cut + 1
+
+    def read_after(self, seq: int) -> list[Event] | None:
+        """Events with a sequence above ``seq``, read backwards from the end.
+
+        The cost is the size of the tail rather than of the log, which is the
+        point: a snapshot that is a few events behind should cost a few events to
+        complete. Sequences are assigned under the append lock and only rise, so
+        the tail is in order; if it is not (a log damaged or merged by hand)
+        ``None`` is returned and the caller reads everything.
+        """
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            self.skipped_lines = 0
+            return []
+        window = min(size, 1 << 16)
+        with self.path.open("rb") as handle:
+            while True:
+                self.skipped_lines = 0
+                start = size - window
+                handle.seek(start)
+                lines = handle.read(window).split(b"\n")
+                if start > 0:
+                    lines = lines[1:]       # the first one is probably cut by the seek
+                tail: list[Event] = []
+                reached = start == 0
+                for raw in reversed(lines):
+                    event = self._parse(raw)
+                    if event is None:
+                        continue
+                    if event.seq <= seq:
+                        reached = True
+                        break
+                    tail.append(event)
+                if reached:
+                    break
+                window = min(size, window * 4)
+        tail.reverse()
+        if any(a.seq >= b.seq for a, b in pairwise(tail)):
+            return None
+        return tail
 
     def last_seq(self) -> int | None:
         """The highest sequence on disk, or ``None`` when that cannot be read.
@@ -401,7 +543,10 @@ class EventLog:
             return None
 
     def read_all(self) -> list[Event]:
-        return sorted(self.read(), key=lambda e: e.seq)
+        events = list(self.read())
+        if any(a.seq > b.seq for a, b in pairwise(events)):
+            events.sort(key=lambda e: e.seq)
+        return events
 
     def __len__(self) -> int:
         return sum(1 for _ in self.read())

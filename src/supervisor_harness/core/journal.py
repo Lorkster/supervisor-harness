@@ -161,6 +161,16 @@ class _JournalBuilder:
         self.open_episode: dict[str, Episode] = {}
         self.messages: dict[str, Message] = {}
 
+    def miss(self, aid: str) -> None:
+        """Count an event that found no journal to join -- unless it was filtered out.
+
+        With ``--agent X`` only X's journal exists, and every other agent's event
+        has nowhere to go. That is the filter doing its job, not a log naming an
+        agent the run never spawned, and counting it printed a false warning.
+        """
+        if aid not in self.state.agents:
+            self.journal.unattributed += 1
+
     def episode_for(self, aid: str) -> Episode | None:
         """The open episode for ``aid``, opening the pre-turn one if needed."""
         entry = self.journals.get(aid)
@@ -189,7 +199,7 @@ class _JournalBuilder:
         turn = from_jsonable(payload["turn"], AgentTurn)
         entry = self.journals.get(turn.agent_id)
         if entry is None:
-            self.journal.unattributed += 1
+            self.miss(turn.agent_id)
             return
         current = self.open_episode.get(turn.agent_id)
         # An opening episode that recorded nothing is an artefact of the
@@ -209,7 +219,7 @@ class _JournalBuilder:
         aid = payload.get("agent_id", "")
         current = self.episode_for(aid)
         if current is None:
-            self.journal.unattributed += 1
+            self.miss(aid)
             return
         assessment = from_jsonable(payload["assessment"], DriftAssessment)
         _check_turn_link(current, assessment.turn_id, "drift assessment")
@@ -220,7 +230,7 @@ class _JournalBuilder:
         directive = from_jsonable(payload["directive"], Directive)
         current = self.episode_for(directive.agent_id)
         if current is None:
-            self.journal.unattributed += 1
+            self.miss(directive.agent_id)
             return
         _check_turn_link(current, directive.turn_id, "directive")
         if current.directive is not None:
@@ -239,7 +249,7 @@ class _JournalBuilder:
         aid = payload.get("agent_id", "")
         current = self.episode_for(aid)
         if current is None:
-            self.journal.unattributed += 1
+            self.miss(aid)
             return
         known = {m.id for m in current.inbox}
         for mid in payload.get("message_ids", []):
@@ -250,7 +260,7 @@ class _JournalBuilder:
     def on_fact_established(self, event: Event, payload: dict[str, Any]) -> None:
         current = self.episode_for(event.actor)
         if current is None:
-            self.journal.unattributed += 1
+            self.miss(event.actor)
             return
         current.established.append(from_jsonable(payload["fact"], Fact))
 
@@ -259,7 +269,7 @@ class _JournalBuilder:
         aid = payload.get("agent_id", "")
         current = self.episode_for(aid)
         if current is None:
-            self.journal.unattributed += 1
+            self.miss(aid)
             return
         current.status_changes.append(str(payload.get("status", "")))
 

@@ -56,10 +56,12 @@ from supervisor_harness.store.events import event_from_dict, fold
 
 def _events(path: Path) -> list[Any]:
     out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # Split on the newline and nothing else: `splitlines` also breaks at U+2028,
+    # U+2029 and U+0085, which the log holds raw inside a JSON string.
+    for line in path.read_text(encoding="utf-8", errors="replace").split("\n"):
         try:
             out.append(event_from_dict(json.loads(line)))
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             continue
     return out
 

@@ -371,23 +371,37 @@ def detect_contradictions(findings: list[Finding], threshold: float = 0.55) -> l
                 score -= 1
         return score
 
+    # Each finding is tokenised and scored once. The pair loop used to redo both
+    # for every pair it reached -- 300 findings took 1.1 s, 600 took 5.9 s and
+    # 1,200 took 25 s, at synthesis, on the event loop.
+    scored: list[tuple[int, set[str], int]] = []
+    for index, finding in enumerate(findings):
+        if finding.confidence < threshold:
+            continue
+        text = f"{finding.title} {finding.detail}"
+        scored.append((index, tokens(text), polarity(text)))
+    # A clash needs opposite signs, so only positive-against-negative pairs are
+    # ever compared; a finding that reads neutral cannot clash with anything.
+    positive = [entry for entry in scored if entry[2] > 0]
+    negative = [entry for entry in scored if entry[2] < 0]
+
+    pairs: list[tuple[int, int]] = []
+    for i, subject_a, _ in positive:
+        for j, subject_b, _ in negative:
+            if findings[i].lens == findings[j].lens:
+                continue
+            # jaccard can never exceed the smaller set over the larger one.
+            small, large = sorted((len(subject_a), len(subject_b)))
+            if not large or small / large < 0.35 or jaccard(subject_a, subject_b) < 0.35:
+                continue
+            pairs.append((min(i, j), max(i, j)))
     out: list[str] = []
-    for i, a in enumerate(findings):
-        for b in findings[i + 1:]:
-            if a.lens == b.lens:
-                continue
-            if a.confidence < threshold or b.confidence < threshold:
-                continue
-            subject_a = tokens(f"{a.title} {a.detail}")
-            subject_b = tokens(f"{b.title} {b.detail}")
-            if jaccard(subject_a, subject_b) < 0.35:
-                continue
-            pa, pb = polarity(f"{a.title} {a.detail}"), polarity(f"{b.title} {b.detail}")
-            if pa * pb < 0:
-                out.append(
-                    f"`{a.lens}` says {a.title!r} while `{b.lens}` says {b.title!r} "
-                    f"about the same subject"
-                )
+    for i, j in sorted(pairs):         # the order the nested loop produced them in
+        a, b = findings[i], findings[j]
+        out.append(
+            f"`{a.lens}` says {a.title!r} while `{b.lens}` says {b.title!r} "
+            f"about the same subject"
+        )
     return out
 
 

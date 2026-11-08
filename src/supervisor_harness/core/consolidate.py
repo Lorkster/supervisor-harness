@@ -122,12 +122,19 @@ class ConsolidationReport:
         }
 
 
-def _merge(lessons: list[Lesson], report: ConsolidationReport) -> list[Lesson]:
+def _merge(
+    lessons: list[Lesson], report: ConsolidationReport, max_occurrences: int = 0
+) -> list[Lesson]:
     """Fold rows saying the same thing to the same target into the first of them.
 
     `add_lesson` already merges an exact repeat as it arrives. This catches what
     that cannot: two runs recording the same lesson with different trailing
     punctuation or spacing, and rows that predate a normalisation change.
+
+    ``max_occurrences`` is the cap `add_lesson` holds the counter to (zero means
+    none). Folding two rows used to add their counters unchecked, so a merge could
+    leave a lesson above the ceiling and, since occurrences lead the sort that
+    decides what reaches a brief, outrank everything learned since.
     """
     canonical: dict[tuple[str, str], Lesson] = {}
     out: list[Lesson] = []
@@ -143,6 +150,8 @@ def _merge(lessons: list[Lesson], report: ConsolidationReport) -> list[Lesson]:
             out.append(lesson)
             continue
         prior.occurrences += lesson.occurrences
+        if max_occurrences > 0:
+            prior.occurrences = min(max_occurrences, prior.occurrences)
         prior.confidence = max(prior.confidence, lesson.confidence)
         prior.runs_since_confirmed = min(prior.runs_since_confirmed,
                                          lesson.runs_since_confirmed)
@@ -160,14 +169,18 @@ def _age(
     workspace: str,
     confirmed: set[str],
     report: ConsolidationReport,
-) -> None:
+) -> set[str]:
     """Reset the clock on what this run re-learned; advance it on what it did not.
 
     Only for lessons this workspace knows. A run in project B is not evidence
     about a lesson learned in project A -- it had no opportunity to re-learn it,
     so counting its silence would decay a lesson for being ignored by somewhere
     that never had it.
+
+    Returns the ids whose clock advanced, because those -- and only those -- are
+    what `_rescore` may decay.
     """
+    aged: set[str] = set()
     for lesson in lessons:
         if lesson.archived:
             continue
@@ -178,26 +191,37 @@ def _age(
         if workspace and lesson.learned_in(workspace):
             lesson.runs_since_confirmed += 1
             report.aged += 1
+            aged.add(lesson.id)
+    return aged
 
 
-def _rescore(lessons: list[Lesson], policy: Policy, report: ConsolidationReport) -> None:
+def _rescore(
+    lessons: list[Lesson], policy: Policy, report: ConsolidationReport, aged: set[str]
+) -> None:
     """Confidence falls once a lesson has gone unconfirmed for long enough.
 
     Nothing happens inside the grace period: a lesson is not weaker for having
     been learned in the previous run and not the current one, and decaying from
     the first run would make every lesson's rank a function of how recently it
     happened to fire rather than of how well it holds.
+
+    One step of ``lesson_decay_per_run`` per run that went by, which is to say per
+    pass in which the lesson aged. This used to subtract ``overdue * decay`` from
+    a confidence that had already been reduced by the earlier passes, so the loss
+    compounded: at 0.2 a run a lesson read 0.95, 0.85, 0.70, 0.50, 0.25 over runs
+    eleven to fifteen and was archived after five overdue runs rather than the
+    seventeen the setting implies. A pass that did not age the lesson (it ran in
+    another workspace) takes nothing off it.
     """
     grace = max(0, policy.lesson_decay_after_runs)
     for lesson in lessons:
-        if lesson.archived:
+        if lesson.archived or lesson.id not in aged:
             continue
-        overdue = lesson.runs_since_confirmed - grace
-        if overdue <= 0:
+        if lesson.runs_since_confirmed - grace <= 0:
             continue
         before = lesson.confidence
         lesson.confidence = round(
-            max(0.0, lesson.confidence - overdue * policy.lesson_decay_per_run), 4
+            max(0.0, lesson.confidence - policy.lesson_decay_per_run), 4
         )
         if lesson.confidence != before:
             report.rescored += 1
@@ -291,9 +315,9 @@ def consolidate(
     back without a second read.
     """
     report = ConsolidationReport()
-    kept = _merge(list(lessons), report)
-    _age(kept, workspace, {str(c) for c in confirmed}, report)
-    _rescore(kept, policy, report)
+    kept = _merge(list(lessons), report, policy.lesson_max_occurrences)
+    aged = _age(kept, workspace, {str(c) for c in confirmed}, report)
+    _rescore(kept, policy, report, aged)
     _supersede(kept, reasoner, report)
     _retire(kept, policy, report)
     return kept, report

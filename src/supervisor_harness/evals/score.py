@@ -14,7 +14,11 @@ because that is how a person would type them (``npm`` on Windows is a ``.cmd``).
 from __future__ import annotations
 
 import contextlib
+import os
+import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 from collections import Counter
 from collections.abc import Iterator
@@ -74,36 +78,77 @@ def _tree(state: RunState, workspace: Path | None) -> Iterator[Path | None]:
         yield None
         return
     repo = Path(state.workspace)
-    temp = Path(tempfile.mkdtemp(prefix="score-")) / "tree"
-    done = subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
-        ["git", "-C", str(repo), "worktree", "add", "--detach",  # noqa: S607 - on PATH
-         str(temp), ref], capture_output=True, text=True, check=False)
-    if done.returncode != 0:
-        yield None
-        return
+    parent = Path(tempfile.mkdtemp(prefix="score-"))
+    temp = parent / "tree"
     try:
-        yield temp
+        done = subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
+            ["git", "-C", str(repo), "worktree", "add", "--detach",  # noqa: S607 - on PATH
+             str(temp), ref], capture_output=True, text=True, check=False)
+        if done.returncode != 0:
+            yield None
+            return
+        try:
+            yield temp
+        finally:
+            subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
+                ["git", "-C", str(repo), "worktree", "remove", "--force",  # noqa: S607
+                 str(temp)], capture_output=True, check=False)
     finally:
-        subprocess.run(  # noqa: S603 - fixed argv, no shell, no model input
-            ["git", "-C", str(repo), "worktree", "remove", "--force",  # noqa: S607
-             str(temp)], capture_output=True, check=False)
+        # The directory the worktree was made in, which nothing removed: one
+        # `score-*` folder was left in the temp directory for every scored run.
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def _kill_tree(proc: subprocess.Popen[str]) -> None:
+    """End a shell command and everything it started.
+
+    ``subprocess.run(timeout=...)`` ends the shell and leaves its children --
+    on Windows ``npm`` is a ``.cmd`` shim, so the shell is ``cmd.exe`` and the
+    program that matters is its child, which kept the pipes open and made the
+    call return only when it finished (a 1 s timeout returned after 7.1 s;
+    `core/dod.py` says the same of its own runner).
+    """
+    if sys.platform == "win32":
+        subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],  # noqa: S607 - on PATH
+            capture_output=True, check=False)
+    else:
+        try:  # noqa: SIM105 - the project's guard counts every `suppress` as a broad one
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass        # the group is empty, or not ours to signal
+    try:  # noqa: SIM105
+        proc.kill()
+    except OSError:
+        pass            # already gone
 
 
 def _run(command: str, cwd: Path) -> dict[str, Any]:
+    # The owner's own acceptance command, typed on the command line, never a
+    # model's: run as they would run it -- in the environment the harness gives
+    # its own checks, so the scorer's SUPERVISOR_HOME is not the project's. It
+    # keeps its shell (pipes, `&&`, quoting as typed), which `dod.run_bounded`
+    # does not take: that runs a tokenised argv, and on Windows would re-quote
+    # the owner's string. What it shares with it is that the whole tree dies at
+    # the timeout.
+    proc = subprocess.Popen(  # noqa: S602
+        command, cwd=cwd, shell=True, env=child_environment(),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace",
+        start_new_session=sys.platform != "win32")      # its own group, to kill whole
     try:
-        # The owner's own acceptance command, typed on the command line, never a
-        # model's: run as they would run it -- in the environment the harness gives
-        # its own checks, so the scorer's SUPERVISOR_HOME is not the project's.
-        done = subprocess.run(command, cwd=cwd, shell=True,  # noqa: S602
-                              env=child_environment(), capture_output=True, text=True,
-                              encoding="utf-8", errors="replace",
-                              timeout=ACCEPT_TIMEOUT, check=False)
-        tail = (done.stdout + done.stderr).strip()[-800:]
-        return {"command": command, "passed": done.returncode == 0,
-                "exit": done.returncode, "tail": tail}
+        out, err = proc.communicate(timeout=ACCEPT_TIMEOUT)
     except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:  # noqa: SIM105
+            proc.communicate(timeout=10)    # drain what the killed tree left in the pipes
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
         return {"command": command, "passed": False, "exit": None,
                 "tail": f"timed out after {ACCEPT_TIMEOUT:.0f}s"}
+    tail = (out + err).strip()[-800:]
+    return {"command": command, "passed": proc.returncode == 0,
+            "exit": proc.returncode, "tail": tail}
 
 
 def scorecard(state: RunState, accept: list[str], setup: list[str] | None = None,
@@ -116,6 +161,9 @@ def scorecard(state: RunState, accept: list[str], setup: list[str] | None = None
         if tree is None:
             card["acceptance"] = [{"command": c, "passed": False, "exit": None,
                                    "tail": "the run left no tree to check"} for c in accept]
+            # Not accepted: nothing was checked, which is not the same as nothing
+            # failed. The key was left out here, and the CLI read its absence as yes.
+            card["accepted"] = False
             return card
         card["tree"] = str(tree)
         card["setup"] = [_run(c, tree) for c in setup or []]

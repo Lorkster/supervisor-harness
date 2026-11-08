@@ -52,7 +52,10 @@ def cmd_eval_score(args: argparse.Namespace) -> int:
         print(json.dumps(card, indent=2, ensure_ascii=False))
     else:
         print(render(card))
-    return 0 if card.get("accepted", True) else 1
+    if not args.accept:
+        return 0            # a record was asked for, not a verdict
+    # False by default: a card with no verdict is one nothing was checked on.
+    return 0 if card.get("accepted", False) else 1
 
 
 def add_eval_commands(sub: Any, common: argparse.ArgumentParser) -> None:

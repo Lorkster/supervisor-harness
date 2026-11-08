@@ -180,9 +180,11 @@ def test_confidence_falls_once_a_lesson_is_overdue(policy: Policy) -> None:
 
     kept, report = consolidate([lesson], policy=policy, workspace=HERE)
 
-    # Aged to 4, two runs past the grace of 2, at 0.2 a run.
+    # Aged to 4, past the grace of 2: this pass takes one step of 0.2 off. (It
+    # used to take `overdue * 0.2` from an already-decayed value every pass, which
+    # compounded; see test_review2026_store_correctness.)
     assert kept[0].runs_since_confirmed == 4
-    assert kept[0].confidence == pytest.approx(0.2)
+    assert kept[0].confidence == pytest.approx(0.4)
     assert report.rescored == 1
     assert any("decayed" in op for op in report.ops)
 

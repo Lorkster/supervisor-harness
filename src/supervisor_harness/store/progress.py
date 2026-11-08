@@ -120,7 +120,10 @@ def append(path: Path, events: list[Event]) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
+        # newline="\n": on Windows text mode turned every "\n" into CRLF, so the
+        # file one tails from another terminal had a stray carriage return on
+        # each line, and a JSON-lines reader saw it inside the last field.
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
             for event in events:
                 handle.write(json.dumps(as_line(event), ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001 - derived and disposable; see the docstring

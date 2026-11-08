@@ -16,6 +16,7 @@ they are public API that the CLI, the MCP server and the tests all call.
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import Any
 
 from ..config import HarnessConfig
@@ -25,11 +26,13 @@ from ..models import (
     CriterionStatus,
     ExecutionTask,
     Phase,
+    RunState,
     TaskStatus,
     Usage,
 )
 from ..serde import to_jsonable
-from ..store.events import EventType
+from ..store.eventlog import EventLog
+from ..store.events import EventType, fold
 from ..store.runstore import RunSession, RunStore
 from . import phases
 from .blackboard import contested_keys
@@ -37,7 +40,7 @@ from .envelope import stale_reason
 from .facts import Liveness, liveness
 from .journal import RunJournal, build_journal
 from .responses import SupervisorResponse
-from .timing import clock, measure
+from .timing import Timing, TimingTracker, clock
 
 #: How many of a run's notes ``status`` returns. The whole list is in the state
 #: and all of it is in the log; this is what fits in an answer meant to be read.
@@ -54,15 +57,81 @@ def _dod_summary(task: ExecutionTask) -> str:
     return f"{passed}/{len(task.mandatory_criteria)}"
 
 
+#: How many runs' incremental views a ``Reporting`` keeps. Each holds a folded
+#: ``RunState``; a server rarely looks at more than a handful at once.
+VIEW_CACHE_RUNS = 8
+
+
+class _RunView:
+    """One run, folded from its log and kept current by reading only what is new.
+
+    ``ledger`` is stamped on every response and ``status`` is polled, and each of
+    them re-read, re-parsed and re-folded the whole log -- 16 seconds for a
+    50,000-event run -- to report a line. A log only ever grows, so the view
+    remembers how far into it the last read got and parses the lines after that.
+
+    Private to ``Reporting`` and never handed out: its state is advanced in place,
+    which is only safe because nothing outside the class holds it.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self._reset()
+
+    def _reset(self) -> None:
+        self.state = RunState(id=self.run_id)
+        self.timer = TimingTracker()
+        self.offset = 0
+        self.damaged = 0
+
+    def refresh(self, log: EventLog) -> None:
+        if log.size() < self.offset:
+            self._reset()       # the log is shorter than what was read: it was replaced
+        events, offset = log.read_from(self.offset)
+        damaged = log.skipped_lines
+        if events and (
+            events[0].seq <= self.state.last_seq
+            or any(a.seq >= b.seq for a, b in pairwise(events))
+        ):
+            # Not the strictly rising tail an append produces -- a log edited or
+            # merged by hand. Start over from everything, in sequence order.
+            self._reset()
+            events, offset = log.read_from(0)
+            damaged = log.skipped_lines
+            events.sort(key=lambda e: e.seq)
+        self.damaged += damaged
+        self.state = fold(events, initial=self.state)
+        self.state.id = self.run_id
+        self.state.damaged_lines = self.damaged
+        self.timer.feed(events)
+        self.offset = offset
+
+
 class Reporting:
     """Reads a run; writes nothing back to it except artifacts."""
 
     def __init__(self, config: HarnessConfig, store: RunStore) -> None:
         self.config = config
         self.store = store
+        self._views: dict[str, _RunView] = {}
+
+    def _view(self, run_id: str) -> tuple[RunState, Timing]:
+        """The run's state and timing, folded from the log up to now.
+
+        Read-only for the caller: the state is the view's own, advanced in place
+        on the next call.
+        """
+        if not self.store.exists(run_id):
+            raise FileNotFoundError(f"no such run: {run_id}")
+        view = self._views.pop(run_id, None) or _RunView(run_id)
+        self._views[run_id] = view                       # most recently used last
+        while len(self._views) > VIEW_CACHE_RUNS:
+            del self._views[next(iter(self._views))]
+        view.refresh(self.store.log(run_id))
+        return view.state, view.timer.result()
 
     def status(self, run_id: str) -> dict[str, Any]:
-        state = self.store.load_state(run_id)
+        state, timing = self._view(run_id)
         return {
             "run_id": state.id,
             "phase": str(state.phase),
@@ -181,13 +250,17 @@ class Reporting:
             # Nothing records this at run time: every event is already stamped,
             # so storing a duration beside them would be a second source of
             # truth for a derived number.
-            "timing": measure(self.store.log(run_id).read_all()).to_payload(),
+            "timing": timing.to_payload(),
             # What the harness had to repair before each answer could be used.
             # Empty on a run where nothing needed repairing, which is the
             # answer, not a missing field.
             "assists": dict(state.assists),
             "error": state.error,
+            # Why the derived snapshot last failed to write, or None. Nothing
+            # reported this: the store recorded it and no reader ever looked.
+            "snapshot_error": self.store.snapshot_error,
         }
+
     def explain(self, run_id: str, agent_id: str = "") -> RunJournal:
         """Why each directive was issued to each agent, assembled from the log.
 
@@ -199,6 +272,7 @@ class Reporting:
         """
         state = self.store.load_state(run_id)
         return build_journal(state, self.store.log(run_id).read_all(), agent_id)
+
     def ledger(self, run_id: str) -> str:
         """One line saying where the run is, for the host to print verbatim.
 
@@ -212,8 +286,7 @@ class Reporting:
         progress report the host has to summarise before showing is a progress
         report the host will skip.
         """
-        state = self.store.load_state(run_id)
-        timing = measure(self.store.log(run_id).read_all())
+        state, timing = self._view(run_id)
 
         active = [a for a in state.agents.values() if a.status in ACTIVE_AGENT_STATUSES]
         settled = [a for a in state.agents.values() if a.status not in ACTIVE_AGENT_STATUSES]
@@ -286,6 +359,7 @@ class Reporting:
                 for c in task.dod
             ],
         }
+
     def _final_response(self, session: RunSession) -> SupervisorResponse:
         state = session.state
         markdown = phases.final_report_markdown(state)
@@ -326,6 +400,7 @@ class Reporting:
                 },
             },
         )
+
     def _write_run_artifacts(self, session: RunSession) -> None:
         """Write the run's two documents: what happened, and what it closed.
 
@@ -347,17 +422,20 @@ class Reporting:
             EventType.ARTIFACT_WRITTEN,
             {"path": str(reconciliation), "kind": "reconciliation"},
         )
+
     def _complete(self, session: RunSession) -> SupervisorResponse:
         self._write_run_artifacts(session)
         session.emit(EventType.RUN_ENDED, {"phase": str(Phase.COMPLETE)})
         session.sync_index()
         return self._final_response(session)
+
     def _error(self, session: RunSession, message: str) -> SupervisorResponse:
         session.emit(EventType.RUN_ENDED, {"phase": str(Phase.FAILED), "error": message})
         session.sync_index()
         return SupervisorResponse(
             run_id=session.state.id, phase=str(Phase.FAILED), action="failed", message=message
         )
+
     @staticmethod
     def _usage_from(payload: dict[str, Any]) -> Usage:
         raw = payload.get("usage")

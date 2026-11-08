@@ -9,6 +9,7 @@ check passed, with the cases behind each so a rate is never read without them.
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from collections import defaultdict
 from collections.abc import Callable
@@ -54,6 +55,20 @@ async def evaluate(
     out.parent.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
     work = Path(tempfile.mkdtemp(prefix="eval-store-"))
+    try:
+        return await _evaluate_in(work, cases, variants, repeat, out, base, router, progress,
+                                  records)
+    finally:
+        # The run stores and the clone cache it made. Left behind, every
+        # evaluation added a directory to the temp folder that nothing removed.
+        shutil.rmtree(work, ignore_errors=True)
+
+
+async def _evaluate_in(
+    work: Path, cases: list[Case], variants: list[Variant], repeat: int, out: Path,
+    base: HarnessConfig | None, router: ModelRouter | None,
+    progress: Callable[[str], None] | None, records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     for case in cases:
         for variant in variants:
             for rep in range(1, repeat + 1):
