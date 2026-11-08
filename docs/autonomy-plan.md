@@ -1966,16 +1966,15 @@ The replay cases from the chord diagnosis -- `ms-run24-chord-tests-each-clause`,
 requirement -- go in with the batch, as the measure of the review it does not
 replace.
 
-**Questions for the owner.**
+**Decided by the owner, 2026-11-08.** All three as recommended:
 
-1. A tester who disputes a break goes to you, not to a model. Recommended:
-   yes. A model ruling on the dispute is the judge this batch removes.
-2. Browser breaks: at most one per requirement, and at most five per task.
-   Recommended: yes, at first. Each one costs a production build and a browser
-   run.
-3. The saboteur runs on the local model, like every other role. Recommended:
-   yes. Its proposals are checked by running them, so a weak proposal costs a
-   discarded break, not a wrong verdict.
+1. A tester who disputes a break goes to the owner, not to a model. A model
+   ruling on the dispute is the judge this batch removes.
+2. Browser breaks: at most one per requirement, and at most five per task, at
+   first. Each one costs a production build and a browser run.
+3. The saboteur runs on the local model, like every other role. Its proposals
+   are checked by running them, so a weak proposal costs a discarded break, not
+   a wrong verdict.
 
 ### Batch N -- The owner's skills, for the run's agents
 
