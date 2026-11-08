@@ -46,7 +46,8 @@ ENVELOPE = "envelope"
 UNATTENDED_RISKS = frozenset({Severity.INFO, Severity.LOW, Severity.MEDIUM})
 
 #: Criterion methods the harness proves by running something.
-_RUN_METHODS = (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.FAILS_BEFORE)
+_RUN_METHODS = (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.FAILS_BEFORE,
+                VerifyMethod.CATCHES_BREAKS)
 
 
 def refusal(config: HarnessConfig, workspace: Path) -> str | None:

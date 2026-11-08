@@ -623,7 +623,8 @@ def _runs_block(task: ExecutionTask) -> str:
     """
     lines = []
     for crit in task.dod:
-        if (crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.FAILS_BEFORE)
+        if (crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST, VerifyMethod.FAILS_BEFORE,
+                            VerifyMethod.CATCHES_BREAKS)
                 and crit.status in (CriterionStatus.PASS, CriterionStatus.FAIL)
                 and crit.evidence):
             tail = crit.evidence[-RUN_TAIL:].strip()
@@ -668,13 +669,15 @@ def build_verifier_brief(run: RunState, task: ExecutionTask, change_summary: str
     and inspection it could; listing those too asked a local model to redo
     settled work before reaching the review criteria that were its whole job.
     """
-    still_open = [c for c in task.dod if c.status is CriterionStatus.UNVERIFIED]
+    # Batch P's bar is never a model's to judge (`core/sabotage.py`).
+    judged = [c for c in task.dod if c.method is not VerifyMethod.CATCHES_BREAKS]
+    still_open = [c for c in judged if c.status is CriterionStatus.UNVERIFIED]
     parts = [
         f"# Verify: {task.title}",
         _section("What was supposed to happen",
                  f"{task.action}\n\n{task.motivation}".strip()),
         _section("What the implementer reports", change_summary),
-        _section("Criteria to judge", _dod_block(still_open or task.dod)),
+        _section("Criteria to judge", _dod_block(still_open or judged)),
         _section("What the harness already ran", _runs_block(task)),
         _section("Later in the plan", _later_block(run, task)),
         _section(

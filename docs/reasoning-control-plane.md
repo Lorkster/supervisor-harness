@@ -104,8 +104,8 @@ alone, and relaxes it to the workspace rather than to the machine.
 **The configuration trust boundary.** A config file inside the workspace is not
 trusted with everything, because the workspace is usually a repository someone
 else wrote. `PROTECTED_SETTINGS`
-([config.py:424](../src/supervisor_harness/config.py:424)) and
-`PROTECTED_PROVIDER_KEYS` ([config.py:493](../src/supervisor_harness/config.py:493))
+([config.py:429](../src/supervisor_harness/config.py:429)) and
+`PROTECTED_PROVIDER_KEYS` ([config.py:499](../src/supervisor_harness/config.py:499))
 are the list of what it may not set: command execution, the quality bars and
 drift thresholds, how tasks are approved, `backend`, what a run may spend
 (parallelism, turn counts, attempt bounds, the grant's expiry), provider
@@ -166,7 +166,7 @@ where the fence came from. The synthesis model drew the boundary that its own
 tasks then ran inside.
 
 **The run envelope** is the answer. `ScopeEnvelope`
-([models.py:289](../src/supervisor_harness/models.py:289)) is a run-level grant,
+([models.py:293](../src/supervisor_harness/models.py:293)) is a run-level grant,
 established once: configuration is the floor, the plan may **narrow** it, and
 nothing may widen it (`establish`,
 [envelope.py:83](../src/supervisor_harness/core/envelope.py:83)).
@@ -180,7 +180,7 @@ authority is handed on — when synthesis creates a task (`attenuate` at
 agent is spawned (`attenuate` at
 [lifecycle.py:92](../src/supervisor_harness/core/lifecycle.py:92)), and
 when you edit a task's `scope_paths` at approval (`_apply_modifications` at
-[supervisor.py:3887](../src/supervisor_harness/core/supervisor.py:3887)). It
+[supervisor.py:4022](../src/supervisor_harness/core/supervisor.py:4022)). It
 narrows rather than refuses: a model proposing too much is ordinary, and losing
 the task over it is not.
 
@@ -267,7 +267,7 @@ Parallel lenses that each rediscover the same thing are wasting turns; parallel
 lenses that quietly assume *different* things about the same thing are worse,
 because the contradiction only surfaces in the work.
 
-**A `Fact`** ([models.py:317](../src/supervisor_harness/models.py:317)) is
+**A `Fact`** ([models.py:321](../src/supervisor_harness/models.py:321)) is
 something an agent established, under a normalised key, with the evidence that
 backs it and the author who established it. Establishing one emits
 `FACT_ESTABLISHED` ([events.py:56](../src/supervisor_harness/store/events.py:56)),

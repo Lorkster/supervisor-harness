@@ -518,9 +518,10 @@ def validate_criteria(criteria: list[DoDCriterion], policy: Policy) -> list[Crit
                     Severity.LOW,
                 )
             )
-        if crit.method is VerifyMethod.FAILS_BEFORE and not crit.command.strip():
+        if (crit.method in (VerifyMethod.FAILS_BEFORE, VerifyMethod.CATCHES_BREAKS)
+                and not crit.command.strip()):
             issues.append(
-                CriterionIssue(crit.id, "method=fails_before but no test command given",
+                CriterionIssue(crit.id, f"method={crit.method.value} but no test command given",
                                Severity.HIGH)
             )
         if crit.method in (VerifyMethod.COMMAND, VerifyMethod.TEST):

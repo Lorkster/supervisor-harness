@@ -123,6 +123,11 @@ class Policy:
     # tests run under pytest, when `allow_command_execution` is on: without it
     # the check would be a verifier agent's claim, not the harness's proof.
     require_fails_before: bool = True
+    # Batch P: the tests a testing task marks with a requirement must catch a
+    # break of each of its clauses -- a model proposes the breaks, the harness
+    # applies them and runs the tests (`core/sabotage.py`). Needs
+    # `allow_command_execution`; without it the criterion is not added.
+    require_catches_breaks: bool = True
     min_dod_criteria: int = 2
 
     # Whether the harness itself may run verification commands. Off by default:
@@ -431,6 +436,7 @@ PROTECTED_SETTINGS: tuple[tuple[str, ...], ...] = (
     ("policy", "require_negative_test"),
     ("policy", "require_liveness_review"),
     ("policy", "require_fails_before"),
+    ("policy", "require_catches_breaks"),
     ("policy", "min_dod_criteria"),
     # The checkpoint's own pass mark.
     ("policy", "checkpoint_threshold"),

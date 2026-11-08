@@ -172,6 +172,21 @@ def test_labelled_checks_carry_a_persons_expectation(tmp_path: Path) -> None:
     assert results["nonsense"] == {"passed": False, "detail": "no such check"}
 
 
+def test_a_fail_counts_only_when_it_says_what_the_case_is_about(tmp_path: Path) -> None:
+    case = parse_case(_case("verifier", checks=[
+        {"check": "failed_naming", "key": "marked R6, R7, R8", "names": ["R8"]}]))
+
+    def ruled(status: str, evidence: str) -> bool:
+        out = RoleOutput(criteria=[{"statement": "The tests marked R6, R7, R8, R9 check it",
+                                    "status": status, "evidence": evidence}])
+        return bool(judge(case, out, tmp_path)["failed_naming"]["passed"])
+
+    assert ruled("fail", "R8: tests/engine.test.ts:391 asserts only distance >= 1")
+    assert not ruled("fail", "R7: tests/engine.test.ts:120 never wins"), "another reason"
+    assert not ruled("pass", "R8: tests/engine.test.ts:391")
+    assert not judge(case, RoleOutput(), tmp_path)["failed_naming"]["passed"], "absent"
+
+
 # -- the roles, called the way the harness calls them --------------------------------
 
 

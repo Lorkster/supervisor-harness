@@ -43,8 +43,9 @@ from .models import (
 SEVERITIES = [s.value for s in Severity]
 # `fails_before` is the harness's own bar (`core/fails_before.py`): it is added
 # where a task admits it and proven by running the tests, so it is not a method
-# a model is offered to propose.
-VERIFY_METHODS = [m.value for m in VerifyMethod if m is not VerifyMethod.FAILS_BEFORE]
+# a model is offered to propose. Nor is batch P's `catches_breaks` (`core/sabotage.py`).
+VERIFY_METHODS = [m.value for m in VerifyMethod
+                  if m not in (VerifyMethod.FAILS_BEFORE, VerifyMethod.CATCHES_BREAKS)]
 
 # --------------------------------------------------------------------------
 # Shared fragments
